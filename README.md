@@ -40,12 +40,15 @@ Tama is GitCat's Safety Manager, not a mascot bolted on for cuteness — the one
 
 **Core graph + history**
 
-- Fast commit graph (git2 read + a hand-tuned Rust swimlane layout), streamed onto a virtualized canvas — no hard cap on history depth, newest commits paint almost instantly, smooth even on huge repos
-- Full commit detail panel: author/committer split, GPG status, diffstat, file tree, syntax-highlighted diff that can expand to a full-page view
-- ⌘K command palette — fuzzy search across commits and refs
+- Fast commit graph (git2 read + a hand-tuned Rust swimlane layout), streamed onto a virtualized canvas — no hard cap on history depth, newest commits paint almost instantly, and scrolling stays smooth *with readable text* even on a 150k-commit repo (a scroll-blit render path copies the frame and only redraws the newly-exposed strip)
+- Instant everyday operations — checkout, creating/renaming/deleting a branch or tag, and staging update the graph immediately instead of re-walking the whole history each time
+- Orientation at a glance — a dedicated branch/tag column, a clear "you are here" marker on the current HEAD (accent ring + row bar), and commits already merged into your branch drawn dimmed so unmerged work stands out; `⌘⇧H` (or the crosshair button) recentres on HEAD from anywhere
+- Branch actions on the graph itself — right-click a branch or tag label to check out / rename / delete (or check out a remote branch), separate from the commit menu; hover a label to see its full name
+- Full commit detail panel: author/committer split, GPG status, diffstat, file tree, syntax-highlighted diff that can expand to a full-page view (with a resizable file list, and full paths on hover)
+- ⌘K command palette — fuzzy search across commits and refs (including branches that aren't currently shown in the sidebar), quick actions, and an in-app Help page
 - Vim-style keyboard navigation — `j`/`k`, `gg`/`G`, Ctrl-D/Ctrl-U, and `/` to search
 - Per-file history with rename-following, like `git log --follow` — a renamed file's history continues seamlessly under its old path
-- Pickaxe / diff-content search (`git log -S`/`-G`) — find every commit whose diff touched a string or pattern, not just its commit message
+- Search commits by author (`git log --author`) or by diff content / pickaxe (`git log -S`/`-G`) across all history — find every commit by a person, or every commit whose diff touched a string, not just what a message mentions
 
 **Working directory**
 
@@ -85,7 +88,7 @@ Tama is GitCat's Safety Manager, not a mascot bolted on for cuteness — the one
 **Setup + polish**
 
 - First-run setup wizard: pick a repo (click, or drag a folder in), check/fix its git identity, jump into the graph — shown once, not on every launch
-- Multi-repository dashboard for tracking and quickly switching between repos you use often
+- Multi-repository dashboard (`⌘O`) for tracking and quickly switching between repos you use often — with a search box to filter by name, path, or branch, and Enter to open the top hit
 - "Close Repository" — an in-app way back to the empty state
 - In-app `.gitignore` / `.mailmap` editors
 - A real native app menu (File / Repository / Edit / View / Tools / Window / Help) and About panel, not just a default OS stub

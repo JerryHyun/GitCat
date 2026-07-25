@@ -28,6 +28,10 @@ Yes — init/update (including `--recursive`), add, deinit/remove, and you can "
 
 Yes to all three. Bisect gives you live canvas cues for the narrowing candidate range and automatic first-bad-commit detection; interactive rebase is a drag-to-reorder planner (pick/edit/squash/fixup/drop) before anything runs; and the working-directory panel covers stage/unstage/commit/stash apply/pop/drop.
 
+### Can it handle very large repositories?
+
+Yes — GitCat is developed against CPython (150k+ commits). The graph streams in newest-first and only ever draws the visible rows, scrolling stays smooth *and legible* thanks to a scroll-blit render path, and everyday operations like checkout or creating a branch update the graph in place instead of re-walking the whole history each time (only actions that genuinely add or remove commits trigger a full reload).
+
 ### How does push/pull authentication work?
 
 GitCat shells out to your system's `git` binary for every write operation (fetch/pull/push, and everything else that mutates a repo), so it uses whatever credential helper, SSH agent, or `.gitconfig` you already have set up — there's no separate credential store to configure.
