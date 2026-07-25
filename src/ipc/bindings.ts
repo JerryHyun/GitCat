@@ -45,6 +45,34 @@ async loadGraph(path: string, requestId: number) : Promise<Result<null, string>>
 }
 },
 /**
+ * JS: `commands.graphFastRefresh(path)`. The cheap snapshot the frontend's
+ * `reloadGraph` uses to decide whether a change can skip the full history
+ * re-walk — seed tips + HEAD (full oids, for collision-free "already loaded?"
+ * gates), a whole-ref-set signature, and the exact filtered ref chips.
+ */
+async graphFastRefresh(path: string) : Promise<Result<FastRefresh, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("graph_fast_refresh", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * JS: `commands.headAncestorFlags(path)`. Positional recompute of the graph's
+ * `ancestor` dimming bits after HEAD moved (checkout), without a full reload —
+ * see `head_ancestor_flags_core`. Honors the current visible-branch filter so
+ * its walk matches the loaded graph's.
+ */
+async headAncestorFlags(path: string) : Promise<Result<AncestorFlags, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("head_ancestor_flags", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: return the full message + real changed-file tree + diff hunks
  * for a single commit. Diffs the commit tree against its FIRST parent (empty
  * tree for a root commit; first parent for a merge). Read-only.
@@ -2877,6 +2905,15 @@ async openRepoInNewWindow(path: string) : Promise<void> {
 /** user-defined types **/
 
 /**
+ * Result of `commands::head_ancestor_flags` — a positional recompute of the
+ * per-row `ancestor` (dimming) bit for the CURRENTLY-LOADED graph, without
+ * rebuilding it. `flags[i]` aligns to graph row `i` BY CONSTRUCTION (the same
+ * `walk_repo` + visibility params produce the same order), which only holds
+ * while the reachable set is unchanged — the frontend applies it only if
+ * `n` still equals its loaded row count, else falls back to a full reload.
+ */
+export type AncestorFlags = { n: number; flags: boolean[] }
+/**
  * Static app metadata for the custom About panel — the same `PackageInfo`
  * fields `menu.rs`'s native-About builder reads, just reshaped as a plain
  * serializable struct instead of Tauri's menu-only `AboutMetadata` type.
@@ -3077,6 +3114,37 @@ name: string;
  */
 cmd: string | null }
 /**
+ * Cheap snapshot for the frontend's incremental-refresh decision — everything
+ * `reloadGraph` needs to classify a change WITHOUT re-walking history (see
+ * `commands::graph_fast_refresh`). All oids are full 40-char (collision-free
+ * identity — see `GraphBatch::oids`).
+ */
+export type FastRefresh = { 
+/**
+ * Full oid HEAD resolves to, or `None` when HEAD is unborn (no commits yet).
+ * Resolved directly from HEAD so it's correct even when detached (bisect),
+ * unlike `RefList.head` which is a branch name or `None`.
+ */
+headOid: string | null; 
+/**
+ * Full oids of the exact refs the graph walk seeds from — visible local
+ * branches + visible remotes, honoring `visible_branches_for`, peeled to
+ * their commit. NOT tags and NOT HEAD (those never seed the walk).
+ */
+seedTips: string[]; 
+/**
+ * Stable signature over the ENTIRE ref set (all locals + remotes + tags +
+ * head sha). Identical signature + unchanged head ⇒ a pure working-tree
+ * change (staging), so the graph needs no work at all.
+ */
+refSig: string; 
+/**
+ * Per-commit ref chips, keyed by full oid, built by the same
+ * `collect_refs` + `filter_hidden_chips` the streaming load uses — so a
+ * fast-path chip remap is byte-for-byte identical to a full reload's chips.
+ */
+refChips: ([string, RefChip[]])[] }
+/**
  * Full payload for the Blame modal: the file's (possibly capped) content, as
  * a flat per-line array, plus the hunks covering ranges over it — kept
  * SEPARATE from the lines (not nested, unlike DiffHunkRow/DiffLineRow) so
@@ -3176,7 +3244,15 @@ local: boolean }
  * running `gapStart` CSR index by accumulating `gap_counts` alongside
  * `rows`, without this event ever transmitting `gapStart` itself.
  */
-export type GraphBatch = { generation: number; rows: CommitMeta[]; lane: number[]; color: number[]; merge: number[]; gapCounts: number[]; gapTop: number[]; gapBot: number[]; gapColor: number[]; ncol: number; laneCount: number; totalSoFar: number; done: boolean; elapsedMs: number; 
+export type GraphBatch = { generation: number; rows: CommitMeta[]; 
+/**
+ * Full 40-char oid for each row, parallel to `rows`. `CommitMeta.sha` is
+ * only the 7-char short prefix, which collides at ~500k commits — the
+ * frontend's incremental-refresh gates need collision-free identity to
+ * decide "is this ref tip a commit we've already loaded?", so this carries
+ * the full oid alongside the short-sha-keyed display metadata.
+ */
+oids: string[]; lane: number[]; color: number[]; merge: number[]; gapCounts: number[]; gapTop: number[]; gapBot: number[]; gapColor: number[]; ncol: number; laneCount: number; totalSoFar: number; done: boolean; elapsedMs: number; 
 /**
  * Set only on the final (`done: true`) batch, only when the walk itself
  * failed partway (e.g. mid-walk corruption) rather than completing or

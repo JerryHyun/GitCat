@@ -1831,6 +1831,29 @@ function loadGraph(N){
 // records it SYNCHRONOUSLY, before the `await` even starts, so no event can
 // ever arrive "too early" relative to it.
 let graphRequestSeq=0;
+// ── Incremental-refresh state (see reloadGraph) ─────────────────────────────
+// Most mutations don't change the commit DAG (checkout, branch/tag CRUD,
+// staging) — reloadGraph classifies each refresh and, when the loaded set is
+// provably unchanged, does a cheap refs-only update instead of re-walking the
+// whole history. These track the last-loaded graph's identity to make that
+// decision safely; when any check is uncertain, we fall back to a full reload.
+//   loadedOids  — full 40-char oid of every currently-loaded commit (Gate A:
+//                 "is this ref tip a commit we already have?"). Full oids, not
+//                 the 7-char CommitMeta.sha, which collides at ~500k commits.
+//   graphStreamComplete / lastLoadTruncated — the fast path is only valid once
+//                 a load has fully finished and wasn't memory-capped (a partial
+//                 or truncated loadedOids would falsely classify real commits
+//                 as "already loaded").
+//   loadedSeedTips / loadedHeadOid / lastRefSig — the last load/refresh's seed
+//                 tips (Gate B: a removed tip can orphan commits → full reload),
+//                 HEAD oid (moved ⇒ recompute dimming), and whole-ref-set
+//                 signature (unchanged + HEAD unchanged ⇒ pure worktree change).
+let loadedOids=new Set();
+let graphStreamComplete=false;
+let lastLoadTruncated=false;
+let loadedSeedTips=new Set();
+let loadedHeadOid=null;
+let lastRefSig=null;
 // Top-right "still loading" pill (see #loadingPill / index.html). Shown for the
 // whole graph stream — from startGraphStream() until onGraphBatch() sees the
 // stream's `done` — since the centered overlay hides on the FIRST batch while the
@@ -1853,7 +1876,12 @@ function setGraphLoadingPill(on,count){
 async function startGraphStream(path){
   const myGen = ++graphRequestSeq;
   graphGeneration = myGen;
-  BACKEND = { n:0, lane:[], color:[], merge:[], gapStart:[0], gapTop:[], gapBot:[], gapColor:[], rows:[], refs:[], allRefs:[], ncol:7, laneCount:0 };
+  BACKEND = { n:0, oids:[], lane:[], color:[], merge:[], gapStart:[0], gapTop:[], gapBot:[], gapColor:[], rows:[], refs:[], allRefs:[], ncol:7, laneCount:0 };
+  // A fresh stream: the incremental-refresh baseline is now stale until this
+  // load finishes. loadedOids is rebuilt from scratch as batches arrive; the
+  // fast path (see reloadGraph) is disabled until `done` sets graphStreamComplete.
+  graphStreamComplete=false;
+  loadedOids=new Set();
   setGraphLoadingPill(true,0);
   await tinvoke("load_graph", { path, requestId: myGen });
   return myGen;
@@ -1898,6 +1926,11 @@ function onGraphBatch(payload){
   if(graphLoading) graphLoading.style.display="none";
 
   appendAll(BACKEND.rows, payload.rows);
+  // Full oids, parallel to rows — used by the fast-refresh gates (see
+  // reloadGraph). Accumulated into the loadedOids Set here too, incrementally,
+  // so membership stays O(1) without ever rebuilding the Set from BACKEND.rows.
+  appendAll(BACKEND.oids, payload.oids);
+  for(let i=0;i<payload.oids.length;i++) loadedOids.add(payload.oids[i]);
   appendAll(BACKEND.lane, payload.lane);
   appendAll(BACKEND.color, payload.color);
   appendAll(BACKEND.merge, payload.merge);
@@ -1957,6 +1990,16 @@ function onGraphBatch(payload){
   setGraphLoadingPill(!payload.done, BACKEND.n);
 
   if(payload.done){
+    // The load is now complete — enable the incremental fast path and record
+    // whether it was memory-capped (a truncated loadedOids can't safely answer
+    // "is this commit loaded?", so a truncated load forces full reloads).
+    graphStreamComplete=true;
+    lastLoadTruncated=!!payload.truncated;
+    // Establish the fast-refresh baseline (seed tips / HEAD oid / ref signature)
+    // for THIS load, generation-guarded so a newer load's baseline can't be
+    // clobbered by an older snapshot resolving late. Best-effort: if it never
+    // resolves, reloadGraph just re-fetches fresh state and compares.
+    snapshotGraphBaseline(graphGeneration);
     if(payload.error){ Tama.warn("Loading history stopped early — "+payload.error,5000); }
     // Distinct from a genuine walk error (above) — the walk didn't fail, it
     // just has more history than commands.rs's MAX_LIVE_COMMITS is willing
@@ -2232,6 +2275,119 @@ function updateBackToParentBtn(){
 let reloadGraphBusy=false;
 let reloadGraphPending=false;
 let reloadGraphPendingPreserveRow=false;
+
+// Re-map every loaded row's ref chips from a graph_fast_refresh snapshot,
+// joining by FULL oid (BACKEND.oids[r]) — the chips come straight from the
+// backend's own collect_refs + filter_hidden_chips, so they're byte-identical
+// to what a full reload would produce (no re-sort/peel divergence). Writes all
+// three chip surfaces a full load fills: rows[r].refs (raw {n,t}, read by ⌘K),
+// refs[r] (primary chip) and allRefs[r]. G must be REASSIGNED after this by the
+// caller so cmdk/blame/filehistory/pickaxesearch caches (keyed on G identity)
+// invalidate. O(loaded rows), no git access.
+function applyRefChips(refChips){
+  const map=new Map();
+  for(const [oid,chips] of refChips) map.set(oid,chips);
+  const N=BACKEND.n;
+  for(let r=0;r<N;r++){
+    const chips=map.get(BACKEND.oids[r]) || [];
+    BACKEND.rows[r].refs=chips;
+    BACKEND.refs[r]=chips.length ? toChip(chips[0]) : null;
+    BACKEND.allRefs[r]=chips.map(toChip);
+  }
+}
+
+// After a checkout (HEAD moved among already-loaded commits), recompute ONLY
+// the per-row `ancestor` (dimming) bits — a cheap backend bitvector walk, not a
+// full graph rebuild (see head_ancestor_flags). Fired-and-forgotten so the
+// instant chip/HEAD-marker update isn't blocked; the dimming just settles a
+// beat later. Guarded three ways so a stale/again-superseded result can never
+// paint the wrong graph: the generation must be unchanged, BACKEND.n must be
+// what it was at call time, and the returned row count must still match — a
+// mismatch means the reachable set changed under us (a real external change),
+// so we resync with a full reload instead of applying misaligned flags.
+function recomputeAncestorsAsync(){
+  const genAtCall=graphGeneration;
+  const nAtCall=BACKEND?BACKEND.n:-1;
+  const repo=CUR_REPO;
+  commands.headAncestorFlags(repo).then(res=>{
+    if(res.status!=="ok") return;
+    if(graphGeneration!==genAtCall || !BACKEND || BACKEND.n!==nAtCall || CUR_REPO!==repo) return;
+    const af=res.data;
+    if(af.n!==BACKEND.n){ void reloadGraph(true); return; }
+    const f=af.flags;
+    for(let r=0;r<BACKEND.n;r++) BACKEND.rows[r].ancestor=!!f[r];
+    dirty=true;
+  }).catch(()=>{});
+}
+
+// Record the fast-refresh baseline (seed tips / HEAD oid / ref signature) for
+// the just-finished load, so the NEXT reloadGraph can tell what changed.
+// Generation-guarded: if a newer load has started by the time this resolves,
+// that load owns the baseline and this stale snapshot is dropped.
+function snapshotGraphBaseline(gen){
+  const repo=CUR_REPO;
+  commands.graphFastRefresh(repo).then(r=>{
+    if(r.status!=="ok" || graphGeneration!==gen || CUR_REPO!==repo) return;
+    const d=r.data;
+    loadedSeedTips=new Set(d.seedTips);
+    loadedHeadOid=d.headOid;
+    lastRefSig=d.refSig;
+  }).catch(()=>{});
+}
+
+// The cheap classifier. Returns true when it fully handled the refresh (either
+// a refs-only fast path or a no-op for a pure working-tree change), false when
+// the loaded commit set may have changed and a full reload is required. The
+// invariant: whenever anything is uncertain, return false — a full reload is
+// always correct, the fast path is only ever an optimization.
+async function tryFastRefresh(){
+  // Guard 1: only a COMPLETE, non-truncated load has a trustworthy loadedOids
+  // to answer "is this commit already loaded?" — mid-stream or memory-capped,
+  // fall back to full reload.
+  if(!BACKEND || !graphStreamComplete || lastLoadTruncated) return false;
+  let cur;
+  try{
+    const r=await commands.graphFastRefresh(CUR_REPO);
+    if(r.status!=="ok") return false;
+    cur=r.data;
+  }catch(_){ return false; }
+
+  // Pure working-tree change (staging, an external edit): the entire ref set
+  // and HEAD are unchanged, so the graph needs no work at all — the caller's
+  // own workdir refresh updates the uncommitted-changes badge.
+  if(cur.refSig===lastRefSig && cur.headOid===loadedHeadOid) return true;
+
+  // Gate A — a current seed tip or HEAD is a commit we DON'T have loaded ⇒ new
+  // commits exist (commit/merge/rebase/pull/fetch/…) ⇒ full reload.
+  for(let i=0;i<cur.seedTips.length;i++) if(!loadedOids.has(cur.seedTips[i])) return false;
+  if(cur.headOid!=null && !loadedOids.has(cur.headOid)) return false;
+
+  // Gate B — a previously-loaded seed tip is gone ⇒ a branch was deleted or
+  // moved backward, which can orphan commits we're still showing ⇒ full reload.
+  const curTipSet=new Set(cur.seedTips);
+  for(const t of loadedSeedTips) if(!curTipSet.has(t)) return false;
+
+  // Fast path: only refs (and maybe HEAD) moved among already-loaded commits.
+  applyRefChips(cur.refChips);
+  G=buildGFromBackend(BACKEND);   // reassign, never mutate (cache invalidation)
+  dirty=true;
+  const headMoved = cur.headOid!==loadedHeadOid;
+  // Advance the baseline before any async work / re-entrant refresh sees it.
+  loadedSeedTips=curTipSet; loadedHeadOid=cur.headOid; lastRefSig=cur.refSig;
+  // Pill + refs tree + auto-visibility (keeps its own sameLocal&&sameRemote echo
+  // guard — a checkout that auto-hides a branch queues one more pass that Gate B
+  // then turns into a full reload). Safety.refresh keeps the undo count current
+  // for the DAG-preserving mutations that still take a snapshot (e.g. checkout).
+  await sidebarCtrl.refresh(CUR_REPO); await Safety.refresh();
+  if(headMoved) recomputeAncestorsAsync();
+  return true;
+}
+
+// Called from ~30 mutation sites across every island, plus the external-change
+// watcher/poll. Classifies each refresh (tryFastRefresh) and only re-walks the
+// whole history when the commit DAG may actually have changed — see this file's
+// incremental-refresh state block. The coalescing loop below (unchanged) still
+// drains any refresh that arrived mid-flight into exactly one extra pass.
 async function reloadGraph(preserveRow){
   if(!IN_TAURI||!CUR_REPO) return;
   if(reloadGraphBusy){
@@ -2243,25 +2399,29 @@ async function reloadGraph(preserveRow){
   try{
     let nextPreserveRow=preserveRow;
     for(;;){
-      const keepSha = nextPreserveRow && state.selectedRow>=0 && BACKEND && BACKEND.rows[state.selectedRow]
-        ? BACKEND.rows[state.selectedRow].sha : null;
-      // The pinned "Uncommitted changes" row has no sha to re-locate by — its own
-      // sentinel (-2) IS the identity, so just remember it was open and reopen it
-      // after loadGraph() (which unconditionally resets state.selectedRow to -1)
-      // instead of trying (and failing) to find it in BACKEND.rows below.
-      const keepWorkdir = nextPreserveRow && state.selectedRow===-2;
       try{
-        // Same streaming load openRepo() itself now uses (see
-        // startGraphStream()'s own doc comment) — loadGraph(0) here resets to
-        // the now-empty BACKEND/selection exactly like a fresh open would;
-        // re-selecting keepSha/keepWorkdir has to wait until the stream
-        // actually finishes (the previously-selected commit might be deep in
-        // history, not necessarily in the very first batch), so it's handed
-        // to onGraphBatch() via pendingReselect instead of done inline here.
-        await startGraphStream(CUR_REPO);
-        loadGraph(0);
-        pendingReselect = keepSha ? {sha:keepSha} : (keepWorkdir ? {workdir:true} : null);
-        await sidebarCtrl.refresh(CUR_REPO); await Safety.refresh();
+        // Cheap path first; only a false return falls through to a full re-walk.
+        const handled = await tryFastRefresh();
+        if(!handled){
+          const keepSha = nextPreserveRow && state.selectedRow>=0 && BACKEND && BACKEND.rows[state.selectedRow]
+            ? BACKEND.rows[state.selectedRow].sha : null;
+          // The pinned "Uncommitted changes" row has no sha to re-locate by — its own
+          // sentinel (-2) IS the identity, so just remember it was open and reopen it
+          // after loadGraph() (which unconditionally resets state.selectedRow to -1)
+          // instead of trying (and failing) to find it in BACKEND.rows below.
+          const keepWorkdir = nextPreserveRow && state.selectedRow===-2;
+          // Same streaming load openRepo() itself now uses (see
+          // startGraphStream()'s own doc comment) — loadGraph(0) here resets to
+          // the now-empty BACKEND/selection exactly like a fresh open would;
+          // re-selecting keepSha/keepWorkdir has to wait until the stream
+          // actually finishes (the previously-selected commit might be deep in
+          // history, not necessarily in the very first batch), so it's handed
+          // to onGraphBatch() via pendingReselect instead of done inline here.
+          await startGraphStream(CUR_REPO);
+          loadGraph(0);
+          pendingReselect = keepSha ? {sha:keepSha} : (keepWorkdir ? {workdir:true} : null);
+          await sidebarCtrl.refresh(CUR_REPO); await Safety.refresh();
+        }
       }catch(e){ Tama.warn("Reload failed — "+e); console.error(e); }
       if(!reloadGraphPending) break;
       reloadGraphPending=false;

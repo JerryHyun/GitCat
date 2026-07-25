@@ -140,6 +140,12 @@ pub struct GraphData {
 pub struct GraphBatch {
     pub generation: u64,
     pub rows: Vec<CommitMeta>,
+    /// Full 40-char oid for each row, parallel to `rows`. `CommitMeta.sha` is
+    /// only the 7-char short prefix, which collides at ~500k commits — the
+    /// frontend's incremental-refresh gates need collision-free identity to
+    /// decide "is this ref tip a commit we've already loaded?", so this carries
+    /// the full oid alongside the short-sha-keyed display metadata.
+    pub oids: Vec<String>,
     pub lane: Vec<i16>,
     pub color: Vec<u8>,
     pub merge: Vec<u8>,
@@ -166,4 +172,42 @@ pub struct GraphBatch {
     /// rather than letting a truncated load quietly look identical to a
     /// complete one.
     pub truncated: bool,
+}
+
+/// Cheap snapshot for the frontend's incremental-refresh decision — everything
+/// `reloadGraph` needs to classify a change WITHOUT re-walking history (see
+/// `commands::graph_fast_refresh`). All oids are full 40-char (collision-free
+/// identity — see `GraphBatch::oids`).
+#[derive(Serialize, Clone, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FastRefresh {
+    /// Full oid HEAD resolves to, or `None` when HEAD is unborn (no commits yet).
+    /// Resolved directly from HEAD so it's correct even when detached (bisect),
+    /// unlike `RefList.head` which is a branch name or `None`.
+    pub head_oid: Option<String>,
+    /// Full oids of the exact refs the graph walk seeds from — visible local
+    /// branches + visible remotes, honoring `visible_branches_for`, peeled to
+    /// their commit. NOT tags and NOT HEAD (those never seed the walk).
+    pub seed_tips: Vec<String>,
+    /// Stable signature over the ENTIRE ref set (all locals + remotes + tags +
+    /// head sha). Identical signature + unchanged head ⇒ a pure working-tree
+    /// change (staging), so the graph needs no work at all.
+    pub ref_sig: String,
+    /// Per-commit ref chips, keyed by full oid, built by the same
+    /// `collect_refs` + `filter_hidden_chips` the streaming load uses — so a
+    /// fast-path chip remap is byte-for-byte identical to a full reload's chips.
+    pub ref_chips: Vec<(String, Vec<RefChip>)>,
+}
+
+/// Result of `commands::head_ancestor_flags` — a positional recompute of the
+/// per-row `ancestor` (dimming) bit for the CURRENTLY-LOADED graph, without
+/// rebuilding it. `flags[i]` aligns to graph row `i` BY CONSTRUCTION (the same
+/// `walk_repo` + visibility params produce the same order), which only holds
+/// while the reachable set is unchanged — the frontend applies it only if
+/// `n` still equals its loaded row count, else falls back to a full reload.
+#[derive(Serialize, Clone, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AncestorFlags {
+    pub n: usize,
+    pub flags: Vec<bool>,
 }

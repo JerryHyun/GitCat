@@ -7,10 +7,11 @@ use git2::{Delta, DiffFindOptions, DiffOptions, Patch};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, Wry};
 
-use crate::git_read::{read_repo, walk_repo};
+use crate::git_read::{collect_refs, filter_hidden_chips, read_repo, seed_tip_oids, walk_repo};
 use crate::layout::{layout, LayoutBuilder, NCOL};
 use crate::model::{
-    CommitDetail, CommitMeta, DiffHunkRow, DiffLineRow, FileChange, GraphBatch, GraphData, Person,
+    AncestorFlags, CommitDetail, CommitMeta, DiffHunkRow, DiffLineRow, FastRefresh, FileChange,
+    GraphBatch, GraphData, Person,
 };
 
 /// Static app metadata for the custom About panel — the same `PackageInfo`
@@ -310,6 +311,7 @@ pub fn stream_graph_core(
     let mut hit_ceiling = false;
 
     let mut b_rows: Vec<CommitMeta> = Vec::with_capacity(batch_size);
+    let mut b_oids: Vec<String> = Vec::with_capacity(batch_size);
     let mut b_lane: Vec<i16> = Vec::with_capacity(batch_size);
     let mut b_color: Vec<u8> = Vec::with_capacity(batch_size);
     let mut b_merge: Vec<u8> = Vec::with_capacity(batch_size);
@@ -317,9 +319,9 @@ pub fn stream_graph_core(
     let mut b_gap_top: Vec<i16> = Vec::new();
     let mut b_gap_bot: Vec<i16> = Vec::new();
     let mut b_gap_color: Vec<u8> = Vec::new();
-    // The most recently pushed row's own (meta, lane, color, merge) — held
-    // back exactly one step, see this function's own doc comment.
-    let mut pending: Option<(CommitMeta, i16, u8, u8)> = None;
+    // The most recently pushed row's own (meta, full oid, lane, color, merge) —
+    // held back exactly one step, see this function's own doc comment.
+    let mut pending: Option<(CommitMeta, String, i16, u8, u8)> = None;
 
     macro_rules! flush {
         ($done:expr, $error:expr, $truncated:expr) => {
@@ -327,6 +329,7 @@ pub fn stream_graph_core(
                 on_batch(GraphBatch {
                     generation,
                     rows: std::mem::take(&mut b_rows),
+                    oids: std::mem::take(&mut b_oids),
                     lane: std::mem::take(&mut b_lane),
                     color: std::mem::take(&mut b_color),
                     merge: std::mem::take(&mut b_merge),
@@ -346,19 +349,7 @@ pub fn stream_graph_core(
         };
     }
 
-    // Ancestor-of-HEAD set — the commits already IN the current branch, so the UI
-    // can dim them and let un-merged work stand out. A separate revwalk pushing
-    // ONLY HEAD, collected as oids (best-effort: a detached/unborn HEAD => empty
-    // set => nothing dimmed). O(HEAD's ancestors); the per-commit lookup below is
-    // O(1). The HashSet owns the oids, so it outlives the repo opened just for it.
-    let head_ancestors: std::collections::HashSet<git2::Oid> = crate::trust::open_repo(path)
-        .ok()
-        .and_then(|repo| {
-            let mut w = repo.revwalk().ok()?;
-            w.push_head().ok()?;
-            Some(w.flatten().collect())
-        })
-        .unwrap_or_default();
+    let head_ancestors = head_ancestor_set(path);
 
     let result = walk_repo(path, visible_local, visible_remote, |raw, refs| {
         if should_cancel() {
@@ -376,8 +367,9 @@ pub fn stream_graph_core(
 
         // `out.gap_segments` belongs to the PREVIOUS row (whatever is
         // currently in `pending`) — see this function's own doc comment.
-        if let Some((pm, pl, pc, pmg)) = pending.take() {
+        if let Some((pm, poid, pl, pc, pmg)) = pending.take() {
             b_rows.push(pm);
+            b_oids.push(poid);
             b_lane.push(pl);
             b_color.push(pc);
             b_merge.push(pmg);
@@ -400,6 +392,7 @@ pub fn stream_graph_core(
                 merge: out.merge == 1,
                 ancestor: head_ancestors.contains(&raw.id),
             },
+            sha,
             out.lane,
             out.color,
             out.merge,
@@ -420,8 +413,9 @@ pub fn stream_graph_core(
 
     // The last row's own trailing gap is empty (nothing below it) — matches
     // `layout()`'s own indexing exactly.
-    if let Some((pm, pl, pc, pmg)) = pending.take() {
+    if let Some((pm, poid, pl, pc, pmg)) = pending.take() {
         b_rows.push(pm);
+        b_oids.push(poid);
         b_lane.push(pl);
         b_color.push(pc);
         b_merge.push(pmg);
@@ -431,6 +425,154 @@ pub fn stream_graph_core(
 
     let error = result.err().map(|e| e.message().to_string());
     flush!(true, error, hit_ceiling);
+}
+
+/// Ancestor-of-HEAD set — the commits already IN the current branch, so the UI
+/// can dim them and let un-merged work stand out. A revwalk pushing ONLY HEAD,
+/// collected as oids (best-effort: a detached/unborn HEAD => empty set =>
+/// nothing dimmed). O(HEAD's ancestors); a per-commit membership lookup is
+/// O(1). The `HashSet` owns the oids, so it outlives the repo opened for it.
+/// Shared by `stream_graph_core` (full load) and `head_ancestor_flags` (the
+/// incremental recompute after a checkout), so the two can never disagree.
+fn head_ancestor_set(path: &str) -> std::collections::HashSet<git2::Oid> {
+    crate::trust::open_repo(path)
+        .ok()
+        .and_then(|repo| {
+            let mut w = repo.revwalk().ok()?;
+            w.push_head().ok()?;
+            Some(w.flatten().collect())
+        })
+        .unwrap_or_default()
+}
+
+/// Recompute ONLY the per-row `ancestor` (dimming) bit for the currently-loaded
+/// graph, positionally, WITHOUT rebuilding it — the cheap half of a fast
+/// checkout refresh (see the frontend's `fastRefreshGraph`). Walks the same
+/// revwalk `stream_graph_core` does (same visibility, same `MAX_LIVE_COMMITS`
+/// cap, same one-row lag) but emits a bare `Vec<bool>` instead of `CommitMeta`
+/// + layout + gap segments — so `flags[i]` lines up with graph row `i` by
+/// construction. That alignment only holds while the reachable set is unchanged
+/// (which the frontend's Gate A/B have already established); `n` is returned so
+/// the frontend can defend against a set that changed under it (apply only if
+/// `n` still equals its loaded row count).
+pub fn head_ancestor_flags_core(
+    path: &str,
+    visible_local: Option<&[String]>,
+    visible_remote: Option<&[String]>,
+) -> AncestorFlags {
+    let head_ancestors = head_ancestor_set(path);
+    let mut flags: Vec<bool> = Vec::new();
+    // One-row lag mirrors `stream_graph_core` EXACTLY so the row count/order
+    // (and thus every index) matches: cap-check first (using rows-finalized-so-
+    // far, i.e. `flags.len()`, as its `total`), then flush the previous row,
+    // then stage this one; the trailing row is flushed after the walk.
+    let mut pending: Option<bool> = None;
+    let _ = walk_repo(path, visible_local, visible_remote, |raw, _refs| {
+        if flags.len() >= MAX_LIVE_COMMITS {
+            return false;
+        }
+        if let Some(pb) = pending.take() {
+            flags.push(pb);
+        }
+        pending = Some(head_ancestors.contains(&raw.id));
+        true
+    });
+    if let Some(pb) = pending.take() {
+        flags.push(pb);
+    }
+    AncestorFlags { n: flags.len(), flags }
+}
+
+/// A 64-bit signature over the repo's ENTIRE ref set (every local/remote/tag
+/// full refname + its target oid, plus HEAD's oid), order-independent. The
+/// frontend compares it to the last one: identical signature + unchanged HEAD
+/// means nothing ref-related moved, so a repo-changed event was a pure
+/// working-tree change (staging) and the graph needs no work at all.
+/// `DefaultHasher::new()` is seeded with fixed keys, so this is stable within
+/// and across processes (unlike `RandomState`).
+fn ref_signature(repo: &git2::Repository) -> String {
+    use std::hash::{Hash, Hasher};
+    // XOR-fold each ref's own hash so the result is independent of iteration
+    // order without having to collect + sort the whole ref list first.
+    let mut acc: u64 = 0;
+    if let Ok(refs) = repo.references() {
+        for r in refs.flatten() {
+            let target = match r.peel_to_commit() {
+                Ok(c) => c.id(),
+                Err(_) => continue,
+            };
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            r.name().unwrap_or("").hash(&mut h);
+            target.as_bytes().hash(&mut h);
+            acc ^= h.finish();
+        }
+    }
+    if let Some(head) = repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        "HEAD".hash(&mut h);
+        head.id().as_bytes().hash(&mut h);
+        acc ^= h.finish();
+    }
+    format!("{acc:016x}")
+}
+
+/// The testable core of [`graph_fast_refresh`] — takes the visible-branch
+/// filter explicitly instead of looking it up via an `AppHandle`, so it's
+/// callable from a plain integration test (mirrors `stream_graph_core` /
+/// `head_ancestor_flags_core`). Reads refs only; never walks the commit graph.
+pub fn graph_fast_refresh_core(
+    path: &str,
+    visible_local: Option<&[String]>,
+    visible_remote: Option<&[String]>,
+) -> Result<FastRefresh, String> {
+    let repo = crate::trust::open_repo(path).map_err(|e| e.message().to_string())?;
+
+    let head_oid = repo
+        .head()
+        .ok()
+        .and_then(|h| h.peel_to_commit().ok())
+        .map(|c| c.id().to_string());
+
+    let seed_tips = seed_tip_oids(&repo, visible_local, visible_remote)
+        .into_iter()
+        .map(|o| o.to_string())
+        .collect();
+
+    let ref_sig = ref_signature(&repo);
+
+    let mut chips = collect_refs(&repo);
+    filter_hidden_chips(&mut chips, visible_local, visible_remote);
+    let ref_chips: Vec<(String, Vec<crate::model::RefChip>)> = chips.into_iter().collect();
+
+    Ok(FastRefresh { head_oid, seed_tips, ref_sig, ref_chips })
+}
+
+/// JS: `commands.graphFastRefresh(path)`. The cheap snapshot the frontend's
+/// `reloadGraph` uses to decide whether a change can skip the full history
+/// re-walk — seed tips + HEAD (full oids, for collision-free "already loaded?"
+/// gates), a whole-ref-set signature, and the exact filtered ref chips.
+#[tauri::command]
+#[specta::specta]
+pub async fn graph_fast_refresh(app: AppHandle<Wry>, path: String) -> Result<FastRefresh, String> {
+    crate::blocking::run_blocking(move || {
+        let vb = crate::repo_registry::visible_branches_for(&app, &path).unwrap_or_default();
+        graph_fast_refresh_core(&path, vb.local.as_deref(), vb.remote.as_deref())
+    })
+    .await
+}
+
+/// JS: `commands.headAncestorFlags(path)`. Positional recompute of the graph's
+/// `ancestor` dimming bits after HEAD moved (checkout), without a full reload —
+/// see `head_ancestor_flags_core`. Honors the current visible-branch filter so
+/// its walk matches the loaded graph's.
+#[tauri::command]
+#[specta::specta]
+pub async fn head_ancestor_flags(app: AppHandle<Wry>, path: String) -> Result<AncestorFlags, String> {
+    crate::blocking::run_blocking(move || {
+        let vb = crate::repo_registry::visible_branches_for(&app, &path).unwrap_or_default();
+        Ok(head_ancestor_flags_core(&path, vb.local.as_deref(), vb.remote.as_deref()))
+    })
+    .await
 }
 
 /// Open `path`, walk its commits, lay out the swimlane graph, and return the

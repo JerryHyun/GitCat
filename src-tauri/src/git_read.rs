@@ -149,7 +149,7 @@ pub fn read_repo(
 /// either, filtered or not. This keeps a hidden branch's label from
 /// lingering on some ancestor commit that's still reachable via a visible
 /// branch/HEAD.
-fn filter_hidden_chips(
+pub(crate) fn filter_hidden_chips(
     refs: &mut HashMap<String, Vec<RefChip>>,
     visible_local: Option<&[String]>,
     visible_remote: Option<&[String]>,
@@ -170,7 +170,63 @@ fn filter_hidden_chips(
     }
 }
 
-fn collect_refs(repo: &Repository) -> HashMap<String, Vec<RefChip>> {
+/// Full oids of the exact refs [`walk_repo`] seeds its revwalk from — visible
+/// local branches (or every `refs/heads/*` when unfiltered) + visible remotes
+/// (or every `refs/remotes/*`), each peeled to its commit. NOT HEAD and NOT
+/// tags: HEAD is handled separately by the caller and tags never seed the walk.
+/// Mirrors [`walk_repo`]'s own `push_glob`/`push_ref` selection exactly, so the
+/// incremental-refresh gates compare against the same set the graph loads from.
+/// Stale/deleted branch names in a filter are silently skipped, same tolerance
+/// `push_ref` already has there.
+pub(crate) fn seed_tip_oids(
+    repo: &Repository,
+    visible_local: Option<&[String]>,
+    visible_remote: Option<&[String]>,
+) -> Vec<Oid> {
+    let mut out = Vec::new();
+    let push_named = |refname: &str, out: &mut Vec<Oid>| {
+        if let Ok(r) = repo.find_reference(refname) {
+            if let Ok(c) = r.peel_to_commit() {
+                out.push(c.id());
+            }
+        }
+    };
+    match visible_local {
+        None => {
+            if let Ok(globs) = repo.references_glob("refs/heads/*") {
+                for r in globs.flatten() {
+                    if let Ok(c) = r.peel_to_commit() {
+                        out.push(c.id());
+                    }
+                }
+            }
+        }
+        Some(names) => {
+            for name in names {
+                push_named(&format!("refs/heads/{name}"), &mut out);
+            }
+        }
+    }
+    match visible_remote {
+        None => {
+            if let Ok(globs) = repo.references_glob("refs/remotes/*") {
+                for r in globs.flatten() {
+                    if let Ok(c) = r.peel_to_commit() {
+                        out.push(c.id());
+                    }
+                }
+            }
+        }
+        Some(names) => {
+            for name in names {
+                push_named(&format!("refs/remotes/{name}"), &mut out);
+            }
+        }
+    }
+    out
+}
+
+pub(crate) fn collect_refs(repo: &Repository) -> HashMap<String, Vec<RefChip>> {
     let mut map: HashMap<String, Vec<RefChip>> = HashMap::new();
 
     // Which branch is HEAD on? -> that ref chip is styled "head".

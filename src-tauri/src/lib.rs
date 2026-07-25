@@ -51,6 +51,11 @@ use tauri_specta::{collect_commands, Builder};
 fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(collect_commands![
         commands::load_graph,
+        // Incremental graph refresh — the cheap snapshot + ancestor recompute
+        // that let `reloadGraph` skip a full history re-walk when the commit
+        // DAG is unchanged (checkout, branch/tag CRUD, staging).
+        commands::graph_fast_refresh,
+        commands::head_ancestor_flags,
         commands::commit_detail,
         commands::ancestors_of,
         commands::get_app_info,
