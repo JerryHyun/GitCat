@@ -1121,6 +1121,14 @@ button{font-family:inherit;font-size:inherit;color:inherit;cursor:pointer}
 .modal.dashboard .modal-body{max-height:65vh;overflow:auto}
 .modal.dashboard .modal-foot{justify-content:space-between}
 .db-add{margin-right:auto}
+/* In-app Help page (#helpScrim). */
+.modal.help{width:min(720px,92vw);max-height:82vh;display:flex;flex-direction:column}
+.help-body{overflow:auto;padding:2px 20px 10px}
+.help-body section{margin:15px 0}
+.help-body h4{margin:0 0 5px;font-size:13px;color:var(--accent);font-weight:700}
+.help-body p{margin:0;font-size:13px;line-height:1.6;color:var(--muted)}
+.help-body p b{color:var(--text);font-weight:600}
+.help-body kbd{font-family:var(--mono);font-size:11px;background:var(--elevated);border:1px solid var(--border);border-radius:4px;padding:0 5px;color:var(--text);white-space:nowrap}
 .db-list{display:flex;flex-direction:column;gap:2px}
 .db-item{display:flex;align-items:flex-start;gap:10px;padding:8px 6px;border-radius:6px}
 .db-item:hover{background:var(--elevated)}
@@ -1980,6 +1988,40 @@ button{font-family:inherit;font-size:inherit;color:inherit;cursor:pointer}
 
 </div>
 
+<!-- In-app Help page (⌘K ▸ Help). A self-contained how-to; shown/hidden from
+     legacy/main.ts's openHelpPage()/closeHelpPage(). -->
+<div class="scrim" id="helpScrim">
+  <div class="modal help" role="dialog" aria-modal="true" aria-label="GitCat help">
+    <div class="modal-head"><h3>GitCat — Help</h3></div>
+    <div class="modal-body help-body">
+      <section>
+        <h4>The graph</h4>
+        <p>Each row is one commit, newest at the top. The left <b>BRANCH / TAG</b> column shows the branch or tag that points at a commit; lane colours track branches. Your current commit (<b>HEAD</b>) has a bright ring and a bar down its left edge &#8212; that&#8217;s &#8220;you are here.&#8221; Commits already in your current branch are <b>dimmed</b>, so work you haven&#8217;t merged yet stands out.</p>
+      </section>
+      <section>
+        <h4>Navigate</h4>
+        <p>Scroll or drag to move; <kbd>&#8984;</kbd>+scroll (or <kbd>+</kbd>/<kbd>-</kbd>) to zoom. <kbd>&#8984;K</kbd> opens the command palette. <kbd>&#8984;F</kbd> searches commit content, <kbd>&#8984;&#8679;F</kbd> filters refs. <kbd>&#8984;&#8679;H</kbd> jumps to HEAD, <kbd>&#8984;&#8679;U</kbd> to Uncommitted changes. <kbd>&#8984;\</kbd> toggles focus mode. Press <kbd>?</kbd> for every shortcut.</p>
+      </section>
+      <section>
+        <h4>Commits</h4>
+        <p>Click a commit to see its files and diff on the right. <b>Drag</b> a commit onto another to cherry-pick it there &#8212; hold <kbd>&#8679;</kbd> while dragging to merge instead. <b>Right-click</b> a commit for cherry-pick / merge / revert / reset / create branch or tag / copy.</p>
+      </section>
+      <section>
+        <h4>Branches &amp; tags</h4>
+        <p><b>Right-click a branch label</b> in the graph for branch management (checkout, push, merge, rebase, reset, delete). <b>Right-click a remote</b> label (origin/&#8230;) to check it out as a local branch. Hover a label to see its full name. The left <b>sidebar</b> lists every branch and tag &#8212; click one to check it out; the checkboxes show or hide branches in the graph.</p>
+      </section>
+      <section>
+        <h4>Uncommitted changes</h4>
+        <p>The pinned top row. Stage or unstage whole files, single hunks, or single lines, then commit. You can point GitCat at your own command to generate the commit message (Tools &#9656; External Tools) &#8212; GitCat never talks to an AI itself; the command does.</p>
+      </section>
+      <section>
+        <h4>Snapshots (Safety Manager)</h4>
+        <p>GitCat quietly snapshots your repo before risky operations. The ribbon down the left lists recent snapshots &#8212; click one to preview it, so you can always find your way back.</p>
+      </section>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="helpCloseBtn">Close</button></div>
+  </div>
+</div>
 <!-- Tama's top-of-everything message toast — surfaces errors/results when a
      modal is covering her nook (see .top-toast CSS + main.ts's _topToast). -->
 <div class="top-toast" id="topToast" aria-hidden="true"></div>

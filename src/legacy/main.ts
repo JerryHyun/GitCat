@@ -1210,6 +1210,14 @@ function goToHead(){
   dirty=true;
   try{cv.focus()}catch(_){}
 }
+// In-app Help page (#helpScrim / index.html) — opened from ⌘K ▸ Help. Toggles the
+// scrim's `.on` class (same show/hide the other scrim modals use); closes on the
+// Close button, a click on the backdrop, or Escape.
+function openHelpPage(){ const s=$("#helpScrim"); if(s) s.classList.add("on"); }
+function closeHelpPage(){ const s=$("#helpScrim"); if(s) s.classList.remove("on"); }
+$("#helpCloseBtn")?.addEventListener("click",closeHelpPage);
+$("#helpScrim")?.addEventListener("pointerdown",e=>{ if(e.target===e.currentTarget) closeHelpPage(); });
+document.addEventListener("keydown",e=>{ if(e.key==="Escape"&&$("#helpScrim")?.classList.contains("on")) closeHelpPage(); });
 // Clicking empty canvas space (no commit dot under the pointer) while a
 // commit OR the pinned row is selected — brings back Tama's hero card
 // instead of leaving the detail panel stuck on the last selection forever.
@@ -2396,7 +2404,7 @@ const cmdHint=$(".cmd-hint"); if(cmdHint) cmdHint.addEventListener("click",()=>c
 
 function requestRedraw(){ dirty=true; }
 export { reloadGraph, cheer, highlight, Tama, TAMA_IMG, requestRedraw,
-  G, BACKEND, state, layout, view, cv, clampScroll, select, selectWorkdir, goToUncommitted, goToHead, toggleFocusMode, hhex, msgOf, AUTHORS,
+  G, BACKEND, state, layout, view, cv, clampScroll, select, selectWorkdir, goToUncommitted, goToHead, openHelpPage, toggleFocusMode, hhex, msgOf, AUTHORS,
   fakeAgo, relTime, absTime, pickRepo, closeRepo, armDanger, updateBranchPill,
   openRepo, doFetch, doPull, doPush, bandH, applyThemeMode, setGraphShowAllTags, setTamaEnabled, onGraphBatch,
   // submodule navigation (see the "12a) SUBMODULE NAVIGATION STACK" section

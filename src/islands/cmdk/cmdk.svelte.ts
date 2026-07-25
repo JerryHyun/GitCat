@@ -41,19 +41,6 @@ import { aboutCtrl } from "../about/about.svelte.ts";
 import { updaterCtrl } from "../updater/updater.svelte.ts";
 import { IN_TAURI } from "../../ipc/env";
 
-// The "Help" action's target — GitCat's hosted docs (see docs/.vitepress/config).
-// Opened in the user's real browser via the opener plugin in the app, or a new
-// tab in browser/design mode.
-const HELP_URL = "https://zangjiucheng.github.io/GitCat/";
-async function openHelpDocs() {
-  if (IN_TAURI) {
-    const { openUrl } = await import("@tauri-apps/plugin-opener");
-    await openUrl(HELP_URL);
-  } else {
-    window.open(HELP_URL, "_blank", "noopener");
-  }
-}
-
 export const CMD_CAP = 50;
 const CMD_BUF = 250;
 const REF_DEFAULT = 12;
@@ -122,8 +109,8 @@ const ACTIONS: ActionItem[] = [
     type: "action",
     id: "help",
     label: "Help",
-    hint: "Open the GitCat documentation in your browser",
-    run: () => void openHelpDocs(),
+    hint: "How to use GitCat — the graph, actions, and shortcuts",
+    run: () => bridge.openHelpPage(),
   },
   {
     type: "action",
