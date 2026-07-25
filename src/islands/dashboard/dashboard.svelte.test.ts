@@ -50,6 +50,7 @@ import { commands } from "../../ipc/bindings";
 import * as bridge from "../../legacy/bridge";
 import type { DashboardRepoStatus, TrackedRepo } from "../../ipc/bindings";
 import { dashboardCtrl, isWslPath } from "./dashboard.svelte.ts";
+import type { DashboardRow } from "./dashboard.svelte.ts";
 
 function ok<T>(data: T): { status: "ok"; data: T } {
   return { status: "ok", data };
@@ -91,6 +92,7 @@ function resetCtrl() {
   dashboardCtrl.error = "";
   dashboardCtrl.addBusy = false;
   dashboardCtrl.removingPath = null;
+  dashboardCtrl.query = "";
   mockInTauri = true;
   mockCurRepo = null;
   vi.clearAllMocks();
@@ -121,6 +123,62 @@ describe("show / close", () => {
     dashboardCtrl.open = true;
     dashboardCtrl.close();
     expect(dashboardCtrl.open).toBe(false);
+  });
+
+  it("show() resets a stale search query so the list opens unfiltered", async () => {
+    vi.mocked(commands.listTrackedRepos).mockResolvedValueOnce(ok([]));
+    dashboardCtrl.query = "old-search";
+    dashboardCtrl.show();
+    expect(dashboardCtrl.query).toBe("");
+    await tick();
+  });
+});
+
+describe("filteredRows — search box filter over name / path / branch", () => {
+  function row(path: string, branch: string): DashboardRow {
+    return { path, lastOpenedAt: null, loading: false, status: status({ branch }), error: null };
+  }
+
+  beforeEach(() => {
+    dashboardCtrl.rows = [
+      row("/home/me/projects/gitcat", "main"),
+      row("/home/me/work/api-server", "release/2.0"),
+      row("/mnt/data/notes", "draft"),
+    ];
+  });
+
+  it("returns every row when the query is empty or whitespace", () => {
+    dashboardCtrl.query = "";
+    expect(dashboardCtrl.filteredRows).toHaveLength(3);
+    dashboardCtrl.query = "   ";
+    expect(dashboardCtrl.filteredRows).toHaveLength(3);
+  });
+
+  it("matches on the repo folder name", () => {
+    dashboardCtrl.query = "gitcat";
+    expect(dashboardCtrl.filteredRows.map((r) => r.path)).toEqual(["/home/me/projects/gitcat"]);
+  });
+
+  it("matches on a path segment that isn't the folder name", () => {
+    dashboardCtrl.query = "work";
+    expect(dashboardCtrl.filteredRows.map((r) => r.path)).toEqual(["/home/me/work/api-server"]);
+  });
+
+  it("matches on the current branch", () => {
+    dashboardCtrl.query = "release";
+    expect(dashboardCtrl.filteredRows.map((r) => r.path)).toEqual(["/home/me/work/api-server"]);
+  });
+
+  it("is case-insensitive and requires ALL whitespace-separated tokens to match", () => {
+    dashboardCtrl.query = "ME Api";
+    expect(dashboardCtrl.filteredRows.map((r) => r.path)).toEqual(["/home/me/work/api-server"]);
+    dashboardCtrl.query = "gitcat release"; // no single row has both
+    expect(dashboardCtrl.filteredRows).toHaveLength(0);
+  });
+
+  it("returns an empty list when nothing matches", () => {
+    dashboardCtrl.query = "zzz-nope";
+    expect(dashboardCtrl.filteredRows).toHaveLength(0);
   });
 });
 

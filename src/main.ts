@@ -384,7 +384,12 @@ if (IN_TAURI) {
   w.__TAURI__?.event.listen("menu-action", (e: { payload: string }) => {
     switch (e.payload) {
       case "open-repo":
-        bridge.pickRepo();
+        // Open the repositories dashboard (⌘O) — the app's single "open a
+        // repository" entry point (recent/tracked list with search, plus its
+        // own "+ Add repository…" native picker), matching the empty-hero
+        // "Open a repository…" button and the topbar repo-name pick. Was a bare
+        // native folder dialog (bridge.pickRepo), which bypassed the modal.
+        dashboardCtrl.show();
         break;
       case "close-repo":
         bridge.closeRepo();

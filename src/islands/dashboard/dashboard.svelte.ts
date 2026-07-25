@@ -144,6 +144,21 @@ class DashboardState {
   error = $state(""); // list-level failure (couldn't even read the registry)
   addBusy = $state(false); // native folder dialog / addTrackedRepo in flight
   removingPath = $state<string | null>(null); // which row's removeTrackedRepo is in flight
+  query = $state(""); // live filter over the tracked list (name / path / branch)
+
+  // Tracked rows narrowed by `query` — all whitespace-separated tokens must
+  // match (case-insensitive) somewhere in the repo's folder name, full path, or
+  // current branch. Empty query returns everything. Used by the modal's search
+  // box (type to narrow, Enter opens the top hit).
+  get filteredRows(): DashboardRow[] {
+    const q = this.query.trim().toLowerCase();
+    if (!q) return this.rows;
+    const toks = q.split(/\s+/).filter(Boolean);
+    return this.rows.filter((r) => {
+      const hay = (repoBasename(r.path) + " " + r.path + " " + (r.status?.branch ?? "")).toLowerCase();
+      return toks.every((t) => hay.includes(t));
+    });
+  }
 
   // Entry point (Tools menu / ⌘K, and the empty-hero card's own button — see
   // Detail.svelte). Forces a full re-fetch of every row's status, not just
@@ -154,6 +169,7 @@ class DashboardState {
   // session once fetched here once. `show()` is the one call site that must
   // never trust ANY existing status as current.
   show(): void {
+    this.query = ""; // always open on a fresh, unfiltered list
     this.open = true;
     void this.refresh(true);
   }

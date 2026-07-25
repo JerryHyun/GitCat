@@ -690,7 +690,11 @@ button{font-family:inherit;font-size:inherit;color:inherit;cursor:pointer}
    and showing a chevron — a discoverable, always-visible "click here to
    bring it back" affordance instead of the panel just vanishing with no
    way to reopen it short of blindly dragging the same 6px sliver again. */
-.sidebar.collapsed>*:not(.resize-handle),.detail.collapsed>*:not(.resize-handle){display:none}
+/* Exempt .scrim: a modal overlay (e.g. the Detail island's expanded-diff popup)
+   is a full-screen position:fixed child of the panel — collapsing the panel via
+   Focus mode (⌘\) must not display:none it, or the modal never appears. It hides
+   itself via its own visibility:hidden when not .on, so this is safe when closed. */
+.sidebar.collapsed>*:not(.resize-handle):not(.scrim),.detail.collapsed>*:not(.resize-handle):not(.scrim){display:none}
 .sidebar.collapsed .resize-handle,.detail.collapsed .resize-handle{
   left:0;right:0;width:auto;cursor:pointer;background:var(--elevated);
   display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px}
@@ -1129,6 +1133,9 @@ button{font-family:inherit;font-size:inherit;color:inherit;cursor:pointer}
 .help-body p{margin:0;font-size:13px;line-height:1.6;color:var(--muted)}
 .help-body p b{color:var(--text);font-weight:600}
 .help-body kbd{font-family:var(--mono);font-size:11px;background:var(--elevated);border:1px solid var(--border);border-radius:4px;padding:0 5px;color:var(--text);white-space:nowrap}
+.db-search{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--r-control);
+  color:var(--text);font:inherit;font-size:12px;padding:7px 9px;outline:none;margin-bottom:8px}
+.db-search:focus{border-color:var(--accent)}
 .db-list{display:flex;flex-direction:column;gap:2px}
 .db-item{display:flex;align-items:flex-start;gap:10px;padding:8px 6px;border-radius:6px}
 .db-item:hover{background:var(--elevated)}

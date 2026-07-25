@@ -2,8 +2,36 @@
   import { dashboardCtrl, repoBasename, isWslPath } from "./dashboard.svelte.ts";
   import * as bridge from "../../legacy/bridge";
 
+  // The search box, focused once per open (see the effect) so typing narrows
+  // the list immediately — reset to undefined between opens by Svelte itself.
+  let searchEl: HTMLInputElement | undefined = $state();
+  let focusedForOpen = false;
+  $effect(() => {
+    if (!dashboardCtrl.open) {
+      focusedForOpen = false;
+      return;
+    }
+    // The input only exists once rows have loaded (search is hidden while
+    // loading/empty), so this runs when searchEl first mounts, not at open.
+    if (!focusedForOpen && searchEl) {
+      focusedForOpen = true;
+      const el = searchEl;
+      requestAnimationFrame(() => el.focus());
+    }
+  });
+
   function onKeydown(e: KeyboardEvent) {
     if (e.key === "Escape" && dashboardCtrl.open) dashboardCtrl.close();
+  }
+
+  // Enter in the search box opens the top hit — "type a few letters, hit Enter".
+  function onSearchKey(e: KeyboardEvent) {
+    if (e.key !== "Enter") return;
+    const first = dashboardCtrl.filteredRows[0];
+    if (first && !first.error) {
+      e.preventDefault();
+      dashboardCtrl.openRepository(first.path);
+    }
   }
 </script>
 
@@ -25,8 +53,22 @@
       {:else if dashboardCtrl.rows.length === 0}
         <div class="log-row"><span class="msg mut">Nothing tracked yet &#8212; open a repository, or add one below.</span></div>
       {:else}
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          class="db-search mono"
+          type="text"
+          placeholder="Search repositories&#8230; (name, path, or branch)"
+          bind:value={dashboardCtrl.query}
+          bind:this={searchEl}
+          onkeydown={onSearchKey}
+          spellcheck="false"
+          autocomplete="off"
+        />
+        {#if dashboardCtrl.filteredRows.length === 0}
+          <div class="log-row"><span class="msg mut">No repositories match &#8220;{dashboardCtrl.query}&#8221;.</span></div>
+        {:else}
         <div class="db-list">
-          {#each dashboardCtrl.rows as r (r.path)}
+          {#each dashboardCtrl.filteredRows as r (r.path)}
             <div class="db-item" class:broken={!!r.error}>
               <div class="db-main">
                 <div class="db-name-row">
@@ -76,6 +118,7 @@
             </div>
           {/each}
         </div>
+        {/if}
       {/if}
     </div>
     <div class="modal-foot">
