@@ -818,13 +818,19 @@ cv.addEventListener("contextmenu",(e)=>{
   if(!hit||hit.row<0) return;
   const row=hit.row;
   select(row);
-  const sha=(BACKEND&&BACKEND.rows[row])?BACKEND.rows[row].sha:hhex(row);
-  // Local branches on this row (kind "branch" — NOT the current HEAD, which is
-  // kind "head", nor tags/remotes) → offered as "Switch to …" checkout actions.
-  const rowRefs=(G&&G.allRefs&&G.allRefs[row])||(G&&G.refs&&G.refs[row]?[G.refs[row]]:[]);
-  const branches=rowRefs.filter(r=>r&&r.kind==="branch").map(r=>r.label);
   showLabelTip(null);
-  commitMenuCtrl.openAt(CUR_REPO, sha, msgOf(row), !!(G&&G.isMerge&&G.isMerge[row]), e.clientX, e.clientY, branches);
+  // Right-click a LOCAL BRANCH label in the left gutter → the sidebar's full
+  // branch-management menu (checkout / push / merge / rebase / reset / delete) at
+  // the cursor, reusing it verbatim. Anywhere else on the row (the commit dot or
+  // message) → the commit menu below, unchanged. kind "head" = the current branch
+  // (isCurrent); "branch" = another local branch; tags/remotes fall through.
+  const rowRefs=(G&&G.allRefs&&G.allRefs[row])||(G&&G.refs&&G.refs[row]?[G.refs[row]]:[]);
+  if(layout.branchColW>0 && p.x<layout.branchColW){
+    const br=rowRefs.find(r=>r&&(r.kind==="branch"||r.kind==="head"));
+    if(br){ sidebarCtrl.openMenuAt(br.label, br.kind==="head", null, e.clientX, e.clientY); return; }
+  }
+  const sha=(BACKEND&&BACKEND.rows[row])?BACKEND.rows[row].sha:hhex(row);
+  commitMenuCtrl.openAt(CUR_REPO, sha, msgOf(row), !!(G&&G.isMerge&&G.isMerge[row]), e.clientX, e.clientY);
 });
 cv.addEventListener("keydown",(e)=>{
   const rowH=layout.rowH;

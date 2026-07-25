@@ -645,6 +645,7 @@
     {#if menu.upstream}
       <button class="danger" onclick={() => { const name = menu.name; const upstream = menu.upstream as string; sidebarCtrl.closeMenu(); sidebarCtrl.resetToUpstream(name, upstream); }}>Reset to {menu.upstream}&#8230;</button>
     {/if}
+    <button onclick={() => { const name = menu.name; sidebarCtrl.closeMenu(); sidebarCtrl.copyBranchName(name); }}>Copy name</button>
     <button class="danger" disabled={menu.isCurrent} onclick={() => { const name = menu.name; sidebarCtrl.closeMenu(); sidebarCtrl.deleteBranch(name); }}>Delete&#8230;</button>
   </div>
 {/if}

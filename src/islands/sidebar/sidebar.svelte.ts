@@ -1655,14 +1655,21 @@ class SidebarState {
   }
 
   openMenu(name: string, isCurrent: boolean, anchor: HTMLElement, upstream: string | null = null) {
+    const r = anchor.getBoundingClientRect();
+    this.openMenuAt(name, isCurrent, upstream, Math.min(r.left, window.innerWidth - 168), r.bottom + 4);
+  }
+  // Coordinate-based entry point — same menu but positioned at (x,y) instead of
+  // under an anchor element. Lets the graph's right-click-a-branch-label open
+  // this exact branch-management popover at the cursor (see legacy/main.ts's
+  // canvas "contextmenu"), reusing every action rather than a parallel menu.
+  openMenuAt(name: string, isCurrent: boolean, upstream: string | null, x: number, y: number) {
     this.tagMenu = null; // only one popover open at a time
     this.submoduleMenu = null;
     this.mergeMenu = null;
     this.dirtyCheckoutMenu = null;
     this.checkoutConfirm = null;
     this.pushMenu = null;
-    const r = anchor.getBoundingClientRect();
-    this.menu = { name, isCurrent, upstream, x: Math.min(r.left, window.innerWidth - 168), y: r.bottom + 4 };
+    this.menu = { name, isCurrent, upstream, x: Math.min(x, window.innerWidth - 168), y };
   }
 
   closeMenu() {
