@@ -86,6 +86,13 @@ const ACTIONS: ActionItem[] = [
   },
   {
     type: "action",
+    id: "goto-head",
+    label: "Jump to HEAD",
+    hint: "Scroll to and select the current commit (current branch tip) (⌘⇧H)",
+    run: () => bridge.goToHead(),
+  },
+  {
+    type: "action",
     id: "focus-mode",
     label: "Toggle Focus Mode",
     hint: "Collapse both side panels for a full-width graph (⌘\\)",

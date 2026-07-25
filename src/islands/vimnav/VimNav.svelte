@@ -37,6 +37,7 @@
           <h4 class="d-lab" style="margin-top:14px">View &amp; panels</h4>
           <div class="pl-kv">
             <div><span class="mono">⌘⇧U</span> &#8212; jump to Uncommitted changes</div>
+            <div><span class="mono">⌘⇧H</span> &#8212; jump to the current commit (HEAD)</div>
             <div><span class="mono">⌘\</span> &#8212; focus mode (collapse both side panels)</div>
             <div><span class="mono">⌘</span>+scroll, or <span class="mono">+</span> / <span class="mono">-</span> &#8212; zoom the graph</div>
           </div>

@@ -1193,6 +1193,23 @@ function selectWorkdir(){ state.selectedRow=-2; workdirCtrl.select(CUR_REPO); di
 // leaving the rest of the canvas showing unrelated old commits. cv.focus() is
 // best-effort, same convention as cmdk's own jump().
 function goToUncommitted(){ selectWorkdir(); state.scrollTarget=0; try{cv.focus()}catch(_){} }
+// Jump to the current commit (HEAD = the current branch's tip). Finds HEAD's row
+// across ALL loaded rows (the "head"-kind ref), selects it, and centres it in the
+// scrollable viewport (same recipe reloadGraph's own reselect uses). No-op if
+// HEAD isn't among the loaded commits (detached/off-screen-only-in-history).
+function goToHead(){
+  if(!G||!G.N) return;
+  let hr=-1;
+  for(let r=0;r<G.N;r++){
+    const l=(G.allRefs&&G.allRefs[r])||(G.refs&&G.refs[r]?[G.refs[r]]:[]);
+    if(l.some&&l.some(x=>x&&x.kind==="head")){ hr=r; break; }
+  }
+  if(hr<0){ Tama.warn("Couldn't locate HEAD in the loaded graph."); return; }
+  select(hr);
+  state.scrollTarget=clampScroll(hr*layout.rowH-(view.cssH-bandH())/2);
+  dirty=true;
+  try{cv.focus()}catch(_){}
+}
 // Clicking empty canvas space (no commit dot under the pointer) while a
 // commit OR the pinned row is selected — brings back Tama's hero card
 // instead of leaving the detail panel stuck on the last selection forever.
@@ -1368,6 +1385,14 @@ document.addEventListener("keydown",e=>{
     e.preventDefault(); goToUncommitted();
   }
 });
+// ⌘⇧H / Ctrl+Shift+H — jump to the current commit (HEAD), centring it. Also the
+// #gotoHeadBtn topbar button. Ignored while typing in a field.
+document.addEventListener("keydown",e=>{
+  if((e.metaKey||e.ctrlKey)&&!e.altKey&&e.shiftKey&&e.key.toLowerCase()==="h"&&!e.target.closest("input,textarea,[contenteditable=true]")){
+    e.preventDefault(); goToHead();
+  }
+});
+$("#gotoHeadBtn")?.addEventListener("click",goToHead);
 // Remote sync: ⌘⇧D fetch (Download), ⌘⇧L pull, ⌘⇧P push — the topbar buttons'
 // keyboard twins. Each op guards on CUR_REPO / busy itself, so these just
 // invoke it. Ignored while typing in a field.
@@ -2371,7 +2396,7 @@ const cmdHint=$(".cmd-hint"); if(cmdHint) cmdHint.addEventListener("click",()=>c
 
 function requestRedraw(){ dirty=true; }
 export { reloadGraph, cheer, highlight, Tama, TAMA_IMG, requestRedraw,
-  G, BACKEND, state, layout, view, cv, clampScroll, select, selectWorkdir, goToUncommitted, toggleFocusMode, hhex, msgOf, AUTHORS,
+  G, BACKEND, state, layout, view, cv, clampScroll, select, selectWorkdir, goToUncommitted, goToHead, toggleFocusMode, hhex, msgOf, AUTHORS,
   fakeAgo, relTime, absTime, pickRepo, closeRepo, armDanger, updateBranchPill,
   openRepo, doFetch, doPull, doPush, bandH, applyThemeMode, setGraphShowAllTags, setTamaEnabled, onGraphBatch,
   // submodule navigation (see the "12a) SUBMODULE NAVIGATION STACK" section

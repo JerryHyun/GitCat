@@ -47,6 +47,7 @@ export {
   // a scroll reset, so a user deep in history lands somewhere oriented.
   // Hoisted `function`, so no TDZ risk (same reasoning as select/openRepo above).
   goToUncommitted,
+  goToHead,
   // Focus mode — collapse/restore both side panels (⌘\); a hoisted function too.
   toggleFocusMode,
   // design-mode (plain-browser) synthetic data helpers, shared by generateGraph
