@@ -42,10 +42,14 @@ const TAMA_IMG={hero:"data:image/webp;base64,UklGRnSoAABXRUJQVlA4WAoAAAAQAAAAywE
 const NCOL=7;
 const LANE_COLORS=new Array(NCOL).fill("#888");
 let theme={bg:"#14100A",panel:"#221B12",elevated:"#31281A",border:"#4C3E2A",text:"#FBF3E2",muted:"#BBAB8E",accent:"#F5B843",accent2:"#88CFBA",warning:"#F2923E",success:"#A6D66C",danger:"#F2715B"};
+// Bumped on every theme read so the scroll-blit buffer key (see tick()) forces a
+// full re-render before blitting pixels rendered in the OLD theme's colours.
+let themeEpoch=0;
 function readTheme(){
   const cs=getComputedStyle(document.documentElement), v=n=>cs.getPropertyValue(n).trim();
   ["bg","panel","elevated","border","text","muted","accent","accent2","warning","success","danger"].forEach(k=>{const c=v("--"+k);if(c)theme[k]=c;});
   for(let i=0;i<NCOL;i++){const c=v("--l"+i);if(c)LANE_COLORS[i]=c;}
+  themeEpoch++;
   if(typeof dirty!=="undefined")dirty=true;
 }
 const PADX=18, ROW_H_BASE=26, LANE_W_BASE=14, DOT_R_BASE=4.6;
@@ -207,7 +211,18 @@ function generateGraph(N){
 /* ============================================================
    3) RENDER STATE
    ============================================================ */
-const cv=$("#cv"), ctx=cv.getContext("2d"), wrap=$("#canvasWrap");
+const cv=$("#cv"), wrap=$("#canvasWrap");
+const vctx=cv.getContext("2d");   // the VISIBLE canvas's context (final composite + overlays)
+// Offscreen content buffer for scroll-blit (see tick()/blitScroll()): the
+// scrollable graph is rendered into `oc`, then present() copies it to `cv`.
+// A pure vertical scroll copies the already-rendered pixels shifted by the
+// delta and re-renders only the newly-exposed strip — keeping full detail
+// (readable text) while scrolling, which a full per-frame re-render (~70ms on
+// the software-rasterised dev webview) can't. `ctx` is a LET that renderContent()
+// temporarily points at octx so all the existing per-row drawing paints
+// offscreen unchanged; present()/overlays leave it at the visible vctx.
+const oc=document.createElement("canvas"), octx=oc.getContext("2d");
+let ctx=vctx;
 const layout={zoom:1,rowH:ROW_H_BASE,laneW:LANE_W_BASE,dotR:DOT_R_BASE,chipFont:"11px "+FONT_UI,contentH:0,branchColW:0};
 // panX/panTarget/maxPanX: HORIZONTAL counterpart to scrollTop/scrollTarget/
 // maxScroll above — a repo with an extremely wide stretch of history (many
@@ -229,7 +244,15 @@ const REDUCE_MOTION=matchMedia("(prefers-reduced-motion:reduce)").matches;
 const view={cssW:0,cssH:0,dpr:1,renderDpr:1};
 const perf={last:performance.now(),frames:0,accum:0,fps:0,lastDrawMs:0};
 let dirty=true, lastInteracting=false, lowRes=false, fastScroll=false, pendingClear=false;
-let prevScrollTop=0, prevPanX=0;   // last frame's scroll/pan, to detect real motion (see tick's lowRes gate)
+let prevScrollTop=0, prevPanX=0, prevZoom=1;   // last frame's scroll/pan/zoom, to detect real motion (see tick's lowRes gate)
+// Scroll-blit state (see the `oc` offscreen buffer above and tick()/blitScroll()).
+// canvasSt = the scrollTop the buffer currently holds (state.scrollTop runs a
+// sub-pixel ahead via the lerp). bufferValid/bufferG/bufferKey capture EVERYTHING
+// but vertical scroll, so any other change (data, selection, hover, pan, zoom,
+// theme, resize, showAllTags, bisect/drag) forces a full re-render before the
+// next blit. blitFrames/totalFrames drive the HUD's blit-hit ratio.
+let canvasSt=0, bufferValid=false, bufferG=null, bufferKey="";
+let blitFrames=0, totalDrawFrames=0;
 const edgePaths=new Array(NCOL);
 // Per-lane-colour Path2Ds for the branch-colour tags (whole-row wash + left
 // bar). Batching every visible row of the same colour into one path lets the
@@ -289,11 +312,16 @@ function recomputeLayout(){
   state.panTarget=clampPan(state.panTarget); state.panX=clampPan(state.panX);
   dirty=true;
 }
+// Keep the offscreen content buffer the same device size as the visible canvas
+// (present() blits oc→cv 1:1, so a size mismatch would mis-scale), and invalidate
+// the scroll-blit buffer — resizing clears the canvas, so the next frame must be
+// a full re-render. Called wherever cv.width/height changes (resize/setRenderDpr).
+function syncOffscreen(){ if(oc.width!==cv.width||oc.height!==cv.height){ oc.width=cv.width; oc.height=cv.height; } bufferValid=false; }
 function resize(){
   const r=wrap.getBoundingClientRect(); view.cssW=r.width; view.cssH=r.height; view.dpr=window.devicePixelRatio||1;
   view.renderDpr=view.dpr;
   cv.width=Math.round(view.cssW*view.renderDpr); cv.height=Math.round(view.cssH*view.renderDpr);
-  ctx.setTransform(view.renderDpr,0,0,view.renderDpr,0,0); recomputeLayout(); positionTicks();
+  ctx.setTransform(view.renderDpr,0,0,view.renderDpr,0,0); syncOffscreen(); recomputeLayout(); positionTicks();
 }
 // Software-raster fast path (see tick()): while actively scrolling/panning, drop
 // the canvas backing store to a fraction of its full pixel count so a webview
@@ -309,29 +337,36 @@ const INTERACT_RES=0.5, MOTION_CLEAR_ALPHA=0.5;
 function setRenderDpr(d){ if(Math.abs(d-view.renderDpr)<0.01) return;
   view.renderDpr=d;
   cv.width=Math.round(view.cssW*d); cv.height=Math.round(view.cssH*d);
+  syncOffscreen();
   dirty=true; pendingClear=true; }   // first frame post-resize clears opaque (resized canvas is transparent)
 
 /* ============================================================
    4) DRAW — virtualised pass. Offscreen rows are never touched.
    ============================================================ */
-function draw(){
-  const t0=performance.now();
-  const {rowH,dotR}=layout, st=state.scrollTop, W=view.cssW, H=view.cssH, N=G.N, bh=bandH(), bcw=layout.branchColW;
+// Render the SCROLLABLE graph content into the offscreen buffer `oc`. NOT the
+// pinned header or the scrollbars — those are per-frame overlays (present()).
+// `ctx` is swapped to octx for the duration (restored in finally) so all the
+// existing per-row drawing + drawChip paint offscreen with no other changes.
+// Only rows [rowLo,rowHi] are drawn — that (not the clip) is what bounds cost on
+// the software-rasterised canvas. `strip` (a scroll-blit re-render of just the
+// exposed band; caller has set an octx clip): opaque-clear + pin tx to lastTx.
+// FULL (strip=false): honour the lowRes motion-blur clear and recompute tx.
+function renderContent(st, rowLo, rowHi, strip){
+  const {rowH,dotR}=layout, W=view.cssW, H=view.cssH, N=G.N, bh=bandH(), bcw=layout.branchColW;
+  ctx=octx;
+  try{
   ctx.setTransform(view.renderDpr,0,0,view.renderDpr,0,0);
-  // Motion-blur trail while scrolling low-res: clear with a SEMI-transparent bg
-  // instead of an opaque one, so each frame leaves a fading ghost of the previous
-  // one. The rows scroll vertically, so the ghosts trail vertically — reading as
-  // directional motion blur, which masks the low-res upscaling so it looks
-  // intentional rather than just "blurry". An opaque clear resumes at full res,
-  // wiping the trail the instant scrolling settles. (The pinned header band and
-  // the opaque edges/dots/text redraw over their own pixels each frame, so only
-  // the moving content smears.)
-  if(lowRes&&!pendingClear){ ctx.globalAlpha=MOTION_CLEAR_ALPHA; ctx.fillStyle=theme.bg; ctx.fillRect(0,0,W,H); ctx.globalAlpha=1; }
+  // Motion-blur trail while scrolling low-res (pan/zoom only now): clear with a
+  // SEMI-transparent bg so each frame leaves a fading ghost, reading as
+  // directional motion blur that masks the low-res upscaling. An opaque clear
+  // resumes at full res. A strip re-render always clears opaque (within the
+  // caller's clip) so it exactly replaces the exposed band.
+  if(strip){ ctx.fillStyle=theme.bg; ctx.fillRect(0,0,W,H); }
+  else if(lowRes&&!pendingClear){ ctx.globalAlpha=MOTION_CLEAR_ALPHA; ctx.fillStyle=theme.bg; ctx.fillRect(0,0,W,H); ctx.globalAlpha=1; }
   else { ctx.fillStyle=theme.bg; ctx.fillRect(0,0,W,H); }
   pendingClear=false;
-  if(N===0){ if(workdirAvailable()) drawWorkdirBand(); perf.lastDrawMs=performance.now()-t0; return; }
-  const first=Math.max(0,Math.min(N-1,Math.floor(st/rowH)));
-  const last=Math.max(0,Math.min(N-1,Math.floor((st+H)/rowH)));
+  if(N===0){ return; }
+  const first=rowLo, last=rowHi;
 
   const B=bisectDrawerCtrl.active();
   // Active cherry-pick/merge drag: legalPick/legalMerge already run per-hover
@@ -352,9 +387,13 @@ function draw(){
   // squashing every row's subject/sha text against the graph.
   const gStart=Math.max(0,first-1), gEnd=Math.min(N-2,last);
   let maxLane=0;
+  // A strip re-render pins tx to lastTx (see below) so it never rescans, keeping
+  // the exposed strip's column geometry byte-identical to the blitted content.
+  if(!strip){
   for(let g=gStart;g<=gEnd;g++){ const s=G.gapStart[g], e=G.gapStart[g+1];
     for(let k=s;k<e;k++){ if(G.gapTop[k]>maxLane) maxLane=G.gapTop[k]; if(G.gapBot[k]>maxLane) maxLane=G.gapBot[k]; } }
   for(let r=first;r<=last;r++) if(G.commitLane[r]>maxLane) maxLane=G.commitLane[r];
+  }
   // ADVERSARIALLY-FOUND FIX: an extremely wide stretch of history (many
   // simultaneously open branch lanes — hundreds is plausible for a large
   // real project's full history) used to push tx arbitrarily far right with
@@ -373,10 +412,10 @@ function draw(){
   // into the message and there's no need to clip; panning still reaches lanes
   // wider than the column. lastTx is cached for the divider-drag hit test.
   const contentTx=Math.min(laneX(maxLane)+dotR+14,W-AUTHOR_GUTTER-MIN_SUBJECT_W);
-  const tx=(bcw>0&&colW.graph!=null)
+  const tx=strip?lastTx:((bcw>0&&colW.graph!=null)
     ? Math.min(Math.max(contentTx,bcw+Math.round(colW.graph)),W-AUTHOR_GUTTER-MIN_SUBJECT_W)
-    : contentTx;
-  lastTx=tx;
+    : contentTx);
+  if(!strip) lastTx=tx;
 
   // Recessed graph channel: the lanes sit in their own slightly darker trough,
   // the GRAPH area only [bcw,tx). The branch column to its left [0,bcw) is a label
@@ -529,10 +568,90 @@ function draw(){
     }
     if(ap){ ctx.fillStyle=theme.bg; ctx.globalAlpha=ANCESTOR_DIM_ALPHA; ctx.fill(ap); ctx.globalAlpha=1; }
   }
-  drawWorkdirBand();
+  } finally { ctx=vctx; }   // always restore the visible context, even if a draw throws
+}
+// Composite the offscreen content buffer onto the visible canvas, then draw the
+// per-frame OVERLAYS that are never part of the blittable buffer: the pinned
+// header band (fixed at the top, drawn over the scrolled-under content), the
+// active drag ghost, and both scrollbars (translucent, thumbs at the live
+// scroll/pan position). Runs under identity for the 1:1 blit, then the renderDpr
+// transform for the CSS-px overlays.
+function present(){
+  ctx=vctx;
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.drawImage(oc,0,0);
+  ctx.setTransform(view.renderDpr,0,0,view.renderDpr,0,0);
+  if(workdirAvailable()) drawWorkdirBand();
   if(state.drag) drawDragGhost();
-  drawScrollbar(st,H,W);
-  drawHScrollbar(H,W);
+  drawScrollbar(state.scrollTop,view.cssH,view.cssW);
+  drawHScrollbar(view.cssH,view.cssW);
+}
+// The visible window's row range for a given scroll offset.
+function computeVisibleRange(st){
+  const rowH=layout.rowH, H=view.cssH, N=G.N;
+  if(N===0) return [0,-1];
+  return [Math.max(0,Math.min(N-1,Math.floor(st/rowH))), Math.max(0,Math.min(N-1,Math.floor((st+H)/rowH)))];
+}
+// FULL frame: render the whole visible window into the buffer, composite, and
+// snapshot the buffer identity so the next frame's tick() can tell whether a
+// cheap scroll-blit is safe. The single entry point every non-scroll redraw
+// (data change, selection, theme, resize, …) still calls as `draw()`.
+function draw(){
+  const t0=performance.now();
+  const [first,last]=computeVisibleRange(state.scrollTop);
+  renderContent(state.scrollTop, first, last, false);
+  canvasSt=state.scrollTop; bufferValid=true; bufferG=G; bufferKey=bufferKeyNow();
+  present();
+  perf.lastDrawMs=performance.now()-t0;
+}
+// Everything-but-vertical-scroll, as a comparable key. If any of this differs
+// from what the buffer was rendered with, a blit would show stale pixels, so
+// tick() forces a FULL. `bufferG` (G's object identity, reassigned on every data
+// change) is compared separately in tick().
+function bufferKeyNow(){
+  return view.renderDpr+"|"+Math.round(state.panX*100)+"|"+layout.zoom+"|"+cv.width+"|"+cv.height+"|"+bandH()+"|"+colW.graph+"|"+colW.branch+"|"+(showAllTags?1:0)+"|"+themeEpoch+"|"+(bisectDrawerCtrl.active()?1:0)+"|"+bisectDrawerCtrl.cur+"|"+(state.drag?1:0)+"|"+state.selectedRow+"|"+state.hoverRow;
+}
+// True when the row-highlight fades have reached their targets — a blit copies
+// baked pixels, so a mid-animation alpha (fading a selection/hover tint in/out)
+// must fall to FULL until it settles.
+function alphaSettled(){
+  const selTarget=state.selectedRow>=0?0.20:0, hovTarget=(state.hoverRow>=0&&state.hoverRow!==state.selectedRow)?0.08:0;
+  return Math.abs(selTarget-state.selectAlpha)<=0.003 && Math.abs(hovTarget-state.hoverAlpha)<=0.003;
+}
+// BLIT frame: the ONLY change since the buffer was rendered is a vertical scroll.
+// Copy the buffer shifted by the (integer device-px) delta and re-render just the
+// newly-exposed strip — full resolution, text intact. `canvasSt` tracks the exact
+// scroll the buffer holds; the sub-device-px residual never accumulates (rounded
+// each frame) and the settle FULL draw snaps it exact.
+function blitScroll(){
+  const t0=performance.now();
+  const W=view.cssW, H=view.cssH, dpr=view.renderDpr, Wdev=cv.width, Hdev=cv.height, rowH=layout.rowH, bh=bandH(), N=G.N;
+  const dyDev=Math.round((state.scrollTop-canvasSt)*dpr);
+  if(dyDev===0){ present(); perf.lastDrawMs=performance.now()-t0; return; }
+  if(Math.abs(dyDev)>=Hdev){ draw(); return; }   // jump larger than the viewport → cheaper to full-render
+  // Shift the buffer vertically by dyDev device px (identity transform).
+  octx.setTransform(1,0,0,1,0,0);
+  if(dyDev>0){ octx.drawImage(oc, 0,dyDev,Wdev,Hdev-dyDev, 0,0,Wdev,Hdev-dyDev); }        // scrolled down: content up, expose bottom
+  else { const d=-dyDev; octx.drawImage(oc, 0,0,Wdev,Hdev-d, 0,d,Wdev,Hdev-d); }          // scrolled up: content down, expose top
+  canvasSt += dyDev/dpr;
+  // Exposed band (CSS px), padded on the interior by a margin so bezier edges,
+  // selection/HEAD rings and the HEAD glow (shadowBlur) from the adjacent row
+  // aren't clipped at the seam.
+  const margin=rowH+layout.dotR+8;
+  let y0,y1;
+  if(dyDev>0){ y1=H; y0=H-dyDev/dpr-margin; } else { y0=bh; y1=bh+(-dyDev)/dpr+margin; }
+  const cY0dev=Math.max(0,Math.floor(y0*dpr)), cY1dev=Math.min(Hdev,Math.ceil(y1*dpr));
+  // ±1 row so a dot/ring/glow from the row just outside the clip still paints
+  // into the seam (renderContent draws edges from rLo-1 already; this covers the
+  // dots/markers those rows own too).
+  const rLo=Math.max(0,Math.min(N-1,Math.floor((canvasSt+cY0dev/dpr-bh)/rowH))-1);
+  const rHi=Math.max(0,Math.min(N-1,Math.floor((canvasSt+cY1dev/dpr-bh)/rowH)+1));
+  octx.save();
+  octx.setTransform(1,0,0,1,0,0);
+  octx.beginPath(); octx.rect(0,cY0dev,Wdev,cY1dev-cY0dev); octx.clip();
+  renderContent(canvasSt, rLo, rHi, true);
+  octx.restore();
+  present();
   perf.lastDrawMs=performance.now()-t0;
 }
 // The pinned "Uncommitted changes" row — a genuine fixed HEADER (bandH()
@@ -1701,9 +1820,9 @@ function pulseTick(i){const ticks=$$(".tick");const t=ticks[i]||ticks[0];if(t){t
 function tick(now){
   const dt=now-perf.last; perf.last=now;
   if(Math.abs(state.scrollTarget-state.scrollTop)>0.4){state.scrollTop+=(state.scrollTarget-state.scrollTop)*0.3;dirty=true;}
-  else state.scrollTop=state.scrollTarget;
+  else if(state.scrollTop!==state.scrollTarget){state.scrollTop=state.scrollTarget;dirty=true;}   // final snap → one more (FULL) draw so canvasSt lands exact
   if(Math.abs(state.panTarget-state.panX)>0.4){state.panX+=(state.panTarget-state.panX)*0.3;dirty=true;}
-  else state.panX=state.panTarget;
+  else if(state.panX!==state.panTarget){state.panX=state.panTarget;dirty=true;}
   if(state.stress){state.scrollTarget+=9;if(state.scrollTarget>=state.maxScroll)state.scrollTarget=0;dirty=true;}
   const selTarget=state.selectedRow>=0?0.20:0, hovTarget=(state.hoverRow>=0&&state.hoverRow!==state.selectedRow)?0.08:0;
   if(REDUCE_MOTION){ state.selectAlpha=selTarget; state.hoverAlpha=hovTarget; }
@@ -1720,21 +1839,40 @@ function tick(now){
   // to the current position so `pend` never grows but the graph is still moving
   // every frame. Hysteresis (both small to leave) avoids flip-flopping the canvas
   // size; a hover/selection redraw moves neither, so it stays crisp.
-  const pend=Math.abs(state.scrollTarget-state.scrollTop)+Math.abs(state.panTarget-state.panX);
-  const moved=Math.abs(state.scrollTop-prevScrollTop)+Math.abs(state.panX-prevPanX);
-  prevScrollTop=state.scrollTop; prevPanX=state.panX;
-  if(state.stress||pend>10||moved>0.5) lowRes=true; else if(pend<3&&moved<0.15) lowRes=false;
-  // Fast scroll: a higher bar than lowRes. Only here do we DROP the per-row text
-  // (see draw()) — at this speed it's a motion blur anyway, and glyph rasterising
-  // is the biggest software-render cost. A gentle scroll stays lowRes-but-with-
-  // text so you can still skim; text snaps back the instant it settles.
-  fastScroll = state.stress || moved>4 || pend>40;
+  const pendScroll=Math.abs(state.scrollTarget-state.scrollTop), pendPan=Math.abs(state.panTarget-state.panX);
+  const pend=pendScroll+pendPan;
+  const dScroll=Math.abs(state.scrollTop-prevScrollTop), dPan=Math.abs(state.panX-prevPanX);
+  const zooming=layout.zoom!==prevZoom;
+  prevScrollTop=state.scrollTop; prevPanX=state.panX; prevZoom=layout.zoom;
+  const panning=pendPan>0.4||dPan>0.15;
+  // lowRes (half-DPR + motion-blur trail) is now the fallback ONLY for pan/zoom —
+  // motion that can't be scroll-blitted. Pure vertical scroll stays at FULL
+  // resolution and is kept smooth by blitScroll() instead, so its text stays
+  // readable (the whole point of this change). Blit is gated on full DPR, so
+  // forcing half-DPR during vertical scroll would silently disable it.
+  if(panning||zooming) lowRes=true;
+  else if(state.stress||pendScroll>0.4||dScroll>0.15) lowRes=false;   // vertical scroll → full res for the blit path
+  else if(pend<3) lowRes=false;                                        // settled
+  fastScroll=false;   // blit keeps full detail; pan/zoom FULL frames use lowRes instead of dropping text
   setRenderDpr(lowRes?Math.max(0.5,view.dpr*INTERACT_RES):view.dpr);
-  if(dirty){draw();dirty=false;}
+  if(dirty){
+    // Scroll-blit only when the frame differs from the buffer by a pure vertical
+    // scroll still EASING toward its target (buffer valid + same G + identical
+    // key + settled fades + full DPR + no drag/bisect). The final snap frame and
+    // every non-scroll change take the FULL path, which lands canvasSt exact.
+    const easingScroll = state.stress || pendScroll>0.4;
+    const needsFull = !bufferValid||G!==bufferG||!alphaSettled()||view.renderDpr!==view.dpr||state.drag||bisectDrawerCtrl.active()||G.N===0||bufferKeyNow()!==bufferKey;
+    if(!needsFull && easingScroll && Math.abs(state.scrollTop-canvasSt)>0.01){ blitFrames++; blitScroll(); }
+    else draw();
+    totalDrawFrames++;
+    dirty=false;
+  }
   perf.frames++; perf.accum+=dt;
   if(perf.accum>=400){ perf.fps=perf.frames*1000/perf.accum; perf.frames=0; perf.accum=0;
     const first=Math.floor(state.scrollTop/layout.rowH), last=Math.floor((state.scrollTop+view.cssH)/layout.rowH);
-    $("#hud").innerHTML=`<b>${perf.fps.toFixed(0)}</b> fps · ${perf.lastDrawMs.toFixed(1)} ms · rows ${first.toLocaleString()}–${Math.min(G.N-1,last).toLocaleString()}`;
+    const blitPct=totalDrawFrames>0?Math.round(100*blitFrames/totalDrawFrames):0;
+    $("#hud").innerHTML=`<b>${perf.fps.toFixed(0)}</b> fps · ${perf.lastDrawMs.toFixed(1)} ms · blit ${blitPct}% · rows ${first.toLocaleString()}–${Math.min(G.N-1,last).toLocaleString()}`;
+    blitFrames=0; totalDrawFrames=0;
   }
   requestAnimationFrame(tick);
 }
@@ -2316,7 +2454,7 @@ function recomputeAncestorsAsync(){
     if(af.n!==BACKEND.n){ void reloadGraph(true); return; }
     const f=af.flags;
     for(let r=0;r<BACKEND.n;r++) BACKEND.rows[r].ancestor=!!f[r];
-    dirty=true;
+    bufferValid=false; dirty=true;   // ancestor bits mutated in place (G identity unchanged) → force a full re-render, not a blit
   }).catch(()=>{});
 }
 
