@@ -294,22 +294,40 @@ async function refreshFromExternalChange() {
 // real external change.
 const POLL_MS = 4000;
 let pollSnapshot: string | null = null;
+// The commit-identity part of the last snapshot (branch + HEAD sha), tracked
+// separately so a change can be classified: if only dirty/conflicted moved and
+// branch + HEAD are identical, it's a pure WORKING-TREE change (an edit, or a
+// terminal `git add`) — the commit graph is unchanged, so only the working-tree
+// status (the uncommitted-changes badge) needs refreshing, never the graph.
+let pollCommitId: string | null = null;
 if (IN_TAURI) {
   setInterval(async () => {
     if (!bridge.CUR_REPO) {
       pollSnapshot = null;
+      pollCommitId = null;
       return;
     }
     const path = bridge.CUR_REPO as unknown as string;
     try {
       const res = await commands.dashboardRepoStatus(path);
       if (res.status !== "ok" || bridge.CUR_REPO !== path) return; // repo closed/switched mid-request
-      const snap = `${res.data.branch}|${res.data.headSha}|${res.data.dirty}|${res.data.conflicted}`;
+      // Space-joined is unambiguous: a git ref name can't contain a space, and
+      // the sha/dirty/conflicted fields are hex/boolean/number.
+      const commitId = `${res.data.branch} ${res.data.headSha}`;
+      const snap = `${commitId} ${res.data.dirty} ${res.data.conflicted}`;
       if (pollSnapshot !== null && pollSnapshot !== snap) {
-        dlog("trigger", "status poll saw a change:", `${pollSnapshot} → ${snap}`);
-        void refreshFromExternalChange();
+        if (pollCommitId === commitId) {
+          // Branch + HEAD unchanged ⇒ working-tree only: refresh just the status,
+          // never touch the graph (not even the cheap refs re-check).
+          dlog("trigger", "status poll: working-tree only — refresh status, skip graph");
+          void workdirCtrl.refreshStatus(path);
+        } else {
+          dlog("trigger", "status poll: HEAD/branch moved — external refresh");
+          void refreshFromExternalChange();
+        }
       }
       pollSnapshot = snap;
+      pollCommitId = commitId;
     } catch {
       // best-effort, same as watch_repo — a transient poll failure just tries again next tick
     }
