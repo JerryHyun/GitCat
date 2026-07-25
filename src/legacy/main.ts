@@ -828,6 +828,11 @@ cv.addEventListener("contextmenu",(e)=>{
   if(layout.branchColW>0 && p.x<layout.branchColW){
     const br=rowRefs.find(r=>r&&(r.kind==="branch"||r.kind==="head"));
     if(br){ sidebarCtrl.openMenuAt(br.label, br.kind==="head", null, e.clientX, e.clientY); return; }
+    // A remote-tracking branch label (e.g. origin/main, upstream/3.13) → the
+    // sidebar's checkout-confirm, which creates a local branch tracking it —
+    // the same action clicking that remote in the sidebar performs.
+    const rem=rowRefs.find(r=>r&&r.kind==="remote");
+    if(rem){ sidebarCtrl.openCheckoutConfirm(rem.label, true, e.clientX, e.clientY); return; }
   }
   const sha=(BACKEND&&BACKEND.rows[row])?BACKEND.rows[row].sha:hhex(row);
   commitMenuCtrl.openAt(CUR_REPO, sha, msgOf(row), !!(G&&G.isMerge&&G.isMerge[row]), e.clientX, e.clientY);
