@@ -433,6 +433,14 @@ function draw(){
   for(let c=0;c<NCOL;c++){ const p=barPaths[c]; if(p){ctx.fillStyle=LANE_COLORS[c];ctx.fill(p);} }
   ctx.globalAlpha=1;
 
+  // The HEAD row (current-branch tip = where you are) among the visible rows, so
+  // it can be marked distinctly and kept UNDIMMED — the "you are here" cue. Only
+  // the visible window is scanned; an off-screen HEAD simply isn't marked.
+  let headRow=-1;
+  for(let r=first;r<=last;r++){
+    const l=(G.allRefs&&G.allRefs[r])||(G.refs&&G.refs[r]?[G.refs[r]]:[]);
+    if(l.some&&l.some(x=>x&&x.kind==="head")){ headRow=r; break; }
+  }
   ctx.textBaseline="middle"; ctx.font=layout.chipFont;
   for(let r=first;r<=last;r++){
     const y=r*rowH+rowH*0.5-st+bh, x=laneX(G.commitLane[r]), col=LANE_COLORS[G.commitColor[r]];
@@ -445,6 +453,9 @@ function draw(){
     if(B&&r===B.good){ctx.fillStyle=theme.success;ctx.fillRect(0,r*rowH-st+bh,3,rowH);}
     if(B&&r===B.bad){ctx.fillStyle=theme.danger;ctx.fillRect(0,r*rowH-st+bh,3,rowH);}
     if(bisectDrawerCtrl.cur!=null&&r===bisectDrawerCtrl.cur){ctx.fillStyle=theme.accent;ctx.fillRect(0,r*rowH-st+bh,3,rowH);}
+    // HEAD (current position) — a bright accent bar down the row's left edge, the
+    // row-level half of the "you are here" cue (the dot ring below is the other).
+    if(r===headRow){ ctx.fillStyle=theme.accent; ctx.fillRect(0,r*rowH-st+bh,4,rowH); }
     ctx.globalAlpha=dim?0.4:1;
     ctx.beginPath(); ctx.arc(x,y,dotR,0,TAU);
     if(G.isMerge[r]){ctx.fillStyle=theme.bg;ctx.fill();ctx.lineWidth=2;ctx.strokeStyle=col;ctx.stroke();}
@@ -452,6 +463,10 @@ function draw(){
     if(r===state.selectedRow){ctx.beginPath();ctx.arc(x,y,dotR+3.2,0,TAU);ctx.strokeStyle=theme.text;ctx.lineWidth=1.6;ctx.stroke();}
     else if(r===state.hoverRow){ctx.beginPath();ctx.arc(x,y,dotR+2.6,0,TAU);ctx.strokeStyle=theme.muted;ctx.lineWidth=1;ctx.stroke();}
     if(bisectDrawerCtrl.cur!=null&&r===bisectDrawerCtrl.cur&&r!==state.selectedRow){ctx.beginPath();ctx.arc(x,y,dotR+3.4,0,TAU);ctx.strokeStyle=theme.accent;ctx.lineWidth=2;ctx.stroke();}
+    // HEAD (current position) — a bold accent ring + soft glow around its dot, so
+    // "where am I" pops even in a busy graph. Drawn last so it sits over the other
+    // rings; kept undimmed by the ancestor overlay (which skips headRow).
+    if(r===headRow){ ctx.save(); ctx.shadowColor=theme.accent; ctx.shadowBlur=7; ctx.beginPath(); ctx.arc(x,y,dotR+4.5,0,TAU); ctx.strokeStyle=theme.accent; ctx.lineWidth=2.6; ctx.stroke(); ctx.restore(); }
     let cx=bcw>0?tx+MSG_TEXT_PAD:tx; ctx.font=layout.chipFont;
     // Ref labels. In column mode (bcw>0) they live in the left BRANCH/TAG gutter
     // [BRANCH_PAD_L,bcw), left-aligned and tinted in THIS row's branch colour (so
@@ -501,7 +516,7 @@ function draw(){
     const gg = rowH>=20 ? BRANCH_ROW_GAP : rowH>=13 ? 2 : rowH>=11 ? 1 : 0, bh2=Math.max(1,rowH-2*gg);
     let ap=null;
     for(let r=first;r<=last;r++){
-      if(r===state.selectedRow||r===state.hoverRow) continue;
+      if(r===state.selectedRow||r===state.hoverRow||r===headRow) continue; // keep HEAD (current position) crisp
       const rr=BACKEND.rows[r]; if(!rr||!rr.ancestor) continue;
       (ap||(ap=new Path2D())).rect(0, r*rowH-st+bh+gg, W, bh2);
     }
