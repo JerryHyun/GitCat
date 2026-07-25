@@ -24,6 +24,7 @@ import { remotesCtrl } from "../remotes/remotes.svelte.ts";
 import { resolver } from "../resolver/resolver.svelte.ts";
 import { forcePushCtrl } from "../forcepush/forcepush.svelte.ts";
 import { resetHeadCtrl } from "../resethead/resethead.svelte.ts";
+import { sidebarCtrl } from "../sidebar/sidebar.svelte.ts";
 import { exportPatchesCtrl } from "../exportpatches/exportpatches.svelte.ts";
 import { applyPatchCtrl } from "../applypatch/applypatch.svelte.ts";
 import { terminalCtrl } from "../terminal/terminal.svelte.ts";
@@ -46,7 +47,10 @@ const CMD_BUF = 250;
 const REF_DEFAULT = 12;
 
 type CmdItem = { type: "commit"; row: number; subject: string; sha: string; author: string; hay: string };
-type RefItem = { type: "ref"; name: string; kind: string; row: number; sha: string };
+// `hidden` = a branch/remote that EXISTS but isn't currently loaded into the
+// graph (unchecked in the sidebar's branch-visibility). It has no row; picking it
+// makes it visible instead of jumping (see jump()).
+type RefItem = { type: "ref"; name: string; kind: string; row: number; sha: string; hidden?: boolean };
 type ActionItem = { type: "action"; id: string; label: string; hint: string; run: () => void };
 export type CmdkResult = CmdItem | RefItem | ActionItem;
 
@@ -353,6 +357,25 @@ class CmdkState {
         out.push({ type: "ref", name: g.label, kind: norm(g.kind), row: r, sha: bridge.hhex(r) });
       }
     }
+    // Also index branches/remotes that EXIST but aren't loaded into the graph —
+    // i.e. unchecked in the sidebar's branch-visibility filter. Without this, a
+    // hidden branch is unsearchable; here it shows up in ⌘K and picking it makes
+    // it visible (jump() handles the `hidden` flag). `seen` already holds every
+    // loaded ref, so only the genuinely-hidden ones get added.
+    try {
+      for (const b of sidebarCtrl.locals) {
+        if (!b || seen.has(b.name)) continue;
+        seen.add(b.name);
+        out.push({ type: "ref", name: b.name, kind: "branch", row: -1, sha: b.sha || "", hidden: true });
+      }
+      for (const r of sidebarCtrl.remotes) {
+        if (!r || seen.has(r.name)) continue;
+        seen.add(r.name);
+        out.push({ type: "ref", name: r.name, kind: "remote", row: -1, sha: (r as { sha?: string }).sha || "", hidden: true });
+      }
+    } catch {
+      /* sidebar not ready yet — the loaded refs above still work */
+    }
     return out;
   }
 
@@ -443,6 +466,17 @@ class CmdkState {
     if (it.type === "action") {
       this.close();
       it.run();
+      return;
+    }
+    if (it.type === "ref" && it.hidden) {
+      // A hidden branch (unchecked in the sidebar) has no loaded row — make it
+      // VISIBLE so it streams into the graph, rather than jumping to nothing.
+      this.close();
+      void sidebarCtrl.toggleBranchVisible(
+        bridge.CUR_REPO as unknown as string,
+        it.kind === "remote" ? "remote" : "local",
+        it.name,
+      );
       return;
     }
     const row = it.row;
