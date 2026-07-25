@@ -228,7 +228,8 @@ const state={scrollTop:0,scrollTarget:0,maxScroll:0,panX:0,panTarget:0,maxPanX:0
 const REDUCE_MOTION=matchMedia("(prefers-reduced-motion:reduce)").matches;
 const view={cssW:0,cssH:0,dpr:1,renderDpr:1};
 const perf={last:performance.now(),frames:0,accum:0,fps:0,lastDrawMs:0};
-let dirty=true, lastInteracting=false, lowRes=false, pendingClear=false;
+let dirty=true, lastInteracting=false, lowRes=false, fastScroll=false, pendingClear=false;
+let prevScrollTop=0, prevPanX=0;   // last frame's scroll/pan, to detect real motion (see tick's lowRes gate)
 const edgePaths=new Array(NCOL);
 // Per-lane-colour Path2Ds for the branch-colour tags (whole-row wash + left
 // bar). Batching every visible row of the same colour into one path lets the
@@ -483,7 +484,13 @@ function draw(){
       if(showAllTags&&G.allRefs){ const list=G.allRefs[r]; for(let i=0;i<list.length&&cx<chipLimit;i++) cx=drawChip(cx,y,list[i].label,list[i].kind,chipLimit-cx)+8; }
       else { const ref=G.refs[r]; if(ref&&cx<chipLimit) cx=drawChip(cx,y,ref.label,ref.kind,chipLimit-cx)+8; }
     }
-    if(rowH>=15){
+    // Skip the per-row message/author/sha text while scrolling FAST (fastScroll):
+    // glyph rasterisation is the single biggest per-frame cost on a software-
+    // rendered canvas, and at this speed the text is an unreadable blur anyway
+    // (motion blur + reduced resolution). It snaps back in the instant scrolling
+    // slows/settles. The lane graph, dots and branch labels still draw so the
+    // structure stays legible while moving.
+    if(rowH>=15 && !fastScroll){
       // Reserve room for BOTH the author preview and the sha (AUTHOR_GUTTER
       // below) — previously only the sha itself (96px) was reserved, so
       // adding the author name here without widening this would have let a
@@ -1706,13 +1713,22 @@ function tick(now){
   }
   state.isInteracting=dirty||state.pointerActive;
   if(state.isInteracting!==lastInteracting){Tama.setInteracting(state.isInteracting);lastInteracting=state.isInteracting;}
-  // Render at reduced resolution while there's real scroll/pan MOTION in flight
-  // (or the stress test is running), full resolution once it settles — see
-  // setRenderDpr(). Hysteresis (enter >10px of pending motion, leave <3px) keeps
-  // it from flip-flopping the canvas size at the boundary; a mere hover/selection
-  // redraw leaves the scroll targets untouched, so it stays crisp.
+  // Render at reduced resolution while scrolling/panning, full resolution once it
+  // settles — see setRenderDpr(). Triggered by EITHER pending motion (a wheel
+  // fling that hasn't caught up) OR the content actually moving this frame — the
+  // latter is what catches smooth trackpad scrolling, where the target stays close
+  // to the current position so `pend` never grows but the graph is still moving
+  // every frame. Hysteresis (both small to leave) avoids flip-flopping the canvas
+  // size; a hover/selection redraw moves neither, so it stays crisp.
   const pend=Math.abs(state.scrollTarget-state.scrollTop)+Math.abs(state.panTarget-state.panX);
-  if(state.stress||pend>10) lowRes=true; else if(pend<3) lowRes=false;
+  const moved=Math.abs(state.scrollTop-prevScrollTop)+Math.abs(state.panX-prevPanX);
+  prevScrollTop=state.scrollTop; prevPanX=state.panX;
+  if(state.stress||pend>10||moved>0.5) lowRes=true; else if(pend<3&&moved<0.15) lowRes=false;
+  // Fast scroll: a higher bar than lowRes. Only here do we DROP the per-row text
+  // (see draw()) — at this speed it's a motion blur anyway, and glyph rasterising
+  // is the biggest software-render cost. A gentle scroll stays lowRes-but-with-
+  // text so you can still skim; text snaps back the instant it settles.
+  fastScroll = state.stress || moved>4 || pend>40;
   setRenderDpr(lowRes?Math.max(0.5,view.dpr*INTERACT_RES):view.dpr);
   if(dirty){draw();dirty=false;}
   perf.frames++; perf.accum+=dt;
