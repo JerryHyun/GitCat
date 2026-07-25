@@ -43,6 +43,14 @@ const DEBOUNCE: Duration = Duration::from_millis(400);
 pub struct WatchState(Mutex<Option<Debouncer<RecommendedWatcher>>>);
 
 fn is_relevant(path: &Path) -> bool {
+    // GitCat's own Safety-Manager snapshot refs (refs/gitgui/…) are NOT shown in
+    // the graph and are written by the app itself — notably the on-repo-open
+    // auto-prune (see pruneSnapshotsPerPolicy). Reacting to them would pointlessly
+    // reload the graph, and during a large repo's initial stream that RESTARTS the
+    // whole load. Ignore them; a real HEAD/refs change still fires.
+    if path.components().any(|c| c.as_os_str() == "gitgui") {
+        return false;
+    }
     path.file_name().is_some_and(|n| n == "HEAD") || path.components().any(|c| c.as_os_str() == "refs")
 }
 
@@ -117,4 +125,30 @@ pub async fn watch_repo(app: AppHandle<Wry>, state: State<'_, WatchState>, path:
 #[specta::specta]
 pub fn unwatch_repo(state: State<WatchState>) {
     *state.0.lock().unwrap() = None;
+}
+
+#[cfg(test)]
+mod is_relevant_tests {
+    use super::is_relevant;
+    use std::path::Path;
+
+    #[test]
+    fn head_and_branch_refs_are_relevant() {
+        assert!(is_relevant(Path::new("/r/.git/HEAD")));
+        assert!(is_relevant(Path::new("/r/.git/refs/heads/main")));
+        assert!(is_relevant(Path::new("/r/.git/refs/remotes/origin/main")));
+        assert!(is_relevant(Path::new("/r/.git/refs/tags/v1")));
+    }
+
+    #[test]
+    fn snapshot_and_unrelated_paths_are_not() {
+        // GitCat's own Safety-Manager snapshot refs — must NOT trigger a reload
+        // (the on-open auto-prune writes these; reacting restarts a big load).
+        assert!(!is_relevant(Path::new("/r/.git/refs/gitgui/backup/2026-07-24T00-00")));
+        assert!(!is_relevant(Path::new("/r/.git/refs/gitgui/HEAD")));
+        // Neither do non-ref housekeeping files.
+        assert!(!is_relevant(Path::new("/r/.git/index")));
+        assert!(!is_relevant(Path::new("/r/.git/packed-refs")));
+        assert!(!is_relevant(Path::new("/r/.git/COMMIT_EDITMSG")));
+    }
 }
