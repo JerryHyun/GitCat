@@ -373,6 +373,27 @@ pub fn run() {
             console_subscriber::init();
         } else if std::env::var_os("GITCAT_DEVTOOLS").is_some() {
             app_builder = app_builder.plugin(tauri_plugin_devtools::init());
+        } else {
+            // Default `pnpm tauri dev`: log the app's key lifecycle events
+            // (graph loads, reload fast/full decisions, watcher triggers — see
+            // src/devlog.ts's dlog + the `log::` calls in watch.rs) to the dev
+            // terminal (Stdout) AND the app's log dir. Registered ONLY here, in
+            // the else branch, because tauri-plugin-log installs the process-
+            // global `log` logger and the two inspectors above install a global
+            // tracing dispatcher (which also captures `log`) — only one can win,
+            // same "pick exactly one" constraint documented above. Never shipped:
+            // the whole block is `#[cfg(debug_assertions)]`.
+            app_builder = app_builder.plugin(
+                tauri_plugin_log::Builder::new()
+                    .level(log::LevelFilter::Info)
+                    .targets([
+                        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                            file_name: Some("gitcat".into()),
+                        }),
+                    ])
+                    .build(),
+            );
         }
     }
 

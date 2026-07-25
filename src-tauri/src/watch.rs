@@ -113,6 +113,7 @@ pub async fn watch_repo(app: AppHandle<Wry>, state: State<'_, WatchState>, path:
     let handle = app.clone();
     let debouncer = crate::blocking::run_blocking(move || {
         start_watching(&path, move || {
+            log::info!("[watch] relevant git-dir change → emit repo-changed");
             let _ = handle.emit("repo-changed", ());
         })
     })

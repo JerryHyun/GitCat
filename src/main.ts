@@ -63,6 +63,7 @@ import Sidebar from "./islands/sidebar/Sidebar.svelte";
 import { sidebarCtrl } from "./islands/sidebar/sidebar.svelte.ts";
 import { IN_TAURI } from "./ipc/env";
 import * as bridge from "./legacy/bridge";
+import { dlog } from "./devlog";
 import { commands } from "./ipc/bindings";
 
 mount(Resolver, { target: document.body });
@@ -304,7 +305,10 @@ if (IN_TAURI) {
       const res = await commands.dashboardRepoStatus(path);
       if (res.status !== "ok" || bridge.CUR_REPO !== path) return; // repo closed/switched mid-request
       const snap = `${res.data.branch}|${res.data.headSha}|${res.data.dirty}|${res.data.conflicted}`;
-      if (pollSnapshot !== null && pollSnapshot !== snap) void refreshFromExternalChange();
+      if (pollSnapshot !== null && pollSnapshot !== snap) {
+        dlog("trigger", "status poll saw a change:", `${pollSnapshot} → ${snap}`);
+        void refreshFromExternalChange();
+      }
       pollSnapshot = snap;
     } catch {
       // best-effort, same as watch_repo — a transient poll failure just tries again next tick
@@ -510,7 +514,10 @@ if (IN_TAURI) {
   // Live refresh: notify refreshFromExternalChange (module scope, declared
   // above this `if (IN_TAURI)` block — see its own doc comment) whenever the
   // backend's file-watcher reports an external git-dir change.
-  w.__TAURI__?.event.listen("repo-changed", refreshFromExternalChange);
+  w.__TAURI__?.event.listen("repo-changed", () => {
+    dlog("trigger", "file watcher: repo-changed (external git-dir change)");
+    void refreshFromExternalChange();
+  });
 
   // Streaming graph load: legacy/main.ts's own startGraphStream() kicks off
   // the backend walk (src-tauri/src/commands.rs's stream_graph) and returns

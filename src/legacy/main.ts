@@ -19,6 +19,7 @@ import { tamaGalleryCtrl } from "../islands/tamagallery/tamagallery.svelte.ts";
 // (globalUndo()'s stash-undo branch) — see that function's own comment for
 // why only that branch uses it instead of another `tinvoke()`.
 import { commands } from "../ipc/bindings";
+import { dlog } from "../devlog";
 // TamaMascot.set() below plays a short synthesized chime on a real state
 // change via STATE_SOUND — see sound.ts's own header for why this is a leaf
 // module main.ts imports FROM, never the reverse.
@@ -2013,6 +2014,7 @@ function setGraphLoadingPill(on,count){
 }
 async function startGraphStream(path){
   const myGen = ++graphRequestSeq;
+  dlog("graph", "stream START gen", myGen, "—", path);
   graphGeneration = myGen;
   BACKEND = { n:0, oids:[], lane:[], color:[], merge:[], gapStart:[0], gapTop:[], gapBot:[], gapColor:[], rows:[], refs:[], allRefs:[], ncol:7, laneCount:0 };
   // A fresh stream: the incremental-refresh baseline is now stale until this
@@ -2133,6 +2135,7 @@ function onGraphBatch(payload){
     // "is this commit loaded?", so a truncated load forces full reloads).
     graphStreamComplete=true;
     lastLoadTruncated=!!payload.truncated;
+    dlog("graph", "stream DONE gen", payload.generation, "—", BACKEND.n, "commits in", payload.elapsedMs.toFixed(0)+"ms", payload.truncated?"(truncated)":"", payload.error?("error: "+payload.error):"");
     // Establish the fast-refresh baseline (seed tips / HEAD oid / ref signature)
     // for THIS load, generation-guarded so a newer load's baseline can't be
     // clobbered by an older snapshot resolving late. Best-effort: if it never
@@ -2202,6 +2205,7 @@ let openRepoBusy=false;
 async function openRepo(path){
   if(openRepoBusy) return false;
   openRepoBusy=true;
+  dlog("repo", "openRepo", path);
   // Invalidate any still-streaming graph's generation RIGHT NOW — before the
   // awaits below (and before startGraphStream() sets the real one for this open).
   // If the previous repo was still streaming in, its already-queued "graph-batch"
@@ -2482,34 +2486,35 @@ async function tryFastRefresh(){
   // Guard 1: only a COMPLETE, non-truncated load has a trustworthy loadedOids
   // to answer "is this commit already loaded?" — mid-stream or memory-capped,
   // fall back to full reload.
-  if(!BACKEND || !graphStreamComplete || lastLoadTruncated) return false;
+  if(!BACKEND || !graphStreamComplete || lastLoadTruncated){ dlog("reload", "FULL — buffer not ready", lastLoadTruncated?"(truncated)":"(streaming)"); return false; }
   let cur;
   try{
     const r=await commands.graphFastRefresh(CUR_REPO);
-    if(r.status!=="ok") return false;
+    if(r.status!=="ok"){ dlog("reload", "FULL — graphFastRefresh failed:", r.error); return false; }
     cur=r.data;
-  }catch(_){ return false; }
+  }catch(e){ dlog("reload", "FULL — graphFastRefresh threw:", String(e)); return false; }
 
   // Pure working-tree change (staging, an external edit): the entire ref set
   // and HEAD are unchanged, so the graph needs no work at all — the caller's
   // own workdir refresh updates the uncommitted-changes badge.
-  if(cur.refSig===lastRefSig && cur.headOid===loadedHeadOid) return true;
+  if(cur.refSig===lastRefSig && cur.headOid===loadedHeadOid){ dlog("reload", "no-op — pure worktree change (no graph work)"); return true; }
 
   // Gate A — a current seed tip or HEAD is a commit we DON'T have loaded ⇒ new
   // commits exist (commit/merge/rebase/pull/fetch/…) ⇒ full reload.
-  for(let i=0;i<cur.seedTips.length;i++) if(!loadedOids.has(cur.seedTips[i])) return false;
-  if(cur.headOid!=null && !loadedOids.has(cur.headOid)) return false;
+  for(let i=0;i<cur.seedTips.length;i++) if(!loadedOids.has(cur.seedTips[i])){ dlog("reload", "FULL — new commits (Gate A: unloaded tip)"); return false; }
+  if(cur.headOid!=null && !loadedOids.has(cur.headOid)){ dlog("reload", "FULL — new commits (Gate A: unloaded HEAD)"); return false; }
 
   // Gate B — a previously-loaded seed tip is gone ⇒ a branch was deleted or
   // moved backward, which can orphan commits we're still showing ⇒ full reload.
   const curTipSet=new Set(cur.seedTips);
-  for(const t of loadedSeedTips) if(!curTipSet.has(t)) return false;
+  for(const t of loadedSeedTips) if(!curTipSet.has(t)){ dlog("reload", "FULL — tip removed (Gate B: possible orphans)"); return false; }
 
   // Fast path: only refs (and maybe HEAD) moved among already-loaded commits.
   applyRefChips(cur.refChips);
   G=buildGFromBackend(BACKEND);   // reassign, never mutate (cache invalidation)
   dirty=true;
   const headMoved = cur.headOid!==loadedHeadOid;
+  dlog("reload", "FAST — refs remapped", headMoved?"+ HEAD moved (recompute dimming)":"(refs/tags only)");
   // Advance the baseline before any async work / re-entrant refresh sees it.
   loadedSeedTips=curTipSet; loadedHeadOid=cur.headOid; lastRefSig=cur.refSig;
   // Pill + refs tree + auto-visibility (keeps its own sameLocal&&sameRemote echo
