@@ -19,8 +19,12 @@
     <div class="modal-head">
       <div class="modal-tama"><img class="tama-pic" src={bridge.TAMA_IMG.curious} alt="Tama, curious" /></div>
       <div>
-        <h3>Search Commit Content&#8230;</h3>
-        <p>Find every commit whose <b>diff</b> touched a string or pattern &#8212; not just its message (<code>git log -S</code> / <code>-G</code>).</p>
+        <h3>Search Commits&#8230;</h3>
+        {#if pickaxeSearchCtrl.mode === "author"}
+          <p>Find every commit by an <b>author</b> across all history (<code>git log --author</code>) &#8212; matched against name and email.</p>
+        {:else}
+          <p>Find every commit whose <b>diff</b> touched a string or pattern &#8212; not just its message (<code>git log -S</code> / <code>-G</code>).</p>
+        {/if}
       </div>
     </div>
     <div class="modal-body">
@@ -28,7 +32,11 @@
         <input
           type="text"
           class="mono"
-          placeholder={pickaxeSearchCtrl.mode === "added-removed" ? "search text…" : "regex…"}
+          placeholder={pickaxeSearchCtrl.mode === "added-removed"
+            ? "search text…"
+            : pickaxeSearchCtrl.mode === "author"
+              ? "author name or email…"
+              : "regex…"}
           bind:value={pickaxeSearchCtrl.query}
           disabled={pickaxeSearchCtrl.busy}
           spellcheck="false"
@@ -38,6 +46,7 @@
           <select bind:value={pickaxeSearchCtrl.mode} disabled={pickaxeSearchCtrl.busy}>
             <option value="added-removed">Added/removed occurrences (-S)</option>
             <option value="diff-match">Diff line match (-G)</option>
+            <option value="author">Commits by author (--author)</option>
           </select>
         </div>
         <div class="nb-row">

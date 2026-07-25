@@ -274,8 +274,14 @@ fn pickaxe_flag(mode: &str, query: &str, regex: bool) -> Result<Vec<String>, Str
         // paired with -G (see module doc) — `regex` is deliberately never
         // forwarded here, whatever its value.
         "diff-match" => Ok(vec![format!("-G{query}")]),
+        // Not a diff search: `git log --author=<query>` lists commits by an
+        // author (matched, as a regex, against name AND email). Same
+        // commit-list result shape as the pickaxe modes, so it reuses the whole
+        // command + modal. `regex` is irrelevant (--author is always a regex),
+        // so it's never forwarded — same as -G above.
+        "author" => Ok(vec![format!("--author={query}")]),
         other => Err(format!(
-            "Unknown pickaxe mode: {other:?} (expected \"added-removed\" or \"diff-match\")."
+            "Unknown pickaxe mode: {other:?} (expected \"added-removed\", \"diff-match\", or \"author\")."
         )),
     }
 }
@@ -425,6 +431,13 @@ mod tests {
     fn pickaxe_flag_diff_match_never_forwards_pickaxe_regex() {
         assert_eq!(pickaxe_flag("diff-match", "foo", false).unwrap(), vec!["-Gfoo"]);
         assert_eq!(pickaxe_flag("diff-match", "foo", true).unwrap(), vec!["-Gfoo"]); // regex ignored
+    }
+
+    #[test]
+    fn pickaxe_flag_author_mode() {
+        assert_eq!(pickaxe_flag("author", "Jane Doe", false).unwrap(), vec!["--author=Jane Doe"]);
+        // `regex` is irrelevant to --author (always a regex) — never forwarded.
+        assert_eq!(pickaxe_flag("author", "jane@x.com", true).unwrap(), vec!["--author=jane@x.com"]);
     }
 
     #[test]

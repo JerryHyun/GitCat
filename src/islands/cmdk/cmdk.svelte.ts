@@ -146,6 +146,13 @@ const ACTIONS: ActionItem[] = [
   },
   {
     type: "action",
+    id: "author-search",
+    label: "Search commits by author",
+    hint: "Every commit by an author across all history (git log --author)",
+    run: () => pickaxeSearchCtrl.showAuthor(bridge.CUR_REPO as unknown as string),
+  },
+  {
+    type: "action",
     id: "code-search",
     label: "Search Code",
     hint: "Full-text search the current checkout (or a chosen historical commit) (⌘F)",

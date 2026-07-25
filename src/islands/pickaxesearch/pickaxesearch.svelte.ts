@@ -34,7 +34,7 @@ import * as bridge from "../../legacy/bridge";
 import { IN_TAURI } from "../../ipc/env";
 import type { PickaxeMatch, PickaxeResults } from "../../ipc/bindings";
 
-export type PickaxeMode = "added-removed" | "diff-match";
+export type PickaxeMode = "added-removed" | "diff-match" | "author";
 
 // Demo data (design-mode only) — a small canned result list, same spirit as
 // every other island's DEMO constant, so the browser preview still shows a
@@ -90,6 +90,13 @@ class PickaxeSearchState {
   show(repo: string | null): void {
     this.repo = repo || "";
     this.open = true;
+  }
+
+  // Open straight into "commits by author" mode (⌘K ▸ Search commits by author).
+  showAuthor(repo: string | null): void {
+    this.mode = "author";
+    this.query = "";
+    this.show(repo);
   }
 
   close(): void {
