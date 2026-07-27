@@ -220,7 +220,12 @@ export function handleGlobalKeydown(e: KeyboardEvent) {
     if (!anyOtherScrimOpen()) jumpCanvasSelection("last");
     return;
   }
-  if ((e.ctrlKey || e.metaKey) && (e.key === "d" || e.key === "u")) {
+  // ⌘/Ctrl-D / ⌘/Ctrl-U — half-page scroll (vim). `!e.shiftKey` is load-bearing:
+  // on macOS WebKit ⌘⇧U reports `e.key === "u"` (Cmd suppresses Shift's
+  // uppercasing of the key value), so without this guard ⌘⇧U would ALSO trip
+  // this half-page-up and yank the selection to the top — stealing ⌘⇧U from its
+  // real binding (jump to Uncommitted changes, in legacy/main.ts).
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "d" || e.key === "u")) {
     noteNonGKey();
     e.preventDefault();
     if (!anyOtherScrimOpen()) pageCanvasSelection(e.key === "d" ? 1 : -1);

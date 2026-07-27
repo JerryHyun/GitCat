@@ -242,6 +242,14 @@ describe("handleGlobalKeydown — modifier guard (regression: Ctrl/Cmd+K used to
     expect(bridge.state.selectedRow).toBe(10);
   });
 
+  it("Cmd+Shift+U does NOT trigger half-page-up — it belongs to 'jump to Uncommitted changes' (macOS WebKit reports ⌘⇧U's key as 'u', so the half-page binding must exclude Shift)", () => {
+    (bridge.state as any).selectedRow = 10;
+    const e = key("u", { metaKey: true, shiftKey: true });
+    handleGlobalKeydown(e);
+    expect(bridge.state.selectedRow).toBe(10); // selection untouched — no half-page-up stole it
+    expect(e.defaultPrevented).toBe(false); // left unhandled for legacy/main.ts's ⌘⇧U handler
+  });
+
   it("a bare d/u (no modifier) does nothing — only the Ctrl/Cmd form is bound", () => {
     (bridge.state as any).selectedRow = 10;
     handleGlobalKeydown(key("d"));
