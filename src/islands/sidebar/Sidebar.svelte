@@ -40,6 +40,8 @@
   let checkoutConfirmEl: HTMLDivElement | undefined = $state();
   let pushMenuEl: HTMLDivElement | undefined = $state();
   let pushBranchInputEl: HTMLInputElement | undefined = $state();
+  let renameMenuEl: HTMLDivElement | undefined = $state();
+  let renameInputEl: HTMLInputElement | undefined = $state();
 
   function onWindowPointerdown(e: PointerEvent) {
     if (sidebarCtrl.menu && menuEl && !menuEl.contains(e.target as Node)) sidebarCtrl.closeMenu();
@@ -61,6 +63,8 @@
     // Outside-click cancels the "Push to…" form — same busy-blocked
     // rationale as the New Branch/New Tag forms above.
     if (sidebarCtrl.pushMenu && !sidebarCtrl.busy && pushMenuEl && !pushMenuEl.contains(e.target as Node)) sidebarCtrl.cancelPushMenu();
+    // Outside-click cancels the Rename form — same busy-blocked rationale.
+    if (sidebarCtrl.renameMenu && !sidebarCtrl.busy && renameMenuEl && !renameMenuEl.contains(e.target as Node)) sidebarCtrl.cancelRenameMenu();
   }
 
   $effect(() => {
@@ -77,6 +81,16 @@
 
   $effect(() => {
     if (sidebarCtrl.pushMenu) requestAnimationFrame(() => pushBranchInputEl?.focus());
+  });
+
+  // Focus AND select the pre-filled name so the user can immediately retype it
+  // or edit just the suffix.
+  $effect(() => {
+    if (sidebarCtrl.renameMenu)
+      requestAnimationFrame(() => {
+        renameInputEl?.focus();
+        renameInputEl?.select();
+      });
   });
 
   function onNewBranchKeydown(e: KeyboardEvent) {
@@ -97,6 +111,11 @@
   function onPushBranchKeydown(e: KeyboardEvent) {
     if (e.key === "Enter") sidebarCtrl.confirmPushMenu();
     else if (e.key === "Escape" && !sidebarCtrl.busy) sidebarCtrl.cancelPushMenu();
+  }
+
+  function onRenameKeydown(e: KeyboardEvent) {
+    if (e.key === "Enter") sidebarCtrl.confirmRenameMenu();
+    else if (e.key === "Escape" && !sidebarCtrl.busy) sidebarCtrl.cancelRenameMenu();
   }
 
   // Safety Manager snapshots before every mutation, so a long session can
@@ -646,6 +665,7 @@
       <button class="danger" onclick={() => { const name = menu.name; const upstream = menu.upstream as string; sidebarCtrl.closeMenu(); sidebarCtrl.resetToUpstream(name, upstream); }}>Reset to {menu.upstream}&#8230;</button>
     {/if}
     <button onclick={() => { const name = menu.name; sidebarCtrl.closeMenu(); sidebarCtrl.copyBranchName(name); }}>Copy name</button>
+    <button onclick={() => { const name = menu.name; const x = menu.x, y = menu.y; sidebarCtrl.closeMenu(); sidebarCtrl.openRenameMenu(name, x, y); }}>Rename&#8230;</button>
     <button class="danger" disabled={menu.isCurrent} onclick={() => { const name = menu.name; sidebarCtrl.closeMenu(); sidebarCtrl.deleteBranch(name); }}>Delete&#8230;</button>
   </div>
 {/if}
@@ -667,6 +687,29 @@
       />
       <div class="nb-row">
         <span class="mut">Enter to push, Esc to cancel</span>
+        {#if sidebarCtrl.busy}<span class="spinner"></span>{/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if sidebarCtrl.renameMenu}
+  {@const rm = sidebarCtrl.renameMenu}
+  <div class="ref-pop cm-pop" bind:this={renameMenuEl} style="left:{rm.x}px;top:{rm.y}px">
+    <div class="cm-head"><span>Rename <b>{rm.name}</b></span></div>
+    <div class="nb-form" class:busy={sidebarCtrl.busy}>
+      <input
+        class="nb-input"
+        bind:this={renameInputEl}
+        bind:value={sidebarCtrl.renameInput}
+        placeholder="new branch name"
+        spellcheck="false"
+        autocomplete="off"
+        disabled={sidebarCtrl.busy}
+        onkeydown={onRenameKeydown}
+      />
+      <div class="nb-row">
+        <span class="mut">Enter to rename, Esc to cancel</span>
         {#if sidebarCtrl.busy}<span class="spinner"></span>{/if}
       </div>
     </div>

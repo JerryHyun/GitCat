@@ -32,6 +32,7 @@ vi.mock("../../ipc/bindings", () => ({
     checkoutDiscard: vi.fn(),
     createBranch: vi.fn(),
     deleteBranch: vi.fn(),
+    renameBranch: vi.fn(),
     resetBranchToUpstream: vi.fn(),
     createTag: vi.fn(),
     deleteTag: vi.fn(),
@@ -1579,6 +1580,64 @@ describe("newBranch", () => {
     await sidebarCtrl.confirmNewBranch();
     expect(commands.setVisibleBranches).not.toHaveBeenCalled();
     expect(sidebarCtrl.visibleLocal).toBeNull();
+  });
+});
+
+describe("rename branch (openRenameMenu / confirmRenameMenu)", () => {
+  it("openRenameMenu pre-fills the current name and replaces the branch menu", () => {
+    sidebarCtrl.openMenuAt("old-name", false, null, 10, 20);
+    expect(sidebarCtrl.menu).not.toBeNull();
+    sidebarCtrl.openRenameMenu("old-name", 10, 20);
+    expect(sidebarCtrl.menu).toBeNull();
+    expect(sidebarCtrl.renameMenu?.name).toBe("old-name");
+    expect(sidebarCtrl.renameInput).toBe("old-name");
+  });
+
+  it("real mode: renames from -> to and reloads on success", async () => {
+    mockInTauri = true;
+    vi.mocked(commands.renameBranch).mockResolvedValueOnce({ ok: true, message: "renamed", backupRef: null, conflictingFiles: [] });
+    sidebarCtrl.openRenameMenu("old-name", 0, 0);
+    sidebarCtrl.renameInput = "new-name";
+    await sidebarCtrl.confirmRenameMenu();
+    expect(commands.renameBranch).toHaveBeenCalledWith("/repo", "old-name", "new-name");
+    expect(bridge.reloadGraph).toHaveBeenCalledWith(true);
+    expect(sidebarCtrl.renameMenu).toBeNull();
+  });
+
+  it("an empty or unchanged name cancels without a request", async () => {
+    mockInTauri = true;
+    sidebarCtrl.openRenameMenu("old-name", 0, 0);
+    sidebarCtrl.renameInput = "  old-name  "; // trims back to the same name
+    await sidebarCtrl.confirmRenameMenu();
+    expect(commands.renameBranch).not.toHaveBeenCalled();
+    expect(sidebarCtrl.renameMenu).toBeNull();
+
+    sidebarCtrl.openRenameMenu("old-name", 0, 0);
+    sidebarCtrl.renameInput = "   ";
+    await sidebarCtrl.confirmRenameMenu();
+    expect(commands.renameBranch).not.toHaveBeenCalled();
+  });
+
+  it("carries the branch's visibility-filter entry across the rename", async () => {
+    mockInTauri = true;
+    sidebarCtrl.visibleLocal = ["main", "old-name"];
+    sidebarCtrl.visibleRemote = [];
+    vi.mocked(commands.renameBranch).mockResolvedValueOnce({ ok: true, message: "renamed", backupRef: null, conflictingFiles: [] });
+    sidebarCtrl.openRenameMenu("old-name", 0, 0);
+    sidebarCtrl.renameInput = "new-name";
+    await sidebarCtrl.confirmRenameMenu();
+    expect(sidebarCtrl.visibleLocal).toEqual(["main", "new-name"]);
+    expect(commands.setVisibleBranches).toHaveBeenCalledWith("/repo", false, ["main", "new-name"], []);
+  });
+
+  it("keeps the popover open on failure so it can be retried", async () => {
+    mockInTauri = true;
+    vi.mocked(commands.renameBranch).mockResolvedValueOnce({ ok: false, message: "already exists", backupRef: null, conflictingFiles: [] });
+    sidebarCtrl.openRenameMenu("old-name", 0, 0);
+    sidebarCtrl.renameInput = "taken";
+    await sidebarCtrl.confirmRenameMenu();
+    expect(sidebarCtrl.renameMenu).not.toBeNull();
+    expect(bridge.reloadGraph).not.toHaveBeenCalled();
   });
 });
 

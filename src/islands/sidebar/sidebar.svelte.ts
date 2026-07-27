@@ -380,6 +380,12 @@ class SidebarState {
   // (see pushBranch's own doc comment), not yet typed into.
   pushMenu = $state<PushMenu | null>(null);
   pushBranchInput = $state("");
+  // "Rename branch" popover — a second-level popover opened from the branch
+  // menu, same one-at-a-time / (x,y)-reuse shape as pushMenu above. `renameInput`
+  // is PRE-FILLED with the current name (a rename edits an existing name, unlike
+  // push's empty "same name" default — see openRenameMenu).
+  renameMenu = $state<{ name: string; x: number; y: number } | null>(null);
+  renameInput = $state("");
   // Backlog #34's dirty-tree resolution chooser — same "only one popover open
   // at a time" invariant as menu/tagMenu/submoduleMenu/mergeMenu above (see
   // openDirtyCheckoutMenu, and every other open* method's own null-out of
@@ -1669,6 +1675,7 @@ class SidebarState {
     this.dirtyCheckoutMenu = null;
     this.checkoutConfirm = null;
     this.pushMenu = null;
+    this.renameMenu = null;
     this.menu = { name, isCurrent, upstream, x: Math.min(x, window.innerWidth - 168), y };
   }
 
@@ -1760,6 +1767,80 @@ class SidebarState {
     if (ok) {
       this.pushMenu = null;
       this.pushBranchInput = "";
+    }
+  }
+
+  // "Rename…" from the branch popover — a SECOND-level popover with the current
+  // name PRE-FILLED to edit, same (x,y)-reuse + Enter-to-confirm/Esc-to-cancel
+  // shape as openPushMenu. Pre-filled (unlike push's empty "same name" default)
+  // because a rename is an edit of the existing name, not a fresh entry.
+  openRenameMenu(name: string, x: number, y: number) {
+    this.menu = null; // only one popover open at a time
+    this.tagMenu = null;
+    this.submoduleMenu = null;
+    this.mergeMenu = null;
+    this.pushMenu = null;
+    this.dirtyCheckoutMenu = null;
+    this.checkoutConfirm = null;
+    this.renameInput = name;
+    this.renameMenu = { name, x: Math.min(x, window.innerWidth - 240), y };
+  }
+
+  cancelRenameMenu() {
+    this.renameMenu = null;
+    this.renameInput = "";
+  }
+
+  // Rename `from` -> the typed name (`git branch -m`). Empty or unchanged means
+  // cancel, no request. Keeps the popover OPEN on failure (retry-friendly, same
+  // as confirmPushMenu); only closes on success. Carries the branch's entry in
+  // the visible-branch filter across the rename so a renamed branch doesn't
+  // vanish from a decluttered view (persisted directly; the reloadGraph below is
+  // the one reload — same discipline as confirmNewBranch).
+  async confirmRenameMenu() {
+    if (!this.renameMenu || this.busy) return;
+    const from = this.renameMenu.name;
+    const to = this.renameInput.trim();
+    if (!to || to === from) {
+      this.cancelRenameMenu();
+      return;
+    }
+    if (!IN_TAURI) {
+      this.renameMenu = null;
+      this.renameInput = "";
+      bridge.tama.set("hint");
+      bridge.tama.say("Renamed " + from + " → " + to + " (demo).");
+      return;
+    }
+    this.busy = true;
+    this.busyTarget = from;
+    bridge.tama.set("thinking");
+    bridge.tama.say("Renaming " + from + " → " + to + "…");
+    try {
+      const res = await commands.renameBranch(bridge.CUR_REPO as unknown as string, from, to);
+      if (res && res.ok) {
+        if (this.visibleLocal !== null && this.visibleLocal.includes(from)) {
+          this.visibleLocal = this.visibleLocal.map((b) => (b === from ? to : b));
+          try {
+            await commands.setVisibleBranches(bridge.CUR_REPO as unknown as string, this.autoMode, this.visibleLocal, this.visibleRemote);
+          } catch (e) {
+            console.error("set_visible_branches", e);
+          }
+        }
+        this.renameMenu = null;
+        this.renameInput = "";
+        await bridge.reloadGraph(true);
+        bridge.tama.set("celebrate");
+        bridge.tama.say(res.message || "Renamed to " + to + ".", 3200);
+      } else {
+        bridge.tama.warn((res && res.message) || "Couldn't rename " + from + ".");
+      }
+    } catch (e) {
+      bridge.tama.warn("Rename failed — " + e);
+      console.error(e);
+    } finally {
+      this.busy = false;
+      this.busyTarget = null;
     }
   }
 
