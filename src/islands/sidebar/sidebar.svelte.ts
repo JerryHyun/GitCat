@@ -1736,6 +1736,13 @@ class SidebarState {
     try {
       const res = await commands.pushBranch(bridge.CUR_REPO as unknown as string, name, null, remoteBranch);
       if (res && res.ok) {
+        // Push moves the remote-tracking ref (origin/<branch>) forward and
+        // resets ahead/behind, but never touches local HEAD — so neither the
+        // status poll (keyed on local branch/head/dirty) nor an unchanged local
+        // graph updates on its own. Refresh so the moved origin/* label and the
+        // branch pill's ↑/↓ counts update live (reloadGraph's tail refreshes the
+        // sidebar too).
+        await bridge.reloadGraph(true);
         bridge.tama.set("celebrate");
         bridge.tama.say(res.message || "Pushed " + target + ".", 3200);
         return true;

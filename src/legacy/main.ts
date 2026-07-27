@@ -1687,7 +1687,12 @@ async function doPush(){
   Tama.set("syncing"); Tama.say("Pushing…");
   try{
     const res=await tinvoke("push",{path:CUR_REPO});
-    if(res&&res.ok){ await sidebarCtrl.refresh(CUR_REPO); Tama.set("celebrate"); Tama.say(res.message||"Pushed.",3200); cheer(res.message||"Pushed.",TAMA_IMG.happy); }
+    // reloadGraph (not just sidebarCtrl.refresh) so the graph's origin/* ref
+    // label moves forward and the branch pill's ahead/behind resets — a push
+    // moves the remote-tracking ref but not local HEAD, so nothing else picks
+    // it up. reloadGraph's tail refreshes the sidebar too (and the incremental
+    // path keeps this cheap — no commits changed).
+    if(res&&res.ok){ await reloadGraph(true); Tama.set("celebrate"); Tama.say(res.message||"Pushed.",3200); cheer(res.message||"Pushed.",TAMA_IMG.happy); }
     else Tama.warn((res&&res.message)||"Push failed.");
   }catch(e){ Tama.warn("Push failed — "+e); console.error(e); }
   finally{ syncBusy=false; clearSyncButtonsBusy(); }

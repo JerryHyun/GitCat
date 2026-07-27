@@ -2030,6 +2030,8 @@ describe("pushBranch", () => {
     expect(ok).toBe(true);
     expect(commands.pushBranch).toHaveBeenCalledWith("/repo", "feature", null, null);
     expect(bridge.tama.set).toHaveBeenCalledWith("celebrate");
+    // Refreshes so the moved origin/* label + ahead/behind update live.
+    expect(bridge.reloadGraph).toHaveBeenCalledWith(true);
   });
 
   it("real mode: passes a differently-named remote branch through", async () => {
