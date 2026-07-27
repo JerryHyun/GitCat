@@ -26,17 +26,14 @@
 // Both ultimately call the SAME backend command, `force_push(path, lease)`;
 // `lease` is the only thing that differs backend-side.
 //
-// No Safety Manager snapshot and no `bridge.reloadGraph` on success: exactly
-// like plain `push`/doPush() in legacy/main.ts, force-push's entire risk
-// lives on the REMOTE side (see git_remote.rs's module doc) — nothing local
-// changes, so there's nothing local for Undo to protect and no local graph
-// state to reload. Only `sidebarCtrl.refresh` runs after a success, mirroring
-// doPush()'s own exact post-success call. The existing topbar Push
-// button/doPush() itself is completely untouched by this file — these two
-// actions are Tools-menu/⌘K-only entry points (see menu.rs, cmdk.svelte.ts,
-// and main.ts's "menu-action" switch), following the exact wiring precedent
-// resolver.svelte.ts's `pullMerge`/`pullRebase` established for the previous
-// backlog item.
+// No Safety Manager snapshot on success: force-push's entire risk lives on the
+// REMOTE side (see git_remote.rs's module doc) — nothing local for Undo to
+// protect. It DOES move the local remote-tracking ref (origin/<branch>) to match
+// your local branch, though, so like doPush()/pushBranch() it reloadGraph()s
+// after success to move the origin/* label and reset the branch pill's ahead/
+// behind live (the incremental refresh keeps this cheap — no local commits
+// change). Reachable from ⌘K and, for the current branch, the sidebar/graph
+// branch right-click menu (Sidebar.svelte wires those to forcePushCtrl).
 
 import { commands } from "../../ipc/bindings";
 import * as bridge from "../../legacy/bridge";
@@ -144,7 +141,11 @@ class ForcePushState {
     try {
       const res = await commands.forcePush(repo, lease);
       if (res && res.ok) {
-        await sidebarCtrl.refresh(repo);
+        // Force push moves the local remote-tracking ref (origin/<branch>) to
+        // match your local branch, so reloadGraph (not just sidebarCtrl.refresh)
+        // to move the origin/* label and reset the branch pill's ahead/behind
+        // live — same as doPush()/pushBranch(). Cheap: no local commits change.
+        await bridge.reloadGraph(true);
         bridge.tama.set("celebrate");
         bridge.tama.say(res.message || "Force-pushed " + branch + ".", 3200);
       } else {

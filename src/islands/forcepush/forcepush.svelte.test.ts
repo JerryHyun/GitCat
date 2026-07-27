@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../legacy/bridge", () => ({
   tama: { set: vi.fn(), say: vi.fn(), warn: vi.fn(), event: vi.fn() },
   armDanger: vi.fn(),
+  reloadGraph: vi.fn(async () => {}),
 }));
 
 let mockInTauri = true;
@@ -62,7 +63,7 @@ describe("forcePushLease", () => {
     );
   });
 
-  it("onConfirm calls force_push with lease:true and refreshes the sidebar on success", async () => {
+  it("onConfirm calls force_push with lease:true and reloads the graph on success", async () => {
     vi.mocked(commands.forcePush).mockResolvedValueOnce(ok("Force-pushed main (lease)."));
     forcePushCtrl.forcePushLease("/repo");
     const ctx = vi.mocked(bridge.armDanger).mock.calls[0][0] as any;
@@ -70,7 +71,8 @@ describe("forcePushLease", () => {
     await ctx.onConfirm();
 
     expect(commands.forcePush).toHaveBeenCalledWith("/repo", true);
-    expect(sidebarCtrl.refresh).toHaveBeenCalledWith("/repo");
+    // Reloads so the moved origin/* label + ahead/behind update live.
+    expect(bridge.reloadGraph).toHaveBeenCalledWith(true);
     expect(bridge.tama.set).toHaveBeenCalledWith("celebrate");
     expect(bridge.tama.say).toHaveBeenCalledWith("Force-pushed main (lease).", 3200);
     expect(bridge.tama.warn).not.toHaveBeenCalled();
@@ -85,7 +87,7 @@ describe("forcePushLease", () => {
 
     expect(commands.forcePush).toHaveBeenCalledWith("/repo", true);
     expect(bridge.tama.warn).toHaveBeenCalledWith("! [rejected] main -> main (stale info)");
-    expect(sidebarCtrl.refresh).not.toHaveBeenCalled();
+    expect(bridge.reloadGraph).not.toHaveBeenCalled();
   });
 
   it("onConfirm surfaces a thrown error via warn instead of pretending success", async () => {
@@ -96,6 +98,7 @@ describe("forcePushLease", () => {
     await ctx.onConfirm();
 
     expect(bridge.tama.warn).toHaveBeenCalledWith(expect.stringContaining("boom"));
+    expect(bridge.reloadGraph).not.toHaveBeenCalled();
     expect(sidebarCtrl.refresh).not.toHaveBeenCalled();
   });
 });
@@ -114,7 +117,7 @@ describe("forcePushOverride", () => {
     );
   });
 
-  it("onConfirm calls force_push with lease:false and refreshes the sidebar on success", async () => {
+  it("onConfirm calls force_push with lease:false and reloads the graph on success", async () => {
     vi.mocked(commands.forcePush).mockResolvedValueOnce(ok("Force-pushed main (forced)."));
     forcePushCtrl.forcePushOverride("/repo");
     const ctx = vi.mocked(bridge.armDanger).mock.calls[0][0] as any;
@@ -122,11 +125,11 @@ describe("forcePushOverride", () => {
     await ctx.onConfirm();
 
     expect(commands.forcePush).toHaveBeenCalledWith("/repo", false);
-    expect(sidebarCtrl.refresh).toHaveBeenCalledWith("/repo");
+    expect(bridge.reloadGraph).toHaveBeenCalledWith(true);
     expect(bridge.tama.set).toHaveBeenCalledWith("celebrate");
   });
 
-  it("onConfirm failure warns and does not refresh", async () => {
+  it("onConfirm failure warns and does not reload", async () => {
     vi.mocked(commands.forcePush).mockResolvedValueOnce(fail("This branch has no upstream yet — use Push to publish it first."));
     forcePushCtrl.forcePushOverride("/repo");
     const ctx = vi.mocked(bridge.armDanger).mock.calls[0][0] as any;
@@ -134,7 +137,7 @@ describe("forcePushOverride", () => {
     await ctx.onConfirm();
 
     expect(bridge.tama.warn).toHaveBeenCalledWith("This branch has no upstream yet — use Push to publish it first.");
-    expect(sidebarCtrl.refresh).not.toHaveBeenCalled();
+    expect(bridge.reloadGraph).not.toHaveBeenCalled();
   });
 });
 

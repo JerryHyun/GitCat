@@ -2,6 +2,7 @@
   import { sidebarCtrl, submoduleAction, submoduleCanOpen, SUBMODULES_ALL, SUBMODULES_SYNC_ALL } from "./sidebar.svelte.ts";
   import { remotesCtrl } from "../remotes/remotes.svelte.ts";
   import { dashboardCtrl } from "../dashboard/dashboard.svelte.ts";
+  import { forcePushCtrl } from "../forcepush/forcepush.svelte.ts";
   import { snapshotPreviewCtrl } from "../snapshotpreview/snapshotpreview.svelte.ts";
   import * as bridge from "../../legacy/bridge";
   import type { SimpleRef, SubmoduleInfo } from "../../ipc/bindings";
@@ -656,6 +657,14 @@
          checking any of them out. -->
     <button onclick={() => { const name = menu.name; sidebarCtrl.closeMenu(); sidebarCtrl.pushBranch(name, null); }}>Push</button>
     <button onclick={() => { const name = menu.name; const x = menu.x, y = menu.y; sidebarCtrl.closeMenu(); sidebarCtrl.openPushMenu(name, x, y); }}>Push to&#8230;</button>
+    <!-- Force push targets the CURRENT branch (the backend force_push resolves
+         its branch from HEAD), so it's offered only on the current branch. Both
+         variants open their own typed-confirm danger window (see
+         forcepush.svelte.ts); "override" is the raw --force. -->
+    {#if menu.isCurrent}
+      <button class="danger" onclick={() => { sidebarCtrl.closeMenu(); forcePushCtrl.forcePushLease(bridge.CUR_REPO as unknown as string); }}>Force push (with lease)&#8230;</button>
+      <button class="danger" onclick={() => { sidebarCtrl.closeMenu(); forcePushCtrl.forcePushOverride(bridge.CUR_REPO as unknown as string); }}>Force push — override remote&#8230;</button>
+    {/if}
     {#if !menu.isCurrent}
       <button onclick={() => { const name = menu.name; const x = menu.x, y = menu.y; sidebarCtrl.closeMenu(); sidebarCtrl.openMergeMenu(name, x, y); }}>Merge into current&#8230;</button>
       <button onclick={() => { const name = menu.name; sidebarCtrl.closeMenu(); sidebarCtrl.rebaseOnto(name); }}>Rebase current branch onto here</button>
