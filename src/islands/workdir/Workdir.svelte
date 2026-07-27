@@ -11,6 +11,7 @@
   import Folder from "@lucide/svelte/icons/folder";
   import ChevronsDownUp from "@lucide/svelte/icons/chevrons-down-up";
   import ChevronsUpDown from "@lucide/svelte/icons/chevrons-up-down";
+  import Maximize2 from "@lucide/svelte/icons/maximize-2";
 
   // "Open in external diff" (backlog #12) — added to BOTH staged (4th icon,
   // was 3) and unstaged (5th icon, was 4) rows: unlike Blame/History (which
@@ -34,14 +35,82 @@
   // scrollLeft/scrollTop the PREVIOUS file's diff left it at. See Detail.svelte's
   // own copy of this fix for the full writeup.
   let diffviewEl = $state<HTMLDivElement | undefined>(undefined);
+  // Second .diffview instance for the expanded-diff modal below (same reset).
+  let diffviewExpandedEl = $state<HTMLDivElement | undefined>(undefined);
   $effect(() => {
     workdirCtrl.selectedDiffFile;
     if (diffviewEl) {
       diffviewEl.scrollLeft = 0;
       diffviewEl.scrollTop = 0;
     }
+    if (diffviewExpandedEl) {
+      diffviewExpandedEl.scrollLeft = 0;
+      diffviewExpandedEl.scrollTop = 0;
+    }
   });
+
+  // Expand the uncommitted-changes diff into the same near-fullscreen modal the
+  // commit view uses (see Detail.svelte's .diffx) — a bigger window for reading
+  // a large working-tree change, with the staged/unstaged file lists on the left
+  // and the full per-hunk / per-line staging kept intact on the right.
+  let diffExpanded = $state(false);
+  function onKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape" && diffExpanded) {
+      diffExpanded = false;
+      e.stopPropagation();
+    }
+  }
+
+  // Resizable file-list panel in that modal — an own copy of Detail.svelte's
+  // diffx splitter (same localStorage key so the two modals share one width).
+  const DIFFX_TREE_MIN = 160,
+    DIFFX_TREE_MAX = 620,
+    DIFFX_TREE_DEFAULT = 280,
+    DIFFX_TREE_LS = "gitcat.diffxTreeW";
+  let diffxTreeW = $state<number>(
+    (() => {
+      const v = Number(localStorage.getItem(DIFFX_TREE_LS));
+      return Number.isFinite(v) && v >= DIFFX_TREE_MIN && v <= DIFFX_TREE_MAX ? v : DIFFX_TREE_DEFAULT;
+    })(),
+  );
+  let diffxResizing = $state(false);
+  function saveDiffxWidth() {
+    try {
+      localStorage.setItem(DIFFX_TREE_LS, String(Math.round(diffxTreeW)));
+    } catch {
+      /* private mode / quota — width just won't persist */
+    }
+  }
+  function startDiffxResize(e: PointerEvent) {
+    e.preventDefault();
+    const startX = e.clientX,
+      startW = diffxTreeW;
+    diffxResizing = true;
+    document.body.style.userSelect = "none";
+    const move = (ev: PointerEvent) => {
+      diffxTreeW = Math.max(DIFFX_TREE_MIN, Math.min(DIFFX_TREE_MAX, startW + (ev.clientX - startX)));
+    };
+    const up = () => {
+      diffxResizing = false;
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      saveDiffxWidth();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+  function onSplitterKey(e: KeyboardEvent) {
+    const step = e.shiftKey ? 32 : 8;
+    if (e.key === "ArrowLeft") diffxTreeW = Math.max(DIFFX_TREE_MIN, diffxTreeW - step);
+    else if (e.key === "ArrowRight") diffxTreeW = Math.min(DIFFX_TREE_MAX, diffxTreeW + step);
+    else return;
+    e.preventDefault();
+    saveDiffxWidth();
+  }
 </script>
+
+<svelte:window on:keydown={onKeydown} />
 
 {#if workdirCtrl.selected}
   <section>
@@ -154,80 +223,13 @@
     <section>
       <div class="wd-sec-head">
         <h4 class="d-lab" style="margin:0">Diff</h4>
-        {#if workdirCtrl.selectedLinesCount}
-          <div class="wd-lines-bar">
-            <span class="mut" style="font-size:11.5px">{workdirCtrl.selectedLinesCount} line{workdirCtrl.selectedLinesCount === 1 ? "" : "s"} selected</span>
-            {#if workdirCtrl.busy && workdirCtrl.busyTarget === file}
-              <span class="spinner"></span>
-            {:else if !workdirCtrl.selectedDiffStaged}
-              <button disabled={workdirCtrl.busy} onclick={() => workdirCtrl.stageLines(repo(), file, workdirCtrl.buildSelectedHunks())}>Stage selected</button>
-              <button class="danger" disabled={workdirCtrl.busy} onclick={() => workdirCtrl.confirmDiscardLines(file, workdirCtrl.buildSelectedHunks())}>Discard selected</button>
-            {:else}
-              <button disabled={workdirCtrl.busy} onclick={() => workdirCtrl.unstageLines(repo(), file, workdirCtrl.buildSelectedHunks())}>Unstage selected</button>
-            {/if}
-          </div>
-        {/if}
+        {@render workdirLinesBar(file)}
+        <button class="wd-act" title="Expand diff" aria-label="Expand diff to full page" onclick={() => (diffExpanded = true)}>
+          <Maximize2 class="ico" size={13} aria-hidden="true" />
+        </button>
       </div>
       <div class="diffview" bind:this={diffviewEl}>
-        {#if workdirCtrl.diffLoading}
-          <div class="diff-file-h mut"><span class="spinner"></span> loading diff&#8230;</div>
-        {:else if workdirCtrl.diffError}
-          <div class="diff-file-h">{workdirCtrl.diffHeader}</div>
-          <div class="diff-line"><span class="ln"></span><span class="mk"></span><code class="mut">{workdirCtrl.diffError}</code></div>
-        {:else if workdirCtrl.diffFile}
-          <div class="diff-file-h">{workdirCtrl.diffHeader}</div>
-          <div class="diff-rows">
-            {#if workdirCtrl.diffFile.binary}
-              <div class="diff-line"><span class="ln"></span><span class="mk"></span><code class="mut">binary file — not shown</code></div>
-            {:else if !workdirCtrl.diffHunks.length}
-              <div class="diff-line"><span class="ln"></span><span class="mk"></span><code class="mut">no textual diff</code></div>
-            {:else}
-              {#each workdirCtrl.diffHunks as hunk (hunk.header)}
-                <div class="diff-line hunk">
-                  <span class="ln"></span><span class="sel"></span><span class="mk"></span><code>{hunk.header}</code>
-                  <span class="wd-hunk-act">
-                    {#if workdirCtrl.busy && workdirCtrl.busyTarget === file}
-                      <span class="spinner"></span>
-                    {:else if !workdirCtrl.selectedDiffStaged}
-                      <button disabled={workdirCtrl.busy} onclick={() => workdirCtrl.stageLines(repo(), file, [workdirCtrl.hunkSelectionFor(hunk)])}>Stage hunk</button>
-                      <button class="danger" disabled={workdirCtrl.busy} onclick={() => workdirCtrl.confirmDiscardLines(file, [workdirCtrl.hunkSelectionFor(hunk)])}>Discard hunk</button>
-                    {:else}
-                      <button disabled={workdirCtrl.busy} onclick={() => workdirCtrl.unstageLines(repo(), file, [workdirCtrl.hunkSelectionFor(hunk)])}>Unstage hunk</button>
-                    {/if}
-                  </span>
-                </div>
-                {#each hunk.lines as line, idx (line.kind + ":" + line.oldNo + ":" + line.newNo)}
-                  {@const sel = workdirCtrl.isLineSelected(hunk.header, line)}
-                  <div
-                    class="diff-line {line.kind === '+' ? 'add' : line.kind === '-' ? 'del' : ''}"
-                    class:selected={sel}
-                  >
-                    <span class="ln">{line.kind === "+" ? line.newNo : line.kind === "-" ? line.oldNo : (line.newNo ?? line.oldNo)}</span>
-                    <span class="sel">
-                      {#if line.kind === "+" || line.kind === "-"}
-                        <input
-                          type="checkbox"
-                          checked={sel}
-                          disabled={workdirCtrl.busy}
-                          onclick={(e) => {
-                            e.stopPropagation();
-                            workdirCtrl.toggleLine(hunk.header, hunk.lines, idx, e.shiftKey);
-                          }}
-                          aria-label="select {line.kind === '+' ? 'added' : 'removed'} line {line.kind === '+' ? line.newNo : line.oldNo}"
-                        />
-                      {/if}
-                    </span>
-                    <span class="mk">{line.kind === "+" || line.kind === "-" ? line.kind : ""}</span>
-                    <code>{@html line.html}</code>
-                  </div>
-                {/each}
-              {/each}
-              {#if workdirCtrl.diffFile.truncated}
-                <div class="diff-line"><span class="ln"></span><span class="sel"></span><span class="mk"></span><code class="mut">&#8230; diff truncated (file capped)</code></div>
-              {/if}
-            {/if}
-          </div>
-        {/if}
+        {@render workdirDiffBody(file)}
       </div>
     </section>
   {/if}
@@ -296,7 +298,175 @@
       <button class="wd-stash-new" onclick={() => workdirCtrl.openStashForm()}>&#65291; Stash changes&#8230;</button>
     {/if}
   </section>
+
+  <!-- Expanded uncommitted-changes diff — the SAME near-fullscreen .diffx modal
+       the commit view uses (see Detail.svelte), for reading a big working-tree
+       change comfortably: the staged/unstaged file lists on the left, the
+       selected file's diff (with the full per-hunk / per-line staging intact) on
+       the right. A top-level scrim so it's a direct child of .detail, same as
+       the commit modal (index.html's `.detail.collapsed>*:not(.scrim)` exempts
+       it from the Focus-mode panel collapse). -->
+  <div class="scrim" class:on={diffExpanded}>
+    <div class="modal diffx">
+      <div class="modal-head">
+        <div class="diffx-head-main">
+          <h3>Uncommitted changes</h3>
+          <p>{#if workdirCtrl.status?.branch}on <span class="mono">{workdirCtrl.status.branch}</span>{:else}detached HEAD{/if}</p>
+        </div>
+      </div>
+      <div class="modal-body diffx-body">
+        <div class="diffx-files" style="width:{diffxTreeW}px">
+          <div class="diffx-files-scroll tree" data-vimnav-list>
+            <div class="diffx-files-head">
+              <span class="d-lab" style="margin:0">Staged ({workdirCtrl.status?.staged.length ?? 0})</span>
+              <div class="wd-sec-actions">
+                {@render treeCtl("staged", workdirCtrl.stagedHasDirs)}
+                {#if workdirCtrl.status?.staged.length}
+                  <button class="wd-stage-all" disabled={workdirCtrl.busy} onclick={() => workdirCtrl.unstageAll(repo())}>
+                    {#if workdirCtrl.busy && workdirCtrl.busyTarget === "__unstage_all__"}<span class="spinner"></span>{:else}Unstage all{/if}
+                  </button>
+                {/if}
+              </div>
+            </div>
+            {#if !workdirCtrl.status?.staged.length}
+              <div class="mut" style="font-size:12px;padding:2px 4px">nothing staged</div>
+            {:else}
+              {@render stagedDirNode(workdirCtrl.stagedTree)}
+            {/if}
+            <div class="diffx-files-head" style="margin-top:12px">
+              <span class="d-lab" style="margin:0">Unstaged ({workdirCtrl.status?.unstaged.length ?? 0})</span>
+              <div class="wd-sec-actions">
+                {@render treeCtl("unstaged", workdirCtrl.unstagedHasDirs)}
+                {#if workdirCtrl.status?.unstaged.length}
+                  <button class="wd-stage-all" disabled={workdirCtrl.busy} onclick={() => workdirCtrl.stageAll(repo())}>
+                    {#if workdirCtrl.busy && workdirCtrl.busyTarget === "__all__"}<span class="spinner"></span>{:else}Stage all{/if}
+                  </button>
+                {/if}
+              </div>
+            </div>
+            {#if !workdirCtrl.status?.unstaged.length}
+              <div class="mut" style="font-size:12px;padding:2px 4px">no unstaged changes</div>
+            {:else}
+              {@render unstagedDirNode(workdirCtrl.unstagedTree)}
+            {/if}
+          </div>
+        </div>
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <div
+          class="diffx-splitter"
+          class:active={diffxResizing}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize file list"
+          aria-valuenow={Math.round(diffxTreeW)}
+          aria-valuemin={DIFFX_TREE_MIN}
+          aria-valuemax={DIFFX_TREE_MAX}
+          tabindex="0"
+          onpointerdown={startDiffxResize}
+          ondblclick={() => {
+            diffxTreeW = DIFFX_TREE_DEFAULT;
+            saveDiffxWidth();
+          }}
+          onkeydown={onSplitterKey}
+        ></div>
+        <div class="diffview diffx-diff" bind:this={diffviewExpandedEl}>
+          {#if workdirCtrl.selectedDiffFile}
+            {@const file = workdirCtrl.selectedDiffFile}
+            {@render workdirLinesBar(file)}
+            {@render workdirDiffBody(file)}
+          {:else}
+            <div class="diff-file-h mut">select a file on the left to see its diff</div>
+          {/if}
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn ghost" onclick={() => (diffExpanded = false)}>Close</button>
+      </div>
+    </div>
+  </div>
 {/if}
+
+<!-- The uncommitted-changes Diff, reused by the inline panel above and the
+     expanded .diffx modal: a "lines selected" action bar and the file's diff
+     body (per-hunk toolbar + per-line staging checkboxes). -->
+{#snippet workdirLinesBar(file: string)}
+  {#if workdirCtrl.selectedLinesCount}
+    <div class="wd-lines-bar">
+      <span class="mut" style="font-size:11.5px">{workdirCtrl.selectedLinesCount} line{workdirCtrl.selectedLinesCount === 1 ? "" : "s"} selected</span>
+      {#if workdirCtrl.busy && workdirCtrl.busyTarget === file}
+        <span class="spinner"></span>
+      {:else if !workdirCtrl.selectedDiffStaged}
+        <button disabled={workdirCtrl.busy} onclick={() => workdirCtrl.stageLines(repo(), file, workdirCtrl.buildSelectedHunks())}>Stage selected</button>
+        <button class="danger" disabled={workdirCtrl.busy} onclick={() => workdirCtrl.confirmDiscardLines(file, workdirCtrl.buildSelectedHunks())}>Discard selected</button>
+      {:else}
+        <button disabled={workdirCtrl.busy} onclick={() => workdirCtrl.unstageLines(repo(), file, workdirCtrl.buildSelectedHunks())}>Unstage selected</button>
+      {/if}
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet workdirDiffBody(file: string)}
+  {#if workdirCtrl.diffLoading}
+    <div class="diff-file-h mut"><span class="spinner"></span> loading diff&#8230;</div>
+  {:else if workdirCtrl.diffError}
+    <div class="diff-file-h">{workdirCtrl.diffHeader}</div>
+    <div class="diff-line"><span class="ln"></span><span class="mk"></span><code class="mut">{workdirCtrl.diffError}</code></div>
+  {:else if workdirCtrl.diffFile}
+    <div class="diff-file-h">{workdirCtrl.diffHeader}</div>
+    <div class="diff-rows">
+      {#if workdirCtrl.diffFile.binary}
+        <div class="diff-line"><span class="ln"></span><span class="mk"></span><code class="mut">binary file — not shown</code></div>
+      {:else if !workdirCtrl.diffHunks.length}
+        <div class="diff-line"><span class="ln"></span><span class="mk"></span><code class="mut">no textual diff</code></div>
+      {:else}
+        {#each workdirCtrl.diffHunks as hunk (hunk.header)}
+          <div class="diff-line hunk">
+            <span class="ln"></span><span class="sel"></span><span class="mk"></span><code>{hunk.header}</code>
+            <span class="wd-hunk-act">
+              {#if workdirCtrl.busy && workdirCtrl.busyTarget === file}
+                <span class="spinner"></span>
+              {:else if !workdirCtrl.selectedDiffStaged}
+                <button disabled={workdirCtrl.busy} onclick={() => workdirCtrl.stageLines(repo(), file, [workdirCtrl.hunkSelectionFor(hunk)])}>Stage hunk</button>
+                <button class="danger" disabled={workdirCtrl.busy} onclick={() => workdirCtrl.confirmDiscardLines(file, [workdirCtrl.hunkSelectionFor(hunk)])}>Discard hunk</button>
+              {:else}
+                <button disabled={workdirCtrl.busy} onclick={() => workdirCtrl.unstageLines(repo(), file, [workdirCtrl.hunkSelectionFor(hunk)])}>Unstage hunk</button>
+              {/if}
+            </span>
+          </div>
+          {#each hunk.lines as line, idx (line.kind + ":" + line.oldNo + ":" + line.newNo)}
+            {@const sel = workdirCtrl.isLineSelected(hunk.header, line)}
+            <div
+              class="diff-line {line.kind === '+' ? 'add' : line.kind === '-' ? 'del' : ''}"
+              class:selected={sel}
+            >
+              <span class="ln">{line.kind === "+" ? line.newNo : line.kind === "-" ? line.oldNo : (line.newNo ?? line.oldNo)}</span>
+              <span class="sel">
+                {#if line.kind === "+" || line.kind === "-"}
+                  <input
+                    type="checkbox"
+                    checked={sel}
+                    disabled={workdirCtrl.busy}
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      workdirCtrl.toggleLine(hunk.header, hunk.lines, idx, e.shiftKey);
+                    }}
+                    aria-label="select {line.kind === '+' ? 'added' : 'removed'} line {line.kind === '+' ? line.newNo : line.oldNo}"
+                  />
+                {/if}
+              </span>
+              <span class="mk">{line.kind === "+" || line.kind === "-" ? line.kind : ""}</span>
+              <code>{@html line.html}</code>
+            </div>
+          {/each}
+        {/each}
+        {#if workdirCtrl.diffFile.truncated}
+          <div class="diff-line"><span class="ln"></span><span class="sel"></span><span class="mk"></span><code class="mut">&#8230; diff truncated (file capped)</code></div>
+        {/if}
+      {/if}
+    </div>
+  {/if}
+{/snippet}
 
 <!-- Staged/unstaged folder-tree rendering (see workdir.svelte.ts's buildWdTree
      doc comment) — two near-identical recursive snippets, one per section,
