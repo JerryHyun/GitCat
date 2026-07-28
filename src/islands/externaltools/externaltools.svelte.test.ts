@@ -19,6 +19,7 @@ vi.mock("../../ipc/bindings", () => ({
     getToolSettings: vi.fn(),
     setToolSettings: vi.fn(),
     openDiffTool: vi.fn(),
+    suggestCommitMsgCommand: vi.fn(),
   },
 }));
 
@@ -55,6 +56,8 @@ function resetCtrl() {
   externalToolsCtrl.diffCmd = "";
   externalToolsCtrl.mergeName = "";
   externalToolsCtrl.mergeCmd = "";
+  externalToolsCtrl.commitCmd = "";
+  externalToolsCtrl.suggesting = false;
   mockInTauri = true;
   vi.clearAllMocks();
 }
@@ -278,5 +281,41 @@ describe("openDiff — the 3 call-site shapes", () => {
 
     expect(commands.openDiffTool).not.toHaveBeenCalled();
     expect(bridge.tama.say).toHaveBeenCalled();
+  });
+});
+
+describe("suggestOllama — one-click prefill of an ollama commit-message command", () => {
+  it("fills the command box (not saved) when the backend returns a suggestion", async () => {
+    mockInTauri = true;
+    vi.mocked(commands.suggestCommitMsgCommand).mockResolvedValueOnce(
+      ok('git diff --staged | ollama run llama3.2 --hidethinking "write a commit message"'),
+    );
+    await externalToolsCtrl.suggestOllama();
+    expect(externalToolsCtrl.commitCmd).toBe('git diff --staged | ollama run llama3.2 --hidethinking "write a commit message"');
+    // Prefill only — never auto-saves.
+    expect(commands.setToolSettings).not.toHaveBeenCalled();
+    expect(externalToolsCtrl.error).toBe("");
+  });
+
+  it("explains when ollama isn't set up (backend returns null), leaving the box untouched", async () => {
+    mockInTauri = true;
+    externalToolsCtrl.commitCmd = "my-existing";
+    vi.mocked(commands.suggestCommitMsgCommand).mockResolvedValueOnce(ok(null));
+    await externalToolsCtrl.suggestOllama();
+    expect(externalToolsCtrl.commitCmd).toBe("my-existing");
+    expect(externalToolsCtrl.error).toMatch(/ollama/i);
+  });
+
+  it("surfaces a backend error", async () => {
+    mockInTauri = true;
+    vi.mocked(commands.suggestCommitMsgCommand).mockResolvedValueOnce(err("boom"));
+    await externalToolsCtrl.suggestOllama();
+    expect(externalToolsCtrl.error).toBe("boom");
+  });
+
+  it("is a demo no-op outside Tauri (never calls the command)", async () => {
+    mockInTauri = false;
+    await externalToolsCtrl.suggestOllama();
+    expect(commands.suggestCommitMsgCommand).not.toHaveBeenCalled();
   });
 });

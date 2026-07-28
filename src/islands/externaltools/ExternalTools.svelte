@@ -98,6 +98,17 @@
             autocomplete="off"
             onkeydown={onFieldKeydown}
           />
+          <div class="nb-row" style="margin-top:6px">
+            <button
+              class="btn ghost"
+              style="padding:4px 10px"
+              title="Prefill a default that pipes the staged diff to a local ollama model — review it and Save"
+              disabled={externalToolsCtrl.saving || externalToolsCtrl.suggesting}
+              onclick={() => externalToolsCtrl.suggestOllama()}
+            >
+              {#if externalToolsCtrl.suggesting}<span class="spinner"></span> Checking&#8230;{:else}&#10024; Use ollama default{/if}
+            </button>
+          </div>
         </div>
         <p class="mut" style="font-size:11.5px;margin:2px 0 0">
           Must <b>print the message and exit</b> (non-interactive) &#8212; GitCat runs it in the repo and its output fills the commit box (the

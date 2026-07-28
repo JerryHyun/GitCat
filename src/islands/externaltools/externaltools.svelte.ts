@@ -53,6 +53,7 @@ class ExternalToolsState {
   // arbitrary command, not a git-subsection tool name. GitCat runs it and drops
   // the output in the commit box; it connects to no AI itself.
   commitCmd = $state("");
+  suggesting = $state(false); // suggestCommitMsgCommand() (ollama detection) in flight
 
   // Entry point (Tools menu / ⌘K). Always re-fetches — same "never trust
   // stale settings across a reopen" discipline as every other on-demand
@@ -99,6 +100,39 @@ class ExternalToolsState {
       this.error = "Could not load external tool settings — " + e;
     } finally {
       this.loading = false;
+    }
+  }
+
+  // "Use ollama default" — one-click prefill of the commit-message command box
+  // when the machine has ollama with a model pulled. Only FILLS the field (the
+  // user reviews and Saves it, and only then does anything ever run) so the
+  // AI-agnostic contract holds: GitCat still runs only a command the user
+  // explicitly configured. Ok(null) from the backend = ollama isn't set up.
+  async suggestOllama(): Promise<void> {
+    if (this.suggesting || this.saving) return;
+    if (!IN_TAURI) {
+      bridge.tama.say("ollama detection needs the desktop app (demo).");
+      return;
+    }
+    this.suggesting = true;
+    this.error = "";
+    try {
+      const res = await commands.suggestCommitMsgCommand();
+      if (res.status === "ok") {
+        if (res.data) {
+          this.commitCmd = res.data;
+          bridge.tama.set("hint");
+          bridge.tama.say("Filled an ollama default — review it and hit Save.", 4200);
+        } else {
+          this.error = "ollama isn't set up — install it and pull a model (`ollama pull <model>`), then try again, or type your own command.";
+        }
+      } else {
+        this.error = String(res.error ?? "Couldn't check for ollama.");
+      }
+    } catch (e) {
+      this.error = "Couldn't check for ollama — " + e;
+    } finally {
+      this.suggesting = false;
     }
   }
 

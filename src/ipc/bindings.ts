@@ -2719,6 +2719,28 @@ async generateCommitMessage(path: string) : Promise<Result<string, string>> {
 }
 },
 /**
+ * Best-effort suggestion for the commit-message command when the machine has
+ * `ollama`: if it's installed AND at least one model is pulled, return a
+ * ready-to-run default (`git diff --staged | ollama run <model> …`) using the
+ * first chat model. `Ok(None)` when ollama isn't found or no model is pulled.
+ * 
+ * This ONLY builds a string for the user to review and Save in the External
+ * Tools form — GitCat never runs ollama itself here, and the AI-agnostic
+ * contract is unchanged: the command only ever runs LATER, once the user has
+ * saved it, as the same user-configured shell-out every other commit-message
+ * command uses (see [`run_commit_msg_command`]).
+ * 
+ * JS: `commands.suggestCommitMsgCommand()`.
+ */
+async suggestCommitMsgCommand() : Promise<Result<string | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("suggest_commit_msg_command") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * JS: `commands.openDiffTool(path, file, staged, fromRev, toRev)`.
  * 
  * `staged` and a rev range are mutually exclusive; if a range is given, both

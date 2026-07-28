@@ -509,6 +509,62 @@ fn run_commit_msg_command(path: &str, cmd: &str) -> Result<String, String> {
     Ok(message)
 }
 
+/// The Conventional-Commits, print-only prompt GitCat pre-fills for an ollama
+/// default (see [`suggest_commit_msg_command`]). Single-quoted example inside so
+/// the whole thing can sit in a double-quoted shell argument unescaped.
+const OLLAMA_COMMIT_PROMPT: &str = "You write git commit messages. From the staged diff on stdin, output ONLY a Conventional Commits message: a 'type(scope): subject' line under 72 chars, then optionally a blank line and a short body. No preamble, no code fences.";
+
+/// Pick a chat model from `ollama list`'s stdout: its first column (NAME) after
+/// the header row, preferring one that isn't obviously an embedding model (whose
+/// name usually contains "embed" and can't do chat), else just the first.
+fn first_ollama_chat_model(list_stdout: &str) -> Option<&str> {
+    let models: Vec<&str> = list_stdout
+        .lines()
+        .skip(1) // header: NAME  ID  SIZE  MODIFIED
+        .filter_map(|l| l.split_whitespace().next())
+        .filter(|m| !m.is_empty())
+        .collect();
+    models
+        .iter()
+        .find(|m| !m.to_lowercase().contains("embed"))
+        .or_else(|| models.first())
+        .copied()
+}
+
+/// Best-effort suggestion for the commit-message command when the machine has
+/// `ollama`: if it's installed AND at least one model is pulled, return a
+/// ready-to-run default (`git diff --staged | ollama run <model> …`) using the
+/// first chat model. `Ok(None)` when ollama isn't found or no model is pulled.
+///
+/// This ONLY builds a string for the user to review and Save in the External
+/// Tools form — GitCat never runs ollama itself here, and the AI-agnostic
+/// contract is unchanged: the command only ever runs LATER, once the user has
+/// saved it, as the same user-configured shell-out every other commit-message
+/// command uses (see [`run_commit_msg_command`]).
+///
+/// JS: `commands.suggestCommitMsgCommand()`.
+#[tauri::command]
+#[specta::specta]
+pub async fn suggest_commit_msg_command() -> Result<Option<String>, String> {
+    crate::blocking::run_blocking(ollama_default_commit_command).await
+}
+
+fn ollama_default_commit_command() -> Result<Option<String>, String> {
+    use std::process::Command;
+    let mut c = Command::new("ollama");
+    c.arg("list").no_console_window();
+    // A missing `ollama` binary surfaces as an Err from spawning; a slow/hung
+    // one as a timeout. Either way that's "not available", not a hard error the
+    // form must show — so map anything but a clean success to Ok(None).
+    let out = match crate::procutil::output_with_timeout(c, std::time::Duration::from_secs(8)) {
+        Ok(o) if o.status.success() => o,
+        _ => return Ok(None),
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    Ok(first_ollama_chat_model(&stdout)
+        .map(|m| format!("git diff --staged | ollama run {m} --hidethinking \"{OLLAMA_COMMIT_PROMPT}\"")))
+}
+
 /// Remove ANSI escape sequences (CSI cursor/colour codes, OSC, lone ESC) from a
 /// tool's output. `ollama run` and many other CLIs stream a spinner + cursor
 /// control even when their output is piped, not a TTY; without this those raw
@@ -819,6 +875,30 @@ pub fn resolve_conflict_with_external_tool_inner(configured: Option<ExternalTool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ollama_model_parse_picks_first_and_prefers_a_chat_model() {
+        // Typical `ollama list` output: header row, then one row per model.
+        let out = "NAME               ID            SIZE      MODIFIED\n\
+                   llama3.2:latest    a80c4f17acd5  2.0 GB    2 days ago\n\
+                   qwen2.5:7b         845dbda0ea48  4.7 GB    1 week ago\n";
+        assert_eq!(first_ollama_chat_model(out), Some("llama3.2:latest"));
+
+        // An embedding model listed first is skipped in favour of a chat model.
+        let out2 = "NAME                    ID            SIZE      MODIFIED\n\
+                    nomic-embed-text:latest 0a109f422b47  274 MB    3 days ago\n\
+                    gemma2:latest           ff02c3702f32  5.4 GB    5 days ago\n";
+        assert_eq!(first_ollama_chat_model(out2), Some("gemma2:latest"));
+
+        // Only an embedding model? Fall back to it rather than nothing.
+        let out3 = "NAME                    ID            SIZE      MODIFIED\n\
+                    nomic-embed-text:latest 0a109f422b47  274 MB    3 days ago\n";
+        assert_eq!(first_ollama_chat_model(out3), Some("nomic-embed-text:latest"));
+
+        // No models (header only, or empty) => no suggestion.
+        assert_eq!(first_ollama_chat_model("NAME  ID  SIZE  MODIFIED\n"), None);
+        assert_eq!(first_ollama_chat_model(""), None);
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
