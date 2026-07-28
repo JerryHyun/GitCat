@@ -549,20 +549,109 @@ pub async fn suggest_commit_msg_command() -> Result<Option<String>, String> {
     crate::blocking::run_blocking(ollama_default_commit_command).await
 }
 
-fn ollama_default_commit_command() -> Result<Option<String>, String> {
-    use std::process::Command;
-    let mut c = Command::new("ollama");
+/// How ollama's CLI was located, so the suggested command references it the
+/// same way it was found.
+enum OllamaExe {
+    /// Bare `ollama`, found on PATH — portable, so the suggestion uses it as-is.
+    OnPath,
+    /// An absolute path from a known install dir, used when PATH didn't have it.
+    /// This is the common WINDOWS case: ollama's installer adds `ollama.exe` to
+    /// the user PATH, but a GUI process launched from an explorer that started
+    /// BEFORE that update never inherits it (Windows only broadcasts env changes
+    /// to new processes), so a still-running GitCat can't see ollama even though
+    /// it's installed and running. Referencing the absolute path also means the
+    /// SAVED command runs later regardless of PATH.
+    At(PathBuf),
+}
+
+/// Run `<exe> list` with the standard non-interactive + no-console-window +
+/// timeout treatment. A missing binary surfaces as an `Err` from spawn; a
+/// hung one as a timeout — the caller treats either as "not here".
+fn run_ollama_list(exe: &str) -> std::io::Result<std::process::Output> {
+    let mut c = std::process::Command::new(exe);
     c.arg("list").no_console_window();
-    // A missing `ollama` binary surfaces as an Err from spawning; a slow/hung
-    // one as a timeout. Either way that's "not available", not a hard error the
-    // form must show — so map anything but a clean success to Ok(None).
-    let out = match crate::procutil::output_with_timeout(c, std::time::Duration::from_secs(8)) {
-        Ok(o) if o.status.success() => o,
-        _ => return Ok(None),
+    crate::procutil::output_with_timeout(c, std::time::Duration::from_secs(8))
+}
+
+/// Well-known ollama install locations to probe when it isn't on PATH. Pure
+/// (env values passed in) so the Windows layout is testable on any platform —
+/// hence always compiled (only CALLED on Windows, so dead_code is allowed off it).
+#[allow(dead_code)]
+fn windows_ollama_paths(local_appdata: Option<String>, program_files: Option<String>) -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    // The default per-user install (the overwhelmingly common one).
+    if let Some(la) = local_appdata {
+        v.push(PathBuf::from(la).join("Programs").join("Ollama").join("ollama.exe"));
+    }
+    // A machine-wide install.
+    if let Some(pf) = program_files {
+        v.push(PathBuf::from(pf).join("Ollama").join("ollama.exe"));
+    }
+    v
+}
+
+#[cfg(windows)]
+fn ollama_candidate_paths() -> Vec<PathBuf> {
+    windows_ollama_paths(std::env::var("LOCALAPPDATA").ok(), std::env::var("ProgramFiles").ok())
+}
+
+#[cfg(not(windows))]
+fn ollama_candidate_paths() -> Vec<PathBuf> {
+    // Homebrew (Apple Silicon + Intel), the macOS .app's CLI symlink target, and
+    // the usual Linux locations; plus a per-user ~/.local/bin install.
+    let mut v: Vec<PathBuf> =
+        ["/opt/homebrew/bin/ollama", "/usr/local/bin/ollama", "/usr/bin/ollama"].iter().map(PathBuf::from).collect();
+    if let Some(home) = std::env::var_os("HOME") {
+        v.push(PathBuf::from(home).join(".local").join("bin").join("ollama"));
+    }
+    v
+}
+
+/// Locate a working ollama CLI and its `list` output: bare on PATH first
+/// (portable), then any known install dir that exists on disk. `None` if none
+/// answered a successful `list`.
+fn resolve_ollama() -> Option<(OllamaExe, std::process::Output)> {
+    if let Ok(o) = run_ollama_list("ollama") {
+        if o.status.success() {
+            return Some((OllamaExe::OnPath, o));
+        }
+    }
+    for p in ollama_candidate_paths() {
+        if !p.exists() {
+            continue;
+        }
+        if let Ok(o) = run_ollama_list(&p.to_string_lossy()) {
+            if o.status.success() {
+                return Some((OllamaExe::At(p), o));
+            }
+        }
+    }
+    None
+}
+
+/// Build the pre-filled `git diff --staged | ollama run …` suggestion, quoting
+/// an absolute path if it contains a space so the saved shell command parses.
+fn build_ollama_command(exe: &OllamaExe, model: &str) -> String {
+    let exe_ref = match exe {
+        OllamaExe::OnPath => "ollama".to_string(),
+        OllamaExe::At(p) => {
+            let s = p.to_string_lossy();
+            if s.contains(' ') {
+                format!("\"{s}\"")
+            } else {
+                s.into_owned()
+            }
+        }
+    };
+    format!("git diff --staged | {exe_ref} run {model} --hidethinking \"{OLLAMA_COMMIT_PROMPT}\"")
+}
+
+fn ollama_default_commit_command() -> Result<Option<String>, String> {
+    let Some((exe, out)) = resolve_ollama() else {
+        return Ok(None);
     };
     let stdout = String::from_utf8_lossy(&out.stdout);
-    Ok(first_ollama_chat_model(&stdout)
-        .map(|m| format!("git diff --staged | ollama run {m} --hidethinking \"{OLLAMA_COMMIT_PROMPT}\"")))
+    Ok(first_ollama_chat_model(&stdout).map(|m| build_ollama_command(&exe, m)))
 }
 
 /// Remove ANSI escape sequences (CSI cursor/colour codes, OSC, lone ESC) from a
@@ -898,6 +987,46 @@ mod tests {
         // No models (header only, or empty) => no suggestion.
         assert_eq!(first_ollama_chat_model("NAME  ID  SIZE  MODIFIED\n"), None);
         assert_eq!(first_ollama_chat_model(""), None);
+    }
+
+    #[test]
+    fn windows_ollama_paths_covers_per_user_then_machine_wide_installs() {
+        // Assert by path COMPONENTS, not the joined string — PathBuf::join uses
+        // '/' on the Linux CI host but '\' on Windows, so a literal string
+        // compare would be a false negative off-Windows.
+        let v = windows_ollama_paths(
+            Some(r"C:\Users\me\AppData\Local".to_string()),
+            Some(r"C:\Program Files".to_string()),
+        );
+        assert_eq!(v.len(), 2);
+        // Per-user: %LOCALAPPDATA%\Programs\Ollama\ollama.exe
+        assert!(v[0].to_string_lossy().starts_with(r"C:\Users\me\AppData\Local"));
+        assert!(v[0].ends_with(PathBuf::from("Programs").join("Ollama").join("ollama.exe")));
+        // Machine-wide: %ProgramFiles%\Ollama\ollama.exe
+        assert!(v[1].to_string_lossy().starts_with(r"C:\Program Files"));
+        assert!(v[1].ends_with(PathBuf::from("Ollama").join("ollama.exe")));
+        assert_eq!(v[1].file_name().unwrap(), "ollama.exe");
+
+        // A missing env var just drops that candidate rather than panicking.
+        assert_eq!(windows_ollama_paths(None, None), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn build_ollama_command_uses_bare_name_on_path_and_quotes_a_spaced_abspath() {
+        let bare = build_ollama_command(&OllamaExe::OnPath, "llama3.2:latest");
+        assert!(bare.starts_with("git diff --staged | ollama run llama3.2:latest --hidethinking "));
+
+        // No space => used verbatim (the common %LOCALAPPDATA% path has none).
+        let plain = build_ollama_command(
+            &OllamaExe::At(PathBuf::from(r"C:\Users\me\AppData\Local\Programs\Ollama\ollama.exe")),
+            "gemma2:latest",
+        );
+        assert!(plain.contains(r"| C:\Users\me\AppData\Local\Programs\Ollama\ollama.exe run gemma2:latest "));
+
+        // A space => quoted so the saved shell command still parses.
+        let spaced =
+            build_ollama_command(&OllamaExe::At(PathBuf::from(r"C:\Program Files\Ollama\ollama.exe")), "qwen2.5:7b");
+        assert!(spaced.contains(r#"| "C:\Program Files\Ollama\ollama.exe" run qwen2.5:7b "#));
     }
 
     fn temp_dir(tag: &str) -> PathBuf {

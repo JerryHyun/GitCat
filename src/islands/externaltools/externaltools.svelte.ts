@@ -124,7 +124,7 @@ class ExternalToolsState {
           bridge.tama.set("hint");
           bridge.tama.say("Filled an ollama default — review it and hit Save.", 4200);
         } else {
-          this.error = "ollama isn't set up — install it and pull a model (`ollama pull <model>`), then try again, or type your own command.";
+          this.error = "Couldn't find ollama with a pulled model. If it isn't installed, install it and run `ollama pull <model>`. If it IS installed (common on Windows right after installing), restart GitCat so it picks up your updated PATH, then try again — or just type your own command below.";
         }
       } else {
         this.error = String(res.error ?? "Couldn't check for ollama.");
