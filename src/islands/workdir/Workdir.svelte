@@ -37,6 +37,36 @@
   let diffviewEl = $state<HTMLDivElement | undefined>(undefined);
   // Second .diffview instance for the expanded-diff modal below (same reset).
   let diffviewExpandedEl = $state<HTMLDivElement | undefined>(undefined);
+
+  // The commit message box is natively resizable (CSS resize:vertical), but the
+  // height reset on every remount/app restart. Persist it: restore the saved
+  // height on mount, and save it (debounced) as the user drags — same
+  // remembered-size spirit as the diff modal's tree width.
+  const WD_MSG_H_LS = "gitcat.wdMsgH",
+    WD_MSG_H_MIN = 52;
+  let msgEl = $state<HTMLTextAreaElement | undefined>(undefined);
+  $effect(() => {
+    const el = msgEl;
+    if (!el) return;
+    const saved = Number(localStorage.getItem(WD_MSG_H_LS));
+    if (Number.isFinite(saved) && saved >= WD_MSG_H_MIN) el.style.height = saved + "px";
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const ro = new ResizeObserver(() => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        try {
+          localStorage.setItem(WD_MSG_H_LS, String(Math.round(el.offsetHeight)));
+        } catch {
+          /* private mode / quota — height just won't persist */
+        }
+      }, 200);
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      clearTimeout(t);
+    };
+  });
   $effect(() => {
     workdirCtrl.selectedDiffFile;
     if (diffviewEl) {
@@ -157,6 +187,7 @@
     <textarea
       class="wd-msg"
       rows="3"
+      bind:this={msgEl}
       placeholder={workdirCtrl.amend ? "Leave empty to keep the previous message…" : "Commit message…"}
       bind:value={workdirCtrl.message}
       disabled={workdirCtrl.busy && workdirCtrl.busyTarget === "__commit__"}
