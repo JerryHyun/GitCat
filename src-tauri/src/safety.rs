@@ -83,6 +83,32 @@ pub fn run_git(repo: &str, args: &[&str]) -> Result<GitOut, String> {
     })
 }
 
+/// Like [`run_git`] but routed through [`crate::wsl::git_command`], so on a WSL
+/// repo the command runs via the distro's OWN git (`wsl.exe … git`) instead of
+/// Windows git over the `\\wsl.localhost\` share. Used ONLY for undo's
+/// working-tree-WRITING steps (`reset --hard` / `checkout --detach` / `stash
+/// push`/`pop`): Windows git renormalizes the restored tree to CRLF and can't
+/// set Unix exec bits over that share, so it would churn every file and strip
+/// +x. The ref-only steps here (`update-ref` / `symbolic-ref`) stay on plain
+/// `run_git` — they touch only `.git/`, nothing to renormalize. A strict no-op
+/// on non-WSL paths (`git_command` falls back to plain `git -C`), so
+/// `tests/safety_undo.rs`'s temp-repo scenarios are unaffected.
+pub fn run_git_worktree(repo: &str, args: &[&str]) -> Result<GitOut, String> {
+    let out = output_with_timeout(crate::wsl::git_command(repo, args), SUBPROCESS_TIMEOUT).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::TimedOut {
+            format!("git timed out after {SUBPROCESS_TIMEOUT:?} (repo: {repo})")
+        } else {
+            format!("failed to run git: {e}")
+        }
+    })?;
+    Ok(GitOut {
+        ok: out.status.success(),
+        stdout: String::from_utf8_lossy(&out.stdout).trim_end().to_string(),
+        stderr: String::from_utf8_lossy(&out.stderr).trim_end().to_string(),
+        code: out.status.code().unwrap_or(-1),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Payloads
 // ---------------------------------------------------------------------------
@@ -399,14 +425,14 @@ pub fn undo(repo: &Repository) -> Result<UndoResult, String> {
                     message: format!("Undo failed restoring HEAD: {}", sr.stderr),
                     restored_to: None, sealed });
             }
-            let reset = run_git(workdir, &["reset", "--hard", target_sha.as_str()])?;
+            let reset = run_git_worktree(workdir, &["reset", "--hard", target_sha.as_str()])?;
             if !reset.ok {
                 return Ok(UndoResult { ok: false,
                     message: format!("Undo failed: {}", reset.stderr),
                     restored_to: None, sealed });
             }
         } else {
-            let co = run_git(workdir, &["checkout", "-q", "--detach", target_sha.as_str()])?;
+            let co = run_git_worktree(workdir, &["checkout", "-q", "--detach", target_sha.as_str()])?;
             if !co.ok {
                 return Ok(UndoResult { ok: false,
                     message: format!("Undo failed detaching HEAD: {}", co.stderr),
@@ -439,7 +465,7 @@ pub fn undo(repo: &Repository) -> Result<UndoResult, String> {
                     restored_to: None, sealed });
             }
         }
-        let reset = run_git(workdir, &["reset", "--hard", target_sha.as_str()])?;
+        let reset = run_git_worktree(workdir, &["reset", "--hard", target_sha.as_str()])?;
         if !reset.ok {
             return Ok(UndoResult { ok: false,
                 message: format!("Undo failed: {}", reset.stderr),
@@ -560,7 +586,7 @@ pub fn undo_stashing(repo: &Repository) -> Result<UndoResult, String> {
 
     // Stash everything (tracked + untracked) so undo's `reset --hard` runs on a
     // clean tree instead of refusing.
-    let stash = run_git(workdir, &["stash", "push", "--include-untracked", "-m", "gitcat: auto-stash before undo"])?;
+    let stash = run_git_worktree(workdir, &["stash", "push", "--include-untracked", "-m", "gitcat: auto-stash before undo"])?;
     if !stash.ok {
         return Ok(err(format!("Couldn't stash your changes before undo — {}", stash.stderr.trim())));
     }
@@ -573,13 +599,13 @@ pub fn undo_stashing(repo: &Repository) -> Result<UndoResult, String> {
         // Undo itself failed (e.g. no snapshots) — don't strand the user's work
         // in a stash; put it straight back.
         if stashed {
-            let _ = run_git(workdir, &["stash", "pop"]);
+            let _ = run_git_worktree(workdir, &["stash", "pop"]);
         }
         return Ok(res);
     }
 
     if stashed {
-        let pop = run_git(workdir, &["stash", "pop"])?;
+        let pop = run_git_worktree(workdir, &["stash", "pop"])?;
         res.message = if pop.ok {
             format!("{} Your uncommitted changes were stashed and re-applied.", res.message)
         } else {

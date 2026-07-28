@@ -129,7 +129,8 @@
 //! boundary or fail to escape a colliding body line — it isn't a heuristic
 //! at all, it's exact.
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use git2::{Repository, RepositoryState};
 use serde::Serialize;
@@ -223,6 +224,47 @@ fn git(path: &str, args: &[&str], no_editor: bool) -> Result<Out, String> {
     })
 }
 
+/// [`git`] routed through `wsl::git_command_env` for the tree-writing `am`
+/// sequencer steps (`--continue`/`--skip`/`--abort`), so a WSL repo runs the
+/// distro's own git instead of Windows git over the share (which would CRLF-
+/// churn the applied tree / drop +x). Editor suppressed so `--continue` never
+/// opens one. No path args here. A strict no-op on non-WSL paths.
+fn git_worktree(path: &str, args: &[&str]) -> Result<Out, String> {
+    let o = crate::wsl::git_command_env(path, args, &[("GIT_EDITOR", "true"), ("GIT_SEQUENCE_EDITOR", "true")])
+        .output()
+        .map_err(|e| format!("Could not run git: {e}"))?;
+    Ok(Out {
+        ok: o.status.success(),
+        stdout: String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        stderr: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+    })
+}
+
+/// `git am` fed the mailbox on STDIN instead of as a file-path argument, routed
+/// through `wsl::git_command_env` (distro's own git on a WSL repo). Stdin is the
+/// point: the patch path comes from the native file picker as an absolute
+/// Windows/UNC path that Linux git inside the distro could not resolve, so the
+/// caller `fs::read`s the bytes (Rust reads either filesystem) and pipes them
+/// in — no path ever crosses the WSL boundary. Editor suppressed so `am` never
+/// opens one. A strict no-op on non-WSL paths.
+fn git_am_stdin(path: &str, args: &[&str], patch: &[u8]) -> Result<Out, String> {
+    let mut cmd = crate::wsl::git_command_env(path, args, &[("GIT_EDITOR", "true"), ("GIT_SEQUENCE_EDITOR", "true")]);
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("Could not run git: {e}"))?;
+    child
+        .stdin
+        .take()
+        .expect("stdin was requested as piped")
+        .write_all(patch)
+        .map_err(|e| format!("Could not write the patch to git am's stdin: {e}"))?;
+    let o = child.wait_with_output().map_err(|e| format!("Could not run git: {e}"))?;
+    Ok(Out {
+        ok: o.status.success(),
+        stdout: String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        stderr: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+    })
+}
+
 /// Best human message from a failed run (prefer stderr, then stdout).
 fn git_msg(o: &Out) -> String {
     if !o.stderr.is_empty() {
@@ -294,10 +336,11 @@ fn validate_dest_path(p: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `patch_file_path` DOES reach git as a bare positional argument to
-/// `git am`, so — defense in depth only; a path a native OS "open" dialog
-/// returns can never actually start with '-' — this also rejects a leading
-/// dash, mirroring conflict.rs's `validate_path`.
+/// Guards the path we `fs::read` in `apply_patch_sync`. The bytes now go to
+/// `git am` on STDIN (never as a positional — see `git_am_stdin`), so the
+/// leading-dash check is pure defense in depth (a native OS "open" dialog can
+/// never return a path starting with '-'); the empty/NUL/newline checks still
+/// give a friendlier error than a raw read failure.
 fn validate_patch_file(p: &str) -> Result<(), String> {
     if p.is_empty() {
         return Err("No patch file chosen.".into());
@@ -606,12 +649,21 @@ fn apply_patch_sync(path: String, patch_file_path: String) -> ApplyPatchResult {
         Ok(b) => b,
         Err(e) => return ApplyPatchResult::error(format!("Safety snapshot failed, aborting: {e}")),
     };
+    // Feed the patch on STDIN rather than as a `<file>` positional: the picked
+    // path is an absolute Windows/UNC path, which git inside a WSL distro can't
+    // resolve — reading the bytes here and piping them to `git am` sidesteps the
+    // whole path-translation problem and is identical on a plain repo (see
+    // git_am_stdin). Rust can read both a `C:\…` and a `\\wsl.localhost\…` path.
+    let patch_bytes = match std::fs::read(&patch_file_path) {
+        Ok(b) => b,
+        Err(e) => return ApplyPatchResult::error(format!("Couldn't read the patch file: {e}")),
+    };
     // --patch-format=mboxrd: undoes export_patch's own mboxrd escaping (see
     // module doc's "Mbox 'From ' ambiguity" section) for a patch this app
     // exported; a no-op for a patch that never needed escaping (an ordinary
     // external patch with no colliding body lines applies identically
     // either way — empirically verified).
-    let out = match git(&path, &["am", "--3way", "--patch-format=mboxrd", "--end-of-options", &patch_file_path], true) {
+    let out = match git_am_stdin(&path, &["am", "--3way", "--patch-format=mboxrd"], &patch_bytes) {
         Ok(o) => o,
         Err(e) => {
             return ApplyPatchResult {
@@ -660,7 +712,7 @@ fn am_continue_sync(path: String) -> ApplyPatchResult {
         return ApplyPatchResult::error("No patch-apply in progress to continue.");
     }
     let backup = crate::safety::snapshot(&repo).ok(); // best-effort, mirrors rebase_continue
-    let out = match git(&path, &["am", "--continue"], true) {
+    let out = match git_worktree(&path, &["am", "--continue"]) {
         Ok(o) => o,
         Err(e) => {
             return ApplyPatchResult {
@@ -707,7 +759,7 @@ fn am_skip_sync(path: String) -> ApplyPatchResult {
         return ApplyPatchResult::error("No patch-apply in progress to skip a commit from.");
     }
     let backup = crate::safety::snapshot(&repo).ok();
-    let out = match git(&path, &["am", "--skip"], true) {
+    let out = match git_worktree(&path, &["am", "--skip"]) {
         Ok(o) => o,
         Err(e) => {
             return ApplyPatchResult {
@@ -757,7 +809,7 @@ fn am_abort_sync(path: String) -> ApplyPatchResult {
             backup_ref: None,
         };
     }
-    match git(&path, &["am", "--abort"], false) {
+    match git_worktree(&path, &["am", "--abort"]) {
         Ok(o) if o.ok => ApplyPatchResult {
             ok: true,
             state: "clean".into(),

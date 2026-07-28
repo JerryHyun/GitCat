@@ -352,7 +352,9 @@ fn resolve_conflict_file_inner(path: String, file: String, side: String) -> Reso
 
     // 1) Write the chosen side into the working tree. `--` ends option parsing so
     //    a path can never be read as a flag (defense-in-depth with validate_path).
-    match safety::run_git(&path, &["checkout", flag, "--", &file]) {
+    //    run_git_worktree so a WSL repo writes via the distro's own git (Windows
+    //    git would CRLF-churn / drop +x); `file` is repo-relative → WSL-safe.
+    match safety::run_git_worktree(&path, &["checkout", flag, "--", &file]) {
         Ok(o) if o.ok => {}
         // e.g. delete/modify conflict where the requested side has no version:
         // "path '<file>' does not have our version" — surface it, don't force.
@@ -361,7 +363,7 @@ fn resolve_conflict_file_inner(path: String, file: String, side: String) -> Reso
     }
 
     // 2) Stage it — collapses the unmerged stages (1/2/3) to a resolved stage 0.
-    match safety::run_git(&path, &["add", "--", &file]) {
+    match safety::run_git_worktree(&path, &["add", "--", &file]) {
         Ok(o) if o.ok => {}
         Ok(o) => return ResolveResult::fail(err_msg(&o), remaining_conflicts(&path)),
         Err(e) => return ResolveResult::err(e),
@@ -726,8 +728,9 @@ fn resolve_conflict_hunks_inner(path: String, file: String, resolved_content: St
     }
 
     // 2) Stage it — collapses stages 1/2/3 to a resolved stage 0, exactly
-    //    like resolve_conflict_file's own step 2.
-    match safety::run_git(&path, &["add", "--", &file]) {
+    //    like resolve_conflict_file's own step 2. run_git_worktree so a WSL repo
+    //    stages via the distro's own git; `file` is repo-relative → WSL-safe.
+    match safety::run_git_worktree(&path, &["add", "--", &file]) {
         Ok(o) if o.ok => {}
         Ok(o) => return ResolveResult::fail(err_msg(&o), remaining_conflicts(&path)),
         Err(e) => return ResolveResult::err(e),

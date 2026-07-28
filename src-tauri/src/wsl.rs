@@ -138,24 +138,40 @@ pub fn wsl_target(path: &str) -> Option<(String, String)> {
 /// WSL-routed remote that hits an interactive SSH prompt still only gets
 /// `git_remote.rs`'s existing text hint, not this dialog.
 pub fn git_command(path: &str, args: &[&str]) -> Command {
+    git_command_env(path, args, &[])
+}
+
+/// [`git_command`] with extra environment variables that MUST reach git itself
+/// (not just the outer process) — needed by the working-tree-writing operations
+/// this app routes through here for a WSL repo (see this module's callers): e.g.
+/// `GIT_EDITOR=true`/`GIT_SEQUENCE_EDITOR=true` so `merge`/`rebase`/`am
+/// --continue` never open the distro's editor and hang, or `LC_ALL=C` so git's
+/// English stderr stays parseable. Each pair crosses the WSL boundary the SAME
+/// way `GIT_TERMINAL_PROMPT=0` does — as a literal `env K=V` argv PREFIX inside
+/// the `-e` exec, never a `Command::env` on the outer `wsl.exe` (which does not
+/// cross into the distro; see the doc above). On the plain (non-WSL) branch they
+/// go through the ordinary `Command::env`, so this is a strict no-op there when
+/// `envs` is empty — `git_command` above is exactly that call.
+pub fn git_command_env(path: &str, args: &[&str], envs: &[(&str, &str)]) -> Command {
     let mut cmd = match wsl_target(path) {
         Some((distro, linux_path)) => {
             let mut c = Command::new("wsl.exe");
-            c.arg("-d")
-                .arg(&distro)
-                .arg("-e")
-                .arg("env")
-                .arg("GIT_TERMINAL_PROMPT=0")
-                .arg("git")
-                .arg("-C")
-                .arg(&linux_path)
-                .args(args);
+            c.arg("-d").arg(&distro).arg("-e").arg("env").arg("GIT_TERMINAL_PROMPT=0");
+            // Extra vars as further `env` argv tokens, AFTER the fixed prompt
+            // var so its position (asserted in tests) never shifts.
+            for (k, v) in envs {
+                c.arg(format!("{k}={v}"));
+            }
+            c.arg("git").arg("-C").arg(&linux_path).args(args);
             c
         }
         None => {
             let mut c = Command::new("git");
             c.arg("-C").arg(path).args(args);
             c.env("GIT_TERMINAL_PROMPT", "0");
+            for (k, v) in envs {
+                c.env(k, v);
+            }
             // See this function's own doc comment above. current_exe()
             // failing at all would be a genuinely exceptional environment
             // problem (not something a repo/path could ever cause) — just
@@ -502,6 +518,45 @@ mod tests {
         assert_eq!(cmd.get_program(), "git");
         let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
         assert_eq!(args, vec!["-C", r"C:\Users\me\repo", "fetch", "--all"]);
+    }
+
+    #[test]
+    fn git_command_env_injects_extra_vars_as_argv_prefix_after_the_prompt_var_on_wsl() {
+        // The working-tree-write routing passes e.g. GIT_EDITOR=true so a
+        // WSL-side `merge --continue` never opens the distro's editor. Each var
+        // must land as its own `env` argv token, AFTER GIT_TERMINAL_PROMPT=0 so
+        // that var's asserted position stays fixed, and BEFORE `git`.
+        let cmd = git_command_env(
+            r"\\wsl.localhost\Ubuntu\home\jc\repo",
+            &["reset", "--hard", "abc123"],
+            &[("LC_ALL", "C"), ("GIT_EDITOR", "true")],
+        );
+        assert_eq!(cmd.get_program(), "wsl.exe");
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+        assert_eq!(
+            args,
+            vec![
+                "-d", "Ubuntu", "-e", "env", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "GIT_EDITOR=true", "git", "-C",
+                "/home/jc/repo", "reset", "--hard", "abc123"
+            ]
+        );
+    }
+
+    #[test]
+    fn git_command_env_sets_plain_env_and_leaves_args_untouched_off_wsl() {
+        // Off-WSL the vars go through ordinary Command::env (they reach git the
+        // normal way), and the argv is exactly what git_command would build —
+        // proving the routing is a strict no-op for a non-WSL repo.
+        let cmd = git_command_env(r"C:\Users\me\repo", &["reset", "--hard", "abc123"], &[("GIT_EDITOR", "true")]);
+        assert_eq!(cmd.get_program(), "git");
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+        assert_eq!(args, vec!["-C", r"C:\Users\me\repo", "reset", "--hard", "abc123"]);
+        let editor = cmd
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("GIT_EDITOR"))
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_string_lossy().to_string());
+        assert_eq!(editor.as_deref(), Some("true"));
     }
 
     // Fixtures below use simplified placeholder hashes ("hashH"/"hashI"/...)

@@ -175,6 +175,23 @@ fn git(path: &str, args: &[&str], no_editor: bool) -> Result<Out, String> {
     })
 }
 
+/// [`git`] routed through `wsl::git_command_env`, so a WSL repo runs the distro's
+/// OWN git instead of Windows git over the `\\wsl.localhost\` share. Used ONLY
+/// for the tree-writing merge steps (`merge` / `merge --continue`·`--abort` /
+/// `reset --hard`): Windows git renormalizes the merged tree to CRLF and drops
+/// +x over that share. Reads (`diff --name-only`, `rev-parse`) keep using plain
+/// `git`. All args here are SHAs/flags — no file-path args. No-op on non-WSL.
+fn git_worktree(path: &str, args: &[&str], no_editor: bool) -> Result<Out, String> {
+    let envs: &[(&str, &str)] = if no_editor { &[("GIT_EDITOR", "true"), ("GIT_SEQUENCE_EDITOR", "true")] } else { &[] };
+    let o = crate::wsl::git_command_env(path, args, envs).output().map_err(|e| format!("Could not run git: {e}"))?;
+    Ok(Out {
+        ok: o.status.success(),
+        code: o.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        stderr: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+    })
+}
+
 /// Best human message from a failed run (prefer stderr, then stdout).
 fn git_msg(o: &Out) -> String {
     if !o.stderr.is_empty() {
@@ -449,7 +466,7 @@ fn merge_one(repo: &Repository, path: &str, sha: &str, extra_flag: Option<&str>)
     args.push("--end-of-options");
     args.push(sha);
 
-    let out = match git(path, &args, true) {
+    let out = match git_worktree(path, &args, true) {
         Ok(o) => o,
         Err(e) => {
             return MergeResult {
@@ -505,7 +522,7 @@ pub async fn merge_continue(path: String) -> MergeResult {
         // run.
         let backup = crate::safety::snapshot(&repo).ok();
 
-        let out = match git(&path, &["merge", "--continue"], true) {
+        let out = match git_worktree(&path, &["merge", "--continue"], true) {
             Ok(o) => o,
             Err(e) => {
                 return MergeResult {
@@ -563,7 +580,7 @@ fn merge_abort_impl(repo: &Repository, path: &str) -> MergeResult {
             blocked_by_local_changes: false,
         };
     }
-    match git(path, &["merge", "--abort"], false) {
+    match git_worktree(path, &["merge", "--abort"], false) {
         Ok(o) if o.ok => MergeResult {
             ok: true,
             state: "clean".into(),
@@ -766,7 +783,7 @@ pub async fn merge_squash(path: String, sha: String) -> MergeSquashResult {
         // would strand the user's original edit in `stash@{0}` with no trace.
         // --no-autostash makes the dirty-tree case refuse up front instead.
         let args: Vec<&str> = vec!["merge", "--squash", "--no-autostash", "--end-of-options", &sha];
-        let out = match git(&path, &args, true) {
+        let out = match git_worktree(&path, &args, true) {
             Ok(o) => o,
             Err(e) => {
                 return MergeSquashResult {
@@ -890,7 +907,7 @@ pub async fn merge_squash_abort(path: String) -> MergeSquashResult {
             Err(e) => return MergeSquashResult::error(e),
         };
 
-        match git(&path, &["reset", "--hard", &target_sha], false) {
+        match git_worktree(&path, &["reset", "--hard", &target_sha], false) {
             Ok(out) if out.ok => {
                 clear_merge_squash_conflict_state(&repo);
                 MergeSquashResult {
@@ -1199,7 +1216,7 @@ fn merge_octopus(repo: &Repository, path: &str, shas: &[String]) -> MergeResult 
     for sha in shas {
         args.push(sha);
     }
-    let out = match git(path, &args, true) {
+    let out = match git_worktree(path, &args, true) {
         Ok(o) => o,
         Err(e) => {
             return MergeResult {
@@ -1233,7 +1250,7 @@ fn merge_octopus(repo: &Repository, path: &str, shas: &[String]) -> MergeResult 
         // mutated (the "conflict on an earlier sha" shape) — only attempt it
         // when something is actually in progress.
         if in_progress(repo) {
-            let _ = git(path, &["merge", "--abort"], false);
+            let _ = git_worktree(path, &["merge", "--abort"], false);
             // ADVERSARIALLY-FOUND FIX: the abort's own exit code was
             // previously discarded, so a failed abort (hook rejection, lock
             // contention, permissions) used to still report "merge aborted,

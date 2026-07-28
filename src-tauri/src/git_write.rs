@@ -22,12 +22,9 @@
 //! that DOES force (`git switch --force`), and only when the user explicitly
 //! picks that chooser's most destructive option.
 
-use std::process::Command;
 
 use git2::{BranchType, Repository};
 use serde::Serialize;
-
-use crate::procutil::NoConsoleWindowExt;
 
 // ---------------------------------------------------------------------------
 // Payloads
@@ -147,14 +144,16 @@ struct GitOut {
 /// a side effect is that `create_branch`/`delete_branch`/`rename_branch`'s
 /// forwarded stderr also becomes locale-stable, a deliberate strengthening.
 fn run_git(path: &str, args: &[&str]) -> Result<GitOut, String> {
-    let output = Command::new("git")
-        .no_console_window()
-        .arg("-C")
-        .arg(path)
-        .args(args)
-        .env("LC_ALL", "C")
-        .env("LANGUAGE", "")
-        .env("GIT_PAGER", "cat")
+    // Routed through wsl::git_command_env so a WSL repo runs the distro's OWN
+    // git (`wsl.exe … git`) rather than Windows git over the `\\wsl.localhost\`
+    // share. This module's `run_git` carries ONLY mutations (checkout / switch /
+    // reset / branch — the reads `list_refs`/`branch_merge_status` use git2, not
+    // this), and the tree-writing ones (checkout/switch/reset --hard) are exactly
+    // what Windows git renormalizes to CRLF and strips +x from over that share.
+    // The LC_ALL/LANGUAGE/GIT_PAGER vars still reach git (argv `env` prefix on
+    // WSL, ordinary Command::env off it), so `checkout_collision_files`'s stderr
+    // parsing stays locale-stable. A strict no-op on non-WSL paths.
+    let output = crate::wsl::git_command_env(path, args, &[("LC_ALL", "C"), ("LANGUAGE", ""), ("GIT_PAGER", "cat")])
         .output()
         .map_err(|e| format!("Could not run git: {e}"))?;
     Ok(GitOut {

@@ -147,6 +147,28 @@ fn git(path: &str, args: &[&str]) -> Result<Out, String> {
     })
 }
 
+/// [`git`] routed through `wsl::git_command_env`, so a WSL repo runs the distro's
+/// OWN git rather than Windows git over the `\\wsl.localhost\` share. `bisect
+/// start`/`good`/`bad`/`skip`/`reset` all CHECK OUT commits (write the tree), so
+/// on Windows git they'd CRLF-churn / drop +x. Reads (`bisect log`, `for-each-
+/// ref`, `rev-list`, `status`) stay on plain `git`. Same full env set as `git`
+/// (LC_ALL=C etc.). Args are OIDs/subcommands only. No-op on non-WSL paths.
+fn git_worktree(path: &str, args: &[&str]) -> Result<Out, String> {
+    let o = crate::wsl::git_command_env(
+        path,
+        args,
+        &[("LC_ALL", "C"), ("LANGUAGE", ""), ("GIT_PAGER", "cat"), ("GIT_EDITOR", "true"), ("GIT_SEQUENCE_EDITOR", "true")],
+    )
+    .output()
+    .map_err(|e| format!("Could not run git: {e}"))?;
+    Ok(Out {
+        ok: o.status.success(),
+        code: o.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        stderr: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+    })
+}
+
 fn git_msg(o: &Out) -> String {
     if !o.stderr.is_empty() {
         o.stderr.clone()
@@ -419,31 +441,31 @@ pub async fn bisect_start(path: String, bad: String, good: Vec<String>) -> Bisec
             Err(e) => return BisectStatus::refused(format!("Safety snapshot failed, aborting: {e}")),
         };
 
-        match git(&path, &["bisect", "start"]) {
+        match git_worktree(&path, &["bisect", "start"]) {
             Ok(o) if o.ok => {}
             Ok(o) => return BisectStatus::refused(git_msg(&o)),
             Err(e) => return BisectStatus::refused(e),
         }
-        match git(&path, &["bisect", "bad", &bad_oid]) {
+        match git_worktree(&path, &["bisect", "bad", &bad_oid]) {
             Ok(o) if o.ok => {}
             Ok(o) => {
-                let _ = git(&path, &["bisect", "reset"]);
+                let _ = git_worktree(&path, &["bisect", "reset"]);
                 return BisectStatus::refused(git_msg(&o));
             }
             Err(e) => {
-                let _ = git(&path, &["bisect", "reset"]);
+                let _ = git_worktree(&path, &["bisect", "reset"]);
                 return BisectStatus::refused(e);
             }
         }
         for oid in &good_oids {
-            match git(&path, &["bisect", "good", oid]) {
+            match git_worktree(&path, &["bisect", "good", oid]) {
                 Ok(o) if o.ok => {}
                 Ok(o) => {
-                    let _ = git(&path, &["bisect", "reset"]);
+                    let _ = git_worktree(&path, &["bisect", "reset"]);
                     return BisectStatus::refused(git_msg(&o));
                 }
                 Err(e) => {
-                    let _ = git(&path, &["bisect", "reset"]);
+                    let _ = git_worktree(&path, &["bisect", "reset"]);
                     return BisectStatus::refused(e);
                 }
             }
@@ -467,7 +489,7 @@ pub async fn bisect_start(path: String, bad: String, good: Vec<String>) -> Bisec
 /// `git bisect good|bad|skip` — neither reimplements the other's logic.
 /// Caller must have already verified `in_progress(repo)`.
 fn apply_mark(repo: &Repository, path: &str, subcmd: &str) -> BisectStatus {
-    match git(path, &["bisect", subcmd]) {
+    match git_worktree(path, &["bisect", subcmd]) {
         Ok(o) if o.ok => read_status(repo, path),
         Ok(o) => {
             let mut s = read_status(repo, path);
@@ -566,7 +588,7 @@ pub async fn bisect_reset(path: String) -> BisectStatus {
                 }
             });
 
-        match git(&path, &["bisect", "reset"]) {
+        match git_worktree(&path, &["bisect", "reset"]) {
             Ok(o) if o.ok => {
                 let message = match restored {
                     Some(r) => format!("Bisect ended — back on {r}."),

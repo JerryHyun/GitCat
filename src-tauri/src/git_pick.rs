@@ -124,6 +124,23 @@ fn git(path: &str, args: &[&str], no_editor: bool) -> Result<Out, String> {
     })
 }
 
+/// [`git`] routed through `wsl::git_command_env`, so a WSL repo runs the distro's
+/// OWN git rather than Windows git over the `\\wsl.localhost\` share (which would
+/// CRLF-churn the cherry-picked tree / drop +x). Used ONLY for the tree-writing
+/// `cherry-pick` / `cherry-pick --continue`·`--abort` steps; reads (diff /
+/// rev-parse) stay on plain `git`. Args are SHAs/flags only — no path args.
+/// No-op on non-WSL paths.
+fn git_worktree(path: &str, args: &[&str], no_editor: bool) -> Result<Out, String> {
+    let envs: &[(&str, &str)] = if no_editor { &[("GIT_EDITOR", "true"), ("GIT_SEQUENCE_EDITOR", "true")] } else { &[] };
+    let o = crate::wsl::git_command_env(path, args, envs).output().map_err(|e| format!("Could not run git: {e}"))?;
+    Ok(Out {
+        ok: o.status.success(),
+        code: o.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        stderr: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+    })
+}
+
 /// Best human message from a failed run (prefer stderr, then stdout).
 fn git_msg(o: &Out) -> String {
     if !o.stderr.is_empty() {
@@ -282,7 +299,7 @@ fn classify(
             }
             // Redundant pick (empty at START — the commit's changes are already
             // present): tidy the sequencer, report a benign no-op.
-            let _ = git(path, &["cherry-pick", "--abort"], false);
+            let _ = git_worktree(path, &["cherry-pick", "--abort"], false);
             return PickResult {
                 ok: false,
                 state: "empty".into(),
@@ -377,7 +394,7 @@ fn cherry_pick_inner(path: String, sha: String, record_origin: Option<bool>) -> 
     args.push("--end-of-options");
     args.push(&sha);
 
-    let out = match git(&path, &args, true) {
+    let out = match git_worktree(&path, &args, true) {
         Ok(o) => o,
         Err(e) => {
             return PickResult {
@@ -434,7 +451,7 @@ fn cherry_pick_continue_inner(path: String) -> PickResult {
     // conflict). Best-effort: continue must remain possible even if it can't run.
     let backup = crate::safety::snapshot(&repo).ok();
 
-    let out = match git(&path, &["cherry-pick", "--continue"], true) {
+    let out = match git_worktree(&path, &["cherry-pick", "--continue"], true) {
         Ok(o) => o,
         Err(e) => {
             return PickResult {
@@ -483,7 +500,7 @@ fn cherry_pick_abort_inner(path: String) -> PickResult {
             blocked_by_local_changes: false,
         };
     }
-    match git(&path, &["cherry-pick", "--abort"], false) {
+    match git_worktree(&path, &["cherry-pick", "--abort"], false) {
         Ok(o) if o.ok => PickResult {
             ok: true,
             state: "clean".into(),

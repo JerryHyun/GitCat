@@ -248,6 +248,26 @@ fn git(path: &str, args: &[&str], no_editor: bool) -> Result<Out, String> {
     })
 }
 
+/// [`git`] routed through `wsl::git_command_env`, so a WSL repo runs the distro's
+/// OWN git rather than Windows git over the `\\wsl.localhost\` share (which would
+/// CRLF-churn the rebased tree / drop +x). Used for the NON-interactive rebase
+/// steps (`rebase <onto>` / `rebase --continue`·`--skip`·`--abort`), whose args
+/// are all SHAs/flags — no path args. NOTE: `rebase_interactive_start`
+/// (git_with_env, below) is deliberately NOT routed yet — its
+/// `GIT_SEQUENCE_EDITOR=cp '<todo>'` carries an absolute todo path that would
+/// need Linux translation to run inside the distro (a flagged phase-2 item), so
+/// an interactive rebase on a WSL repo can still churn. No-op on non-WSL paths.
+fn git_worktree(path: &str, args: &[&str], no_editor: bool) -> Result<Out, String> {
+    let envs: &[(&str, &str)] = if no_editor { &[("GIT_EDITOR", "true"), ("GIT_SEQUENCE_EDITOR", "true")] } else { &[] };
+    let o = crate::wsl::git_command_env(path, args, envs).output().map_err(|e| format!("Could not run git: {e}"))?;
+    Ok(Out {
+        ok: o.status.success(),
+        code: o.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        stderr: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+    })
+}
+
 /// Like [`git`], but for [`rebase_interactive_start`]'s one specific need: an
 /// arbitrary extra `(key, value)` env var (`GIT_SEQUENCE_EDITOR` set to the
 /// precomputed-todo `cp` invocation — see that command's doc comment) rather
@@ -704,7 +724,7 @@ pub async fn rebase_start(path: String, onto: String) -> RebaseResult {
         // independent of what the user's global gitconfig happens to set.
         let args: Vec<&str> = vec!["rebase", "--no-autostash", "--end-of-options", &onto];
 
-        let out = match git(&path, &args, true) {
+        let out = match git_worktree(&path, &args, true) {
             Ok(o) => o,
             Err(e) => {
                 return RebaseResult {
@@ -759,7 +779,7 @@ pub async fn rebase_continue(path: String) -> RebaseResult {
         // possible even if it can't run.
         let backup = crate::safety::snapshot(&repo).ok();
 
-        let out = match git(&path, &["rebase", "--continue"], true) {
+        let out = match git_worktree(&path, &["rebase", "--continue"], true) {
             Ok(o) => o,
             Err(e) => {
                 return RebaseResult {
@@ -812,7 +832,7 @@ pub async fn rebase_skip(path: String) -> RebaseResult {
         // rebase_continue (never blocks Skip if it fails).
         let backup = crate::safety::snapshot(&repo).ok();
 
-        let out = match git(&path, &["rebase", "--skip"], true) {
+        let out = match git_worktree(&path, &["rebase", "--skip"], true) {
             Ok(o) => o,
             Err(e) => {
                 return RebaseResult {
@@ -865,7 +885,7 @@ pub async fn rebase_abort(path: String) -> RebaseResult {
                 blocked_by_local_changes: false,
             };
         }
-        match git(&path, &["rebase", "--abort"], false) {
+        match git_worktree(&path, &["rebase", "--abort"], false) {
             Ok(o) if o.ok => RebaseResult {
                 ok: true,
                 state: "clean".into(),

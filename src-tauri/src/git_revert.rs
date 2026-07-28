@@ -171,6 +171,27 @@ fn git(path: &str, args: &[&str], no_editor: bool) -> Result<Out, String> {
     })
 }
 
+/// [`git`] routed through `wsl::git_command_env`, so a WSL repo runs the distro's
+/// OWN git rather than Windows git over the `\\wsl.localhost\` share (which would
+/// CRLF-churn the reverted tree / drop +x). Used ONLY for the tree-writing
+/// `revert` / `revert --continue`·`--abort` steps; reads stay on plain `git`.
+/// Keeps LC_ALL=C/LANGUAGE="" (locale-stable stderr) plus the editor guard when
+/// `no_editor`. Args are SHAs/flags only. No-op on non-WSL paths.
+fn git_worktree(path: &str, args: &[&str], no_editor: bool) -> Result<Out, String> {
+    let mut envs: Vec<(&str, &str)> = vec![("LC_ALL", "C"), ("LANGUAGE", "")];
+    if no_editor {
+        envs.push(("GIT_EDITOR", "true"));
+        envs.push(("GIT_SEQUENCE_EDITOR", "true"));
+    }
+    let o = crate::wsl::git_command_env(path, args, &envs).output().map_err(|e| format!("Could not run git: {e}"))?;
+    Ok(Out {
+        ok: o.status.success(),
+        code: o.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        stderr: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+    })
+}
+
 /// Best human message from a failed run (prefer stderr, then stdout).
 fn git_msg(o: &Out) -> String {
     if !o.stderr.is_empty() {
@@ -392,7 +413,7 @@ pub async fn revert_start(path: String, sha: String, signoff: Option<bool>) -> R
         args.push("--end-of-options");
         args.push(&sha);
 
-        let out = match git(&path, &args, true) {
+        let out = match git_worktree(&path, &args, true) {
             Ok(o) => o,
             Err(e) => {
                 return RevertResult {
@@ -453,7 +474,7 @@ pub async fn revert_continue(path: String) -> RevertResult {
         // run.
         let backup = crate::safety::snapshot(&repo).ok();
 
-        let out = match git(&path, &["revert", "--continue"], true) {
+        let out = match git_worktree(&path, &["revert", "--continue"], true) {
             Ok(o) => o,
             Err(e) => {
                 return RevertResult {
@@ -504,7 +525,7 @@ pub async fn revert_abort(path: String) -> RevertResult {
                 blocked_by_local_changes: false,
             };
         }
-        match git(&path, &["revert", "--abort"], false) {
+        match git_worktree(&path, &["revert", "--abort"], false) {
             Ok(o) if o.ok => RevertResult {
                 ok: true,
                 state: "clean".into(),

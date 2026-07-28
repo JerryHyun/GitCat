@@ -256,6 +256,27 @@ fn git(path: &str, args: &[&str], no_editor: bool) -> Result<Out, String> {
     })
 }
 
+/// [`git`] but routed through `wsl::git_command_env`, so a WSL repo runs the
+/// distro's OWN git (`wsl.exe … git`) instead of Windows git over the
+/// `\\wsl.localhost\` share. Used ONLY for the working-tree-writing / content-
+/// or-mode-into-index calls (restore/clean/stash apply·pop·push/reset --hard,
+/// and `add` — which for a NEW executable file must record its +x): Windows git
+/// renormalizes those to CRLF and drops the exec bit over the share. Reads and
+/// mode-neutral index ops (`restore --staged`, `reset -q`, status, diff, rev-
+/// parse, stash list) keep using plain `git` (Windows git — fast, no churn). All
+/// pathspecs routed here are repo-relative `:(literal)<file>`, so they resolve
+/// correctly inside the distro. A strict no-op on non-WSL paths.
+fn git_worktree(path: &str, args: &[&str], no_editor: bool) -> Result<Out, String> {
+    let envs: &[(&str, &str)] = if no_editor { &[("GIT_EDITOR", "true"), ("GIT_SEQUENCE_EDITOR", "true")] } else { &[] };
+    let o = crate::wsl::git_command_env(path, args, envs).output().map_err(|e| format!("Could not run git: {e}"))?;
+    Ok(Out {
+        ok: o.status.success(),
+        code: o.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        stderr: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+    })
+}
+
 /// Best human message from a failed run (prefer stderr, then stdout).
 fn git_msg(o: &Out) -> String {
     if !o.stderr.is_empty() {
@@ -798,7 +819,7 @@ pub async fn stage_file(path: String, file: String) -> WorkdirResult {
             return WorkdirResult::err(e);
         }
         let spec = literal_pathspec(&file);
-        match git(&path, &["add", "-A", "--", &spec], false) {
+        match git_worktree(&path, &["add", "-A", "--", &spec], false) {
             Ok(out) if out.ok => WorkdirResult::ok(format!("Staged {file}."), None),
             Ok(out) => WorkdirResult::err(git_msg(&out)),
             Err(e) => WorkdirResult::err(e),
@@ -842,7 +863,7 @@ pub async fn unstage_file(path: String, file: String) -> WorkdirResult {
 #[tauri::command]
 #[specta::specta]
 pub async fn stage_all(path: String) -> WorkdirResult {
-    crate::blocking::run_blocking(move || match git(&path, &["add", "-A"], false) {
+    crate::blocking::run_blocking(move || match git_worktree(&path, &["add", "-A"], false) {
         Ok(out) if out.ok => WorkdirResult::ok("Staged all changes.", None),
         Ok(out) => WorkdirResult::err(git_msg(&out)),
         Err(e) => WorkdirResult::err(e),
@@ -1061,7 +1082,7 @@ fn discard_unstaged_rename(path: &str, repo: &Repository, old_path: &str, new_pa
     }
 
     let old_spec = literal_pathspec(old_path);
-    if let Err(msg) = match git(path, &["restore", "--worktree", "--", &old_spec], false) {
+    if let Err(msg) = match git_worktree(path, &["restore", "--worktree", "--", &old_spec], false) {
         Ok(out) if out.ok => Ok(()),
         Ok(out) => Err(format!("Could not restore {old_path}: {}", git_msg(&out))),
         Err(e) => Err(format!("Could not restore {old_path}: {e}")),
@@ -1077,7 +1098,7 @@ fn discard_unstaged_rename(path: &str, repo: &Repository, old_path: &str, new_pa
     }
 
     let new_spec = literal_pathspec(new_path);
-    match git(path, &["clean", "-f", "--", &new_spec], false) {
+    match git_worktree(path, &["clean", "-f", "--", &new_spec], false) {
         Ok(out) if out.ok => WorkdirResult {
             ok: true,
             message: format!(
@@ -1168,9 +1189,9 @@ pub async fn discard_file(path: String, file: String, untracked: bool) -> Workdi
         // pass unconditionally: it's already been backed up above, and `-f -f`
         // is a no-op for a plain file or an ordinary untracked directory.
         let result = if untracked {
-            git(&path, &["clean", "-f", "-f", "-d", "--", &spec], false)
+            git_worktree(&path, &["clean", "-f", "-f", "-d", "--", &spec], false)
         } else {
-            git(&path, &["restore", "--worktree", "--", &spec], false)
+            git_worktree(&path, &["restore", "--worktree", "--", &spec], false)
         };
 
         match result {
@@ -1792,9 +1813,13 @@ fn build_sub_patch(
 /// is dynamically constructed text, never written to disk. Same `Out`
 /// contract as every other mutation in this module.
 fn git_apply_stdin(path: &str, args: &[&str], patch: &str) -> Result<Out, String> {
-    let mut cmd = Command::new("git");
-    cmd.no_console_window();
-    cmd.arg("-C").arg(path).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Routed through wsl::git_command so `git apply` runs the distro's own git on
+    // a WSL repo (Windows git would CRLF-churn / drop +x). git_command sets stdin
+    // to null and applies -C/no_console_window; override the three stdio here so
+    // we can feed the patch. Safe to route: build_sub_patch emits repo-relative
+    // a/…, b/… headers, no absolute path crosses into the distro.
+    let mut cmd = crate::wsl::git_command(path, args);
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("Could not run git: {e}"))?;
     child
         .stdin
@@ -2031,7 +2056,7 @@ pub async fn stash_save(path: String, message: Option<String>, include_untracked
             args.push(message.as_deref().unwrap());
         }
 
-        match git(&path, &args, true) {
+        match git_worktree(&path, &args, true) {
             Ok(out) if out.ok => {
                 let blob = format!("{} {}", out.stdout, out.stderr).to_lowercase();
                 if blob.contains("no local changes to save") {
@@ -2195,7 +2220,7 @@ fn apply_or_pop(path: &str, index: usize, pop: bool, expected_sha: Option<String
     };
 
     let verb = if pop { "pop" } else { "apply" };
-    let out = match git(path, &["stash", verb, &stash_ref], false) {
+    let out = match git_worktree(path, &["stash", verb, &stash_ref], false) {
         Ok(o) => o,
         Err(e) => return WorkdirResult::err_with_backup(e, Some(backup)),
     };
@@ -2448,7 +2473,7 @@ pub async fn stash_conflict_abort(path: String) -> StashResolveResult {
             Err(e) => return StashResolveResult::error(e),
         };
 
-        match git(&path, &["reset", "--hard", &target_sha], false) {
+        match git_worktree(&path, &["reset", "--hard", &target_sha], false) {
             Ok(out) if out.ok => {
                 clear_stash_conflict_state(&repo);
                 StashResolveResult {
@@ -2638,7 +2663,7 @@ pub async fn stash_undo_apply(path: String) -> WorkdirResult {
             Err(e) => return WorkdirResult::err(format!("Safety snapshot failed, aborting: {e}")),
         };
 
-        match git(
+        match git_worktree(
             &path,
             &["stash", "push", "-u", "-m", "gitcat undo: re-stash after stash apply/pop"],
             true,
