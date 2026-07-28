@@ -842,6 +842,39 @@ async pull(path: string) : Promise<RemoteResult> {
     return await TAURI_INVOKE("pull", { path });
 },
 /**
+ * Streaming twin of [`fetch`]: identical behaviour (same validation, args,
+ * success message, and `git_error_message` failure path), but forces
+ * `--progress` so git writes transfer progress to stderr, reads it live via
+ * `run_git_streaming`, and emits each segment as a `"sync-progress"` event so
+ * the frontend's progress modal can show what git is doing. `fetch` (silent,
+ * used by the ambient auto-fetch timer and the pull-with-strategy flows) is
+ * left in place; only the user-initiated topbar/menu Fetch calls this one.
+ * 
+ * FOLLOW-UP: no process-kill cancel yet — the modal is dismissable and the op
+ * runs to completion in the background (`fetch` only moves remote-tracking
+ * refs, so a background finish is harmless). A real cancel would need a shared
+ * `Child` handle + a `sync_cancel` command (mirroring `bisect_run_cancel`), and
+ * killing `wsl.exe` doesn't reliably kill the inner git on the WSL path.
+ * JS call: `invoke("fetch_stream", { path, remote? })`.
+ */
+async fetchStream(path: string, remote: string | null) : Promise<RemoteResult> {
+    return await TAURI_INVOKE("fetch_stream", { path, remote });
+},
+/**
+ * Streaming twin of [`pull`]: identical behaviour — takes the SAME pre-op
+ * safety snapshot, stays `--ff-only`, returns the same `backup_ref`, and routes
+ * failures through the same `git_error_message` — but forces `--progress` (git
+ * pull forwards it to the underlying fetch) and streams stderr via
+ * `run_git_streaming`, emitting `"sync-progress"` events for the modal. The
+ * ff-only merge summary ("Already up to date." / "Updating …") still lands on
+ * stdout, which is captured intact, so the success-message parse below is
+ * unchanged. See `fetch_stream` for the (deferred) cancellation rationale.
+ * JS call: `invoke("pull_stream", { path })`.
+ */
+async pullStream(path: string) : Promise<RemoteResult> {
+    return await TAURI_INVOKE("pull_stream", { path });
+},
+/**
  * The current branch's configured upstream, as a shorthand remote-tracking
  * name (e.g. "origin/main") — exactly what a pull-with-merge/rebase-strategy
  * flow needs to hand to `merge_start`/`rebase_start` (see git_merge.rs /
@@ -3755,6 +3788,22 @@ backupRef: string | null;
  * where the submodule's own tree genuinely had nothing to lose.
  */
 backupPatch: string | null }
+/**
+ * One live progress segment emitted to the frontend during a streaming
+ * fetch/pull (see `fetch_stream`/`pull_stream`). Emitted as the `"sync-progress"`
+ * event, never taken as a command parameter — exported to TS via `specta_builder`
+ * exactly like `GraphBatch`.
+ */
+export type SyncProgress = { 
+/**
+ * Operation kind — "fetch" | "pull". The frontend uses it as a cheap
+ * discriminator so a late event from one op can't leak into another's modal.
+ */
+phase: string; 
+/**
+ * One raw git progress segment (see `feed_progress`'s `\r`/`\n` split).
+ */
+line: string }
 export type TagObject = { sha: string; name: string; tagger: PlumbingPerson | null; message: string; targetOid: string; targetKind: string }
 /**
  * One planner row's chosen action, as sent back to [`rebase_interactive_start`].

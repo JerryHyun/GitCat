@@ -62,6 +62,7 @@
 
 use git2::{BranchType, Repository};
 use serde::Serialize;
+use tauri::{AppHandle, Emitter, Wry};
 
 #[derive(Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -88,6 +89,20 @@ struct GitOut {
     stderr: String,
 }
 
+/// One live progress segment emitted to the frontend during a streaming
+/// fetch/pull (see `fetch_stream`/`pull_stream`). Emitted as the `"sync-progress"`
+/// event, never taken as a command parameter — exported to TS via `specta_builder`
+/// exactly like `GraphBatch`.
+#[derive(Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncProgress {
+    /// Operation kind — "fetch" | "pull". The frontend uses it as a cheap
+    /// discriminator so a late event from one op can't leak into another's modal.
+    pub phase: String,
+    /// One raw git progress segment (see `feed_progress`'s `\r`/`\n` split).
+    pub line: String,
+}
+
 /// Every command in this module talks to a remote (even
 /// `reset_branch_to_upstream`, which only ever moves a branch to a ref
 /// `fetch` already learned about) — see `crate::wsl` for why that means
@@ -100,6 +115,82 @@ fn run_git(path: &str, args: &[&str]) -> Result<GitOut, String> {
         code: output.status.code(),
         stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+    })
+}
+
+/// Feed one chunk of raw progress bytes through the segmenter, invoking
+/// `on_line` once per completed segment. git rewrites its current progress line
+/// with a bare `\r` (carriage return) between updates and only ends a phase with
+/// `\n`, so a `\n`-only reader would see nothing until the whole op finished —
+/// we split on BOTH. `seg` carries the partial trailing segment across chunk
+/// boundaries; because a completed segment is UTF-8-decoded only once it's whole,
+/// a multi-byte char split across two reads is handled correctly. Pure + no I/O,
+/// so it's unit-tested directly (see tests below).
+fn feed_progress(chunk: &[u8], seg: &mut Vec<u8>, on_line: &mut impl FnMut(&str)) {
+    for &b in chunk {
+        if b == b'\r' || b == b'\n' {
+            if !seg.is_empty() {
+                on_line(String::from_utf8_lossy(seg).trim_end());
+                seg.clear();
+            }
+        } else {
+            seg.push(b);
+        }
+    }
+}
+
+/// Streaming sibling of `run_git`: spawns the SAME WSL-aware `git_command` (so
+/// `GIT_TERMINAL_PROMPT=0` / null stdin / `no_console_window` / `SSH_ASKPASS` are
+/// all inherited unchanged), but pipes stderr and reads it live, calling `on_line`
+/// once per progress segment (see `feed_progress`). stdout is drained
+/// concurrently on its own thread: a child blocked writing to a full, unread
+/// stdout pipe would deadlock (the same hazard `procutil::output_with_timeout`
+/// documents). Deliberately NO timeout — a live-progress remote op is expected to
+/// be long, and the non-streaming `run_git` above never had one either.
+fn run_git_streaming(path: &str, args: &[&str], mut on_line: impl FnMut(&str)) -> Result<GitOut, String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = crate::wsl::git_command(path, args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Could not run git: {e}"))?;
+
+    // Drain stdout on a sibling thread so a large stdout can't deadlock the
+    // stderr read loop below (and vice versa).
+    let mut stdout_pipe = child.stdout.take().expect("stdout piped above");
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout_pipe.read_to_end(&mut buf);
+        buf
+    });
+
+    let mut stderr_pipe = child.stderr.take().expect("stderr piped above");
+    let mut stderr_all: Vec<u8> = Vec::new();
+    let mut seg: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match stderr_pipe.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                stderr_all.extend_from_slice(&chunk[..n]);
+                feed_progress(&chunk[..n], &mut seg, &mut on_line);
+            }
+            Err(_) => break,
+        }
+    }
+    // Flush a final segment with no trailing \r/\n (e.g. the last "done." line).
+    if !seg.is_empty() {
+        on_line(String::from_utf8_lossy(&seg).trim_end());
+    }
+
+    let status = child.wait().map_err(|e| format!("git wait failed: {e}"))?;
+    let stdout = stdout_thread.join().unwrap_or_default();
+    Ok(GitOut {
+        ok: status.success(),
+        code: status.code(),
+        stdout: String::from_utf8_lossy(&stdout).trim().to_string(),
+        stderr: String::from_utf8_lossy(&stderr_all).trim().to_string(),
     })
 }
 
@@ -314,6 +405,54 @@ pub async fn fetch(path: String, remote: Option<String>) -> RemoteResult {
     .await
 }
 
+/// Streaming twin of [`fetch`]: identical behaviour (same validation, args,
+/// success message, and `git_error_message` failure path), but forces
+/// `--progress` so git writes transfer progress to stderr, reads it live via
+/// `run_git_streaming`, and emits each segment as a `"sync-progress"` event so
+/// the frontend's progress modal can show what git is doing. `fetch` (silent,
+/// used by the ambient auto-fetch timer and the pull-with-strategy flows) is
+/// left in place; only the user-initiated topbar/menu Fetch calls this one.
+///
+/// FOLLOW-UP: no process-kill cancel yet — the modal is dismissable and the op
+/// runs to completion in the background (`fetch` only moves remote-tracking
+/// refs, so a background finish is harmless). A real cancel would need a shared
+/// `Child` handle + a `sync_cancel` command (mirroring `bisect_run_cancel`), and
+/// killing `wsl.exe` doesn't reliably kill the inner git on the WSL path.
+/// JS call: `invoke("fetch_stream", { path, remote? })`.
+#[tauri::command]
+#[specta::specta]
+pub async fn fetch_stream(app: AppHandle<Wry>, path: String, remote: Option<String>) -> RemoteResult {
+    crate::blocking::run_blocking(move || {
+        if let Some(r) = &remote {
+            if let Err(e) = validate_remote_name(r) {
+                return RemoteResult::err(e);
+            }
+        }
+        // `--progress` MUST precede `--end-of-options` — anything after that
+        // marker is parsed as a positional (same rule this module documents for
+        // the specific-remote fetch's remote arg).
+        let args: Vec<&str> = match &remote {
+            Some(r) => vec!["fetch", "--prune", "--progress", "--end-of-options", r.as_str()],
+            None => vec!["fetch", "--all", "--prune", "--progress"],
+        };
+        let mut emit = |line: &str| {
+            let _ = app.emit("sync-progress", SyncProgress { phase: "fetch".into(), line: line.to_string() });
+        };
+        match run_git_streaming(&path, &args, &mut emit) {
+            Ok(out) if out.ok => RemoteResult::ok(
+                match &remote {
+                    Some(r) => format!("Fetched {r}."),
+                    None => "Fetched all remotes.".to_string(),
+                },
+                None,
+            ),
+            Ok(out) => RemoteResult::err(git_error_message(&path, &out)),
+            Err(e) => RemoteResult::err(e),
+        }
+    })
+    .await
+}
+
 /// Fast-forward the current branch to its upstream (`git pull --ff-only`).
 /// Refuses (git's own message) rather than merging/rebasing on divergence —
 /// see module doc for why.
@@ -347,6 +486,46 @@ pub async fn pull(path: String) -> RemoteResult {
                 RemoteResult::ok(msg, Some(backup))
             }
             // e.g. "fatal: Not possible to fast-forward, aborting."
+            Ok(out) => RemoteResult::err(git_error_message(&path, &out)),
+            Err(e) => RemoteResult::err(e),
+        }
+    })
+    .await
+}
+
+/// Streaming twin of [`pull`]: identical behaviour — takes the SAME pre-op
+/// safety snapshot, stays `--ff-only`, returns the same `backup_ref`, and routes
+/// failures through the same `git_error_message` — but forces `--progress` (git
+/// pull forwards it to the underlying fetch) and streams stderr via
+/// `run_git_streaming`, emitting `"sync-progress"` events for the modal. The
+/// ff-only merge summary ("Already up to date." / "Updating …") still lands on
+/// stdout, which is captured intact, so the success-message parse below is
+/// unchanged. See `fetch_stream` for the (deferred) cancellation rationale.
+/// JS call: `invoke("pull_stream", { path })`.
+#[tauri::command]
+#[specta::specta]
+pub async fn pull_stream(app: AppHandle<Wry>, path: String) -> RemoteResult {
+    crate::blocking::run_blocking(move || {
+        let repo = match open_repo(&path) {
+            Ok(r) => r,
+            Err(w) => return w,
+        };
+        let backup = match take_snapshot(&repo) {
+            Ok(b) => b,
+            Err(e) => return RemoteResult::err(format!("Safety snapshot failed, aborting: {e}")),
+        };
+        let mut emit = |line: &str| {
+            let _ = app.emit("sync-progress", SyncProgress { phase: "pull".into(), line: line.to_string() });
+        };
+        match run_git_streaming(&path, &["pull", "--ff-only", "--progress"], &mut emit) {
+            Ok(out) if out.ok => {
+                let msg = if out.stdout.contains("Already up to date") {
+                    "Already up to date.".to_string()
+                } else {
+                    format!("Pulled (snapshot {}).", short_backup(&backup))
+                };
+                RemoteResult::ok(msg, Some(backup))
+            }
             Ok(out) => RemoteResult::err(git_error_message(&path, &out)),
             Err(e) => RemoteResult::err(e),
         }
@@ -860,5 +1039,54 @@ mod tests {
 
         let empty = GitOut { ok: false, code: Some(1), stdout: String::new(), stderr: String::new() };
         assert_eq!(git_error_message("/any/path", &empty), "git exited with status Some(1)");
+    }
+
+    // Drive `feed_progress` chunk-by-chunk (mirroring run_git_streaming's read
+    // loop, including the final flush) and collect every emitted segment.
+    fn segment(chunks: &[&[u8]]) -> Vec<String> {
+        let mut seg: Vec<u8> = Vec::new();
+        let mut lines: Vec<String> = Vec::new();
+        let mut on_line = |s: &str| lines.push(s.to_string());
+        for c in chunks {
+            feed_progress(c, &mut seg, &mut on_line);
+        }
+        if !seg.is_empty() {
+            on_line(String::from_utf8_lossy(&seg).trim_end());
+        }
+        lines
+    }
+
+    #[test]
+    fn feed_progress_splits_on_both_carriage_return_and_newline() {
+        // git rewrites the SAME progress line with \r, ending a phase with \n.
+        let input = b"remote: Counting objects: 100%\rReceiving objects:  42% (42/100)\rReceiving objects: 100% (100/100)\nResolving deltas: 100% (10/10)\n";
+        assert_eq!(
+            segment(&[input]),
+            vec![
+                "remote: Counting objects: 100%",
+                "Receiving objects:  42% (42/100)",
+                "Receiving objects: 100% (100/100)",
+                "Resolving deltas: 100% (10/10)",
+            ]
+        );
+    }
+
+    #[test]
+    fn feed_progress_flushes_a_final_segment_with_no_trailing_delimiter() {
+        assert_eq!(segment(&[b"done."]), vec!["done."]);
+    }
+
+    #[test]
+    fn feed_progress_reassembles_a_segment_and_a_utf8_char_split_across_chunks() {
+        // A segment (and a multi-byte char, "é" = 0xC3 0xA9) split across two
+        // reads must reassemble, not corrupt or drop.
+        let lines = segment(&[b"Receiving obj\xc3", b"\xa9cts: 5%\rok\n"]);
+        assert_eq!(lines, vec!["Receiving objécts: 5%", "ok"]);
+    }
+
+    #[test]
+    fn feed_progress_ignores_empty_segments_from_blank_lines() {
+        // Back-to-back delimiters (e.g. \r\n or a blank line) must not emit "".
+        assert_eq!(segment(&[b"a\r\n\nb\n"]), vec!["a", "b"]);
     }
 }

@@ -111,6 +111,11 @@ fn specta_builder() -> Builder<tauri::Wry> {
         // calls it.
         git_remote::fetch,
         git_remote::pull,
+        // Streaming twins of fetch/pull: same behaviour, but force git
+        // --progress and emit "sync-progress" events so the topbar/menu
+        // Fetch/Pull can show a live progress modal (see doFetch/doPull).
+        git_remote::fetch_stream,
+        git_remote::pull_stream,
         git_remote::current_upstream,
         // Hard-reset a local branch to match its configured upstream,
         // discarding local commits/changes on it — the sidebar branch-row
@@ -316,6 +321,10 @@ fn specta_builder() -> Builder<tauri::Wry> {
     // specta only walks types reachable from a REGISTERED command's own
     // signature by default.
     .typ::<model::GraphBatch>()
+    // Same raw-emit convention as GraphBatch above: `SyncProgress` is only ever
+    // emitted over the "sync-progress" event (fetch_stream/pull_stream), never a
+    // command parameter, so it needs an explicit `.typ()` to reach bindings.ts.
+    .typ::<git_remote::SyncProgress>()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

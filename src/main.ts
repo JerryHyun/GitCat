@@ -13,6 +13,7 @@ import Rerere from "./islands/rerere/Rerere.svelte";
 import { rerereCtrl } from "./islands/rerere/rerere.svelte.ts";
 import Plumbing from "./islands/plumbing/Plumbing.svelte";
 import { plumbing } from "./islands/plumbing/plumbing.svelte.ts";
+import SyncProgress from "./islands/syncprogress/SyncProgress.svelte";
 import RepoSummary from "./islands/reposummary/RepoSummary.svelte";
 import { repoSummaryCtrl } from "./islands/reposummary/reposummary.svelte.ts";
 import Remotes from "./islands/remotes/Remotes.svelte";
@@ -135,6 +136,9 @@ sidebarCtrl.refresh(bridge.CUR_REPO as unknown as string);
 mount(Reflog, { target: document.body });
 mount(Rerere, { target: document.body });
 mount(Plumbing, { target: document.body });
+// Fetch/Pull live-progress modal — opened by doFetch/doPull (legacy/main.ts),
+// which is reached from both the topbar buttons and the native Fetch/Pull menu.
+mount(SyncProgress, { target: document.body });
 // Repository Summary: same on-demand-modal treatment as Reflog/Rerere/
 // Plumbing above, PLUS it also opens itself automatically the very first
 // time a given repo is opened in GitCat — see openRepo()'s own call to

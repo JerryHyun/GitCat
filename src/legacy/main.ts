@@ -12,6 +12,7 @@ import { snapshotPreviewCtrl } from "../islands/snapshotpreview/snapshotpreview.
 import { ribbonTickFracs, RIBBON_TOP_FRAC, RIBBON_BOT_FRAC, RIBBON_MIN_TICK_PX } from "./ribbon.ts";
 import { dashboardCtrl } from "../islands/dashboard/dashboard.svelte.ts";
 import { repoSummaryCtrl } from "../islands/reposummary/reposummary.svelte.ts";
+import { syncProgressCtrl } from "../islands/syncprogress/syncprogress.svelte.ts";
 // Hidden Easter egg — see its own header doc + this file's click-counter
 // right after gaze()/the idle-sleep interval below.
 import { tamaGalleryCtrl } from "../islands/tamagallery/tamagallery.svelte.ts";
@@ -1675,11 +1676,17 @@ async function doFetch(){
   if(syncBusy) return; syncBusy=true;
   setSyncButtonsBusy("fetchBtn","Fetching…");
   Tama.set("syncing"); Tama.say("Fetching…");
+  // Open the live-progress modal and start listening BEFORE invoking, so the
+  // first "remote: Counting objects…" segment isn't missed. fetch_stream is the
+  // streaming twin of fetch (same result); the ambient auto-fetch timer and the
+  // pull-with-strategy flows still use the silent, non-modal `fetch`.
+  await syncProgressCtrl.begin("Fetching…","fetch");
   try{
-    const res=await tinvoke("fetch",{path:CUR_REPO,remote:null});
+    const res=await tinvoke("fetch_stream",{path:CUR_REPO,remote:null});
+    syncProgressCtrl.settle(!!(res&&res.ok),(res&&res.message)||"");
     if(res&&res.ok){ await sidebarCtrl.refresh(CUR_REPO); Tama.set("hint"); Tama.say(res.message||"Fetched.",3200); }
     else Tama.warn((res&&res.message)||"Fetch failed.");
-  }catch(e){ Tama.warn("Fetch failed — "+e); console.error(e); }
+  }catch(e){ syncProgressCtrl.settle(false,String(e)); Tama.warn("Fetch failed — "+e); console.error(e); }
   finally{ syncBusy=false; clearSyncButtonsBusy(); }
 }
 async function doPull(){
@@ -1688,11 +1695,13 @@ async function doPull(){
   if(syncBusy) return; syncBusy=true;
   setSyncButtonsBusy("pullBtn","Pulling…");
   Tama.set("syncing"); Tama.say("Pulling…");
+  await syncProgressCtrl.begin("Pulling…","pull");
   try{
-    const res=await tinvoke("pull",{path:CUR_REPO});
+    const res=await tinvoke("pull_stream",{path:CUR_REPO});
+    syncProgressCtrl.settle(!!(res&&res.ok),(res&&res.message)||"");
     if(res&&res.ok){ await reloadGraph(true); Tama.set("celebrate"); Tama.say(res.message||"Pulled.",3200); cheer(res.message||"Pulled.",TAMA_IMG.happy); }
     else Tama.warn((res&&res.message)||"Pull failed.");
-  }catch(e){ Tama.warn("Pull failed — "+e); console.error(e); }
+  }catch(e){ syncProgressCtrl.settle(false,String(e)); Tama.warn("Pull failed — "+e); console.error(e); }
   finally{ syncBusy=false; clearSyncButtonsBusy(); }
 }
 async function doPush(){

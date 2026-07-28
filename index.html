@@ -1061,6 +1061,13 @@ button{font-family:inherit;font-size:inherit;color:inherit;cursor:pointer}
 .modal.reflog .modal-body,.modal.rerere .modal-body{max-height:60vh;overflow:auto}
 .modal.plumbing{width:min(640px,96vw)}
 
+/* Fetch/Pull live-progress modal — a scrollable monospace log of git's own
+   --progress output (see the syncprogress island). */
+.modal.syncprogress{width:min(600px,96vw)}
+.sync-log{font-family:var(--mono);font-size:12px;line-height:1.5;background:var(--bg);border:1px solid var(--border);border-radius:var(--r-panel);padding:10px 12px;white-space:pre-wrap;word-break:break-word;min-height:120px;max-height:46vh;overflow:auto;margin:0}
+.sync-empty{display:flex;align-items:center;gap:8px;padding:16px 4px}
+.sync-status{margin-top:10px}
+
 /* ============================== TAMA GALLERY (hidden Easter egg) ==============================
    Click the nook portrait 7x within ~2.5s (see legacy/main.ts's own click
    counter) — every painted pose in one grid, click a card to "play" it
