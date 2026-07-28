@@ -503,7 +503,27 @@
       open={!workdirCtrl.isDirCollapsed("staged", child.path)}
       ontoggle={(e) => workdirCtrl.setDirOpen("staged", child.path, (e.currentTarget as HTMLDetailsElement).open)}
     >
-      <summary><span class="tw">&#9656;</span><Folder class="ico" size={13} aria-hidden="true" /> {name}</summary>
+      <summary
+        ><span class="tw">&#9656;</span><Folder class="ico" size={13} aria-hidden="true" /><span class="wd-path">{name}</span>
+        {#if workdirCtrl.busyTarget === child.path}
+          <span class="spinner"></span>
+        {:else}
+          <!-- Unstage the whole folder in one go (git restore --staged on the
+               directory) instead of file by file. preventDefault/stopPropagation
+               so the click stages, not toggles the folder open/closed. -->
+          <button
+            class="wd-act"
+            title="Unstage folder"
+            aria-label="Unstage folder {child.path}"
+            disabled={workdirCtrl.busy}
+            onclick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              workdirCtrl.unstageFile(repo(), child.path);
+            }}>&#8722;</button
+          >
+        {/if}</summary
+      >
       <div class="indent">{@render stagedDirNode(child)}</div>
     </details>
   {/each}
@@ -573,7 +593,27 @@
       open={!workdirCtrl.isDirCollapsed("unstaged", child.path)}
       ontoggle={(e) => workdirCtrl.setDirOpen("unstaged", child.path, (e.currentTarget as HTMLDetailsElement).open)}
     >
-      <summary><span class="tw">&#9656;</span><Folder class="ico" size={13} aria-hidden="true" /> {name}</summary>
+      <summary
+        ><span class="tw">&#9656;</span><Folder class="ico" size={13} aria-hidden="true" /><span class="wd-path">{name}</span>
+        {#if workdirCtrl.busyTarget === child.path}
+          <span class="spinner"></span>
+        {:else}
+          <!-- Stage the whole folder in one go (git add on the directory)
+               instead of file by file. preventDefault/stopPropagation so the
+               click stages, not toggles the folder open/closed. -->
+          <button
+            class="wd-act"
+            title="Stage folder"
+            aria-label="Stage folder {child.path}"
+            disabled={workdirCtrl.busy}
+            onclick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              workdirCtrl.stageFile(repo(), child.path);
+            }}>&#65291;</button
+          >
+        {/if}</summary
+      >
       <div class="indent">{@render unstagedDirNode(child)}</div>
     </details>
   {/each}
