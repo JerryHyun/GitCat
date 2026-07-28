@@ -2,6 +2,7 @@
   import { workdirCtrl, canBlameWorkdirFile, blameTargetForWorkdirFile, type WdTreeDir } from "./workdir.svelte.ts";
   import * as bridge from "../../legacy/bridge";
   import { blameCtrl } from "../blame/blame.svelte.ts";
+  import { sidebarCtrl } from "../sidebar/sidebar.svelte.ts";
   import { fileHistoryCtrl } from "../filehistory/filehistory.svelte.ts";
   import { externalToolsCtrl } from "../externaltools/externaltools.svelte.ts";
   import Eye from "@lucide/svelte/icons/eye";
@@ -26,6 +27,13 @@
   function repo(): string {
     return bridge.CUR_REPO as unknown as string;
   }
+
+  // Repo-relative paths that are submodules (from the sidebar's already-loaded
+  // submodule list) — so a submodule that shows up here as a plain "M" gets a
+  // clear "submodule" badge instead of looking like an ordinary modified file.
+  // A submodule in the working-tree status IS the dirty case (its own tree has
+  // uncommitted changes, or its recorded commit moved).
+  const submodulePaths = $derived(new Set(sidebarCtrl.submodules.map((s) => s.path)));
 
   // BUG FIX: same "stale scroll position carries over to the next file's
   // diff" issue Detail.svelte's own #diffview has, and for the identical
@@ -569,6 +577,9 @@
     >
       <span class="st" data-status={f.status}>{STATUS_LABEL[f.status] ?? f.status}</span>
       <span class="wd-path" title={f.path}>{f.oldPath ? f.oldPath + " → " + f.path : f.name}</span>
+      {#if submodulePaths.has(f.path)}
+        <span class="wd-sub" title="Submodule — its own working tree has uncommitted changes or its recorded commit moved. Open it (sidebar ▸ Submodules) to inspect.">submodule</span>
+      {/if}
       {#if workdirCtrl.busyTarget === f.path}
         <span class="spinner"></span>
       {:else}
@@ -659,6 +670,9 @@
     >
       <span class="st" data-status={f.status}>{STATUS_LABEL[f.status] ?? f.status}</span>
       <span class="wd-path" title={f.path}>{f.oldPath ? f.oldPath + " → " + f.path : f.name}</span>
+      {#if submodulePaths.has(f.path)}
+        <span class="wd-sub" title="Submodule — its own working tree has uncommitted changes or its recorded commit moved. Open it (sidebar ▸ Submodules) to inspect.">submodule</span>
+      {/if}
       {#if workdirCtrl.busyTarget === f.path}
         <span class="spinner"></span>
       {:else}

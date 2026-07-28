@@ -912,6 +912,11 @@ button{font-family:inherit;font-size:inherit;color:inherit;cursor:pointer}
 .wd-file .st[data-status="T"]{color:var(--accent2)}
 .wd-file .st[data-status="?"]{color:var(--accent)}
 .wd-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* "submodule" badge on a working-tree row whose path is a submodule — a
+   distinct teal pill so a dirty submodule (which git reports as a plain "M")
+   reads at a glance as a submodule, not an ordinary modified file. */
+.wd-sub{flex:none;font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:1px 6px;border-radius:999px;cursor:help;
+  color:var(--accent2);background:color-mix(in srgb,var(--accent2) 15%,transparent);border:1px solid color-mix(in srgb,var(--accent2) 40%,transparent)}
 /* padding:0 is load-bearing, not cosmetic — BUG FIX: `button` (line 62's
    reset) never touches padding/border, so Chrome's own default `<button>`
    padding (1px 6px) was still in effect here; combined with box-sizing:
