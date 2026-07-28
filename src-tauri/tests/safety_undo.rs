@@ -10,7 +10,7 @@
 mod common;
 
 use common::TempRepo;
-use gitcat_lib::safety::{snapshot, undo};
+use gitcat_lib::safety::{snapshot, undo, undo_stashing};
 
 /// Fresh repo on `main` with three commits; returns (repo, [c0, c1, c2]).
 fn setup(tag: &str) -> (TempRepo, [String; 3]) {
@@ -115,4 +115,31 @@ fn undo_restores_a_renamed_branchs_old_name_and_drops_the_new_one() {
     assert!(u.ok, "undo failed: {}", u.message);
     assert_eq!(repo.rev("refs/heads/feature").as_deref(), Some(c1.as_str()), "old name 'feature' not restored");
     assert!(repo.rev("refs/heads/feat2").is_none(), "renamed 'feat2' not removed");
+}
+
+// undo_stashing: a plain undo refuses on a dirty tree; the stashing variant
+// keeps the uncommitted changes across the undo (stash -> undo -> pop).
+#[test]
+fn undo_stashing_keeps_uncommitted_changes_across_the_undo() {
+    let (repo, [_c0, _c1, c2]) = setup("undo-stash");
+    snapshot(&repo.open()).expect("snapshot"); // captures {main: c2}
+    // Move main forward — undo will rewind it back to c2.
+    repo.commit("f.txt", "3\n", "c3");
+    assert_ne!(repo.must(&["rev-parse", "HEAD"]), c2, "precondition: HEAD moved off c2");
+
+    // Dirty the tree with an UNRELATED file so the pop can't conflict with the
+    // reset --hard that undo performs on f.txt.
+    std::fs::write(repo.dir.join("notes.txt"), "my uncommitted work\n").unwrap();
+
+    // A plain undo must refuse (and not mutate) while the tree is dirty.
+    let refused = undo(&repo.open()).expect("undo");
+    assert!(!refused.ok, "plain undo must refuse a dirty tree");
+    assert_ne!(repo.must(&["rev-parse", "HEAD"]), c2, "refused undo must not have moved HEAD");
+
+    // The stashing variant succeeds: rewinds to c2 AND keeps the change.
+    let u = undo_stashing(&repo.open()).expect("undo_stashing");
+    assert!(u.ok, "undo_stashing should succeed: {}", u.message);
+    assert_eq!(repo.must(&["rev-parse", "HEAD"]), c2, "should have rewound main to c2");
+    assert_eq!(repo.read("notes.txt"), "my uncommitted work\n", "uncommitted change must be re-applied, not lost");
+    assert!(repo.must(&["stash", "list"]).is_empty(), "stash should have been popped, not left behind");
 }

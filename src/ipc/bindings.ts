@@ -204,6 +204,26 @@ async undoLast(path: string) : Promise<Result<UndoResult, string>> {
 }
 },
 /**
+ * Undo the last mutation while KEEPING the current uncommitted changes: stash
+ * them (tracked + untracked), run the normal [`undo`] on the now-clean tree,
+ * then pop the stash back on top of the restored state. The frontend offers
+ * this only after a plain undo refused because the tree was dirty (see
+ * `globalUndo`) — a plain `undo`'s `reset --hard` would otherwise discard those
+ * changes, which is exactly why it refuses. A stash pop that CONFLICTS leaves
+ * the changes applied with conflict markers and keeps the stash entry — that's
+ * reported in the message, not hidden.
+ * 
+ * JS: `invoke("undo_last_stashing", { path })`.
+ */
+async undoLastStashing(path: string) : Promise<Result<UndoResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("undo_last_stashing", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: prune backup snapshots per the user's retention policy (see
  * `prune_backups`). Called from the frontend on repo-open when the configured
  * mode isn't "off" (settings.svelte.ts's `pruneSnapshotsPerPolicy`). Returns

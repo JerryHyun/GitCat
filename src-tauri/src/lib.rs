@@ -63,6 +63,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         safety::create_snapshot,
         safety::list_snapshots,
         safety::undo_last,
+        safety::undo_last_stashing,
         safety::prune_snapshots,
         // Branch ops
         git_write::list_refs,

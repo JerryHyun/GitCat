@@ -532,6 +532,68 @@ pub async fn undo_last(path: String) -> Result<UndoResult, String> {
     crate::blocking::run_blocking(move || undo(&open(&path)?)).await
 }
 
+/// Undo the last mutation while KEEPING the current uncommitted changes: stash
+/// them (tracked + untracked), run the normal [`undo`] on the now-clean tree,
+/// then pop the stash back on top of the restored state. The frontend offers
+/// this only after a plain undo refused because the tree was dirty (see
+/// `globalUndo`) — a plain `undo`'s `reset --hard` would otherwise discard those
+/// changes, which is exactly why it refuses. A stash pop that CONFLICTS leaves
+/// the changes applied with conflict markers and keeps the stash entry — that's
+/// reported in the message, not hidden.
+///
+/// JS: `invoke("undo_last_stashing", { path })`.
+#[tauri::command]
+#[specta::specta]
+pub async fn undo_last_stashing(path: String) -> Result<UndoResult, String> {
+    crate::blocking::run_blocking(move || undo_stashing(&open(&path)?)).await
+}
+
+pub fn undo_stashing(repo: &Repository) -> Result<UndoResult, String> {
+    let workdir = repo
+        .workdir()
+        .and_then(|p| p.to_str())
+        .ok_or_else(|| "undo needs a working tree (bare repo not supported)".to_string())?
+        .to_string();
+    let workdir = workdir.as_str();
+
+    let err = |message: String| UndoResult { ok: false, message, restored_to: None, sealed: None };
+
+    // Stash everything (tracked + untracked) so undo's `reset --hard` runs on a
+    // clean tree instead of refusing.
+    let stash = run_git(workdir, &["stash", "push", "--include-untracked", "-m", "gitcat: auto-stash before undo"])?;
+    if !stash.ok {
+        return Ok(err(format!("Couldn't stash your changes before undo — {}", stash.stderr.trim())));
+    }
+    // `git stash push` on a clean tree prints "No local changes to save" and
+    // creates NOTHING — so there'd be nothing to pop afterward.
+    let stashed = !stash.stdout.contains("No local changes to save");
+
+    let mut res = undo(repo)?;
+    if !res.ok {
+        // Undo itself failed (e.g. no snapshots) — don't strand the user's work
+        // in a stash; put it straight back.
+        if stashed {
+            let _ = run_git(workdir, &["stash", "pop"]);
+        }
+        return Ok(res);
+    }
+
+    if stashed {
+        let pop = run_git(workdir, &["stash", "pop"])?;
+        res.message = if pop.ok {
+            format!("{} Your uncommitted changes were stashed and re-applied.", res.message)
+        } else {
+            // On conflict `git stash pop` applies with markers and KEEPS the
+            // stash — surface both so the user can resolve, then drop it.
+            format!(
+                "{} Undo done, but re-applying your uncommitted changes hit a conflict — resolve it (your changes are also kept in a stash).",
+                res.message
+            )
+        };
+    }
+    Ok(res)
+}
+
 /// Tauri command: prune backup snapshots per the user's retention policy (see
 /// `prune_backups`). Called from the frontend on repo-open when the configured
 /// mode isn't "off" (settings.svelte.ts's `pruneSnapshotsPerPolicy`). Returns

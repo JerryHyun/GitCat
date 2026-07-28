@@ -1626,6 +1626,22 @@ async function globalUndo(){
       const to=(res.restoredTo||"").slice(0,7);
       Tama.event("undo.performed",{hash:to||hhex(1)}); pulseTick(0);
       cheer('Rewound — <b>nothing lost</b>. <span class="jp">やったー♪</span>',TAMA_IMG.confident);
+    } else if(!useStashUndo && /uncommitted changes/i.test((res&&res.message)||"")){
+      // Undo refused because the working tree is dirty (its reset --hard would
+      // DISCARD those changes — see safety.rs's undo()). Offer to keep them:
+      // stash → undo → pop (undo_last_stashing). Native confirm(), same as
+      // doDeleteBranch's force-delete prompt.
+      if(confirm("You have uncommitted changes, so Undo can't run — it resets the working tree.\n\nStash your changes, undo, then put them back? Nothing is lost; if re-applying conflicts you'll resolve it, and your changes are also kept in a stash.")){
+        const r2=await tinvoke("undo_last_stashing",{path:CUR_REPO});
+        if(r2&&r2.ok){
+          await reloadGraph(true);
+          await workdirCtrl.refreshStatus(CUR_REPO); await workdirCtrl.refreshStashes(CUR_REPO);
+          const to=(r2.restoredTo||"").slice(0,7);
+          Tama.event("undo.performed",{hash:to||hhex(1)}); pulseTick(0);
+          cheer('Rewound — <b>kept your changes</b>. <span class="jp">やったー♪</span>',TAMA_IMG.confident);
+          if(r2.message) Tama.say(r2.message,4600);
+        } else { Tama.warn((r2&&r2.message)||"Undo (with stash) failed."); }
+      }
     } else { Tama.warn((res&&res.message)||"Nothing to undo — no snapshots yet."); }
   }catch(e){ Tama.warn("Undo failed — "+e); console.error(e); }
   finally{ undoBusy=false; labelEl.innerHTML=label; Safety.updateBadge(); }
