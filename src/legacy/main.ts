@@ -2422,6 +2422,7 @@ function updateBackToParentBtn(){
 let reloadGraphBusy=false;
 let reloadGraphPending=false;
 let reloadGraphPendingPreserveRow=false;
+let reloadGraphPendingForceFull=false;
 
 // Re-map every loaded row's ref chips from a graph_fast_refresh snapshot,
 // joining by FULL oid (BACKEND.oids[r]) — the chips come straight from the
@@ -2536,20 +2537,26 @@ async function tryFastRefresh(){
 // whole history when the commit DAG may actually have changed — see this file's
 // incremental-refresh state block. The coalescing loop below (unchanged) still
 // drains any refresh that arrived mid-flight into exactly one extra pass.
-async function reloadGraph(preserveRow){
+async function reloadGraph(preserveRow, forceFull=false){
   if(!IN_TAURI||!CUR_REPO) return;
   if(reloadGraphBusy){
     reloadGraphPending=true;
     reloadGraphPendingPreserveRow = reloadGraphPendingPreserveRow || !!preserveRow;
+    reloadGraphPendingForceFull = reloadGraphPendingForceFull || !!forceFull;
     return;
   }
   reloadGraphBusy=true;
   try{
-    let nextPreserveRow=preserveRow;
+    let nextPreserveRow=preserveRow, nextForceFull=forceFull;
     for(;;){
       try{
         // Cheap path first; only a false return falls through to a full re-walk.
-        const handled = await tryFastRefresh();
+        // forceFull SKIPS the fast path — the manual Refresh button (the user's
+        // escape hatch for a graph that looks stale, e.g. a branch created
+        // outside the app) must be a guaranteed COMPLETE resync, same as
+        // reopening the repo, never an incremental fast refresh that could miss
+        // a ref/commit an edge case didn't classify.
+        const handled = nextForceFull ? false : await tryFastRefresh();
         if(!handled){
           const keepSha = nextPreserveRow && state.selectedRow>=0 && BACKEND && BACKEND.rows[state.selectedRow]
             ? BACKEND.rows[state.selectedRow].sha : null;
@@ -2575,6 +2582,8 @@ async function reloadGraph(preserveRow){
       reloadGraphPending=false;
       nextPreserveRow=reloadGraphPendingPreserveRow;
       reloadGraphPendingPreserveRow=false;
+      nextForceFull=reloadGraphPendingForceFull;
+      reloadGraphPendingForceFull=false;
     }
   } finally {
     reloadGraphBusy=false;

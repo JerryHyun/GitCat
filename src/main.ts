@@ -242,16 +242,24 @@ mount(TamaGallery, { target: document.body });
 // with it instead of racing it.
 let repoChangeReloadInFlight = false;
 let repoChangePending = false;
-async function refreshFromExternalChange() {
+let repoChangePendingForceFull = false;
+// `forceFull` (the manual Refresh button passes true): re-walk the whole graph
+// instead of the incremental fast path — the button is the "resync everything
+// now" escape hatch, so it must never miss an external ref/commit change (e.g. a
+// branch created outside the app). The automatic watcher/poll callers leave it
+// false and keep the cheap fast path.
+async function refreshFromExternalChange(forceFull = false) {
   if (!bridge.CUR_REPO) return;
   if (repoChangeReloadInFlight) {
     repoChangePending = true;
+    repoChangePendingForceFull = repoChangePendingForceFull || forceFull;
     return;
   }
   repoChangeReloadInFlight = true;
+  let nextForceFull = forceFull;
   try {
     for (;;) {
-      await bridge.reloadGraph(true);
+      await bridge.reloadGraph(true, nextForceFull);
       // Working-tree state (stage/unstage/dirty files) can change from
       // OUTSIDE the app exactly like refs can (an external `git add`, a
       // terminal edit, a save from another editor) — keep the pinned row's
@@ -266,6 +274,8 @@ async function refreshFromExternalChange() {
       await Promise.all([workdirCtrl.refreshStatus(repo), workdirCtrl.refreshStashes(repo)]);
       if (!repoChangePending) break;
       repoChangePending = false;
+      nextForceFull = repoChangePendingForceFull;
+      repoChangePendingForceFull = false;
     }
   } finally {
     repoChangeReloadInFlight = false;
@@ -398,7 +408,10 @@ document.getElementById("refreshBtn")?.addEventListener("click", () => {
     bridge.tama.warn("Open a repository first.");
     return;
   }
-  refreshFromExternalChange();
+  // forceFull: the manual button is the "resync everything" escape hatch — a
+  // guaranteed full re-walk, not an incremental fast refresh (see
+  // refreshFromExternalChange / reloadGraph).
+  refreshFromExternalChange(true);
 });
 
 // Ctrl/⌘ + , opens Settings. The native menu registers this accelerator too
