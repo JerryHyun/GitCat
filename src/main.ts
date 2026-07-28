@@ -434,6 +434,26 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
+// Same story for ⌘/Ctrl+O (open the repositories dashboard). The native
+// accelerator (menu.rs → "open-repo") fires reliably on macOS, but on Windows
+// Ctrl+O is swallowed by the WebView2's own "open file" default before muda's
+// accelerator sees it, so the menu action never runs. This frontend fallback
+// preventDefaults the key and opens the dashboard directly; on macOS the native
+// menu consumes it first, and dashboardCtrl.show() is idempotent if both fire.
+// Ignored while typing so a stray Ctrl+O in a field can't pop the modal.
+window.addEventListener("keydown", (e) => {
+  if (
+    (e.metaKey || e.ctrlKey) &&
+    !e.altKey &&
+    !e.shiftKey &&
+    (e.key === "o" || e.key === "O") &&
+    !(e.target as HTMLElement | null)?.closest("input,textarea,[contenteditable=true]")
+  ) {
+    e.preventDefault();
+    dashboardCtrl.show();
+  }
+});
+
 if (IN_TAURI) {
   const w = window as unknown as { __TAURI__?: any };
   w.__TAURI__?.event.listen("menu-action", (e: { payload: string }) => {
