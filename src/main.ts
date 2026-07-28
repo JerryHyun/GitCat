@@ -401,6 +401,26 @@ document.getElementById("refreshBtn")?.addEventListener("click", () => {
   refreshFromExternalChange();
 });
 
+// Ctrl/⌘ + , opens Settings. The native menu registers this accelerator too
+// (menu.rs), but muda's Win32 accelerator handling of the literal "," key
+// doesn't reliably fire on Windows — this frontend fallback makes the shortcut
+// work there. On macOS the native accelerator consumes the event first, so this
+// rarely runs; if both ever fire, settingsCtrl.show() is idempotent (a no-op
+// when already open), so opening again is harmless. Ignored while typing so a
+// stray Ctrl+, in a field can't pop Settings mid-edit.
+window.addEventListener("keydown", (e) => {
+  if (
+    (e.metaKey || e.ctrlKey) &&
+    !e.altKey &&
+    !e.shiftKey &&
+    e.key === "," &&
+    !(e.target as HTMLElement | null)?.closest("input,textarea,[contenteditable=true]")
+  ) {
+    e.preventDefault();
+    settingsCtrl.show(bridge.CUR_REPO as unknown as string);
+  }
+});
+
 if (IN_TAURI) {
   const w = window as unknown as { __TAURI__?: any };
   w.__TAURI__?.event.listen("menu-action", (e: { payload: string }) => {
