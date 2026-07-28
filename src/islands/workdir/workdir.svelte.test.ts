@@ -347,6 +347,32 @@ describe("hunk/line selection", () => {
   it("buildSelectedHunks is empty when nothing is checked", () => {
     expect(workdirCtrl.buildSelectedHunks()).toEqual([]);
   });
+
+  it("hasSelectableLines is true when the diff has any +/- line, false for a context-only diff", () => {
+    expect(workdirCtrl.hasSelectableLines).toBe(true);
+    workdirCtrl.diffHunks = [{ header: "@@ -1,1 +1,1 @@", lines: [{ kind: " ", oldNo: 1, newNo: 1, text: "keep", html: "keep" }] }];
+    expect(workdirCtrl.hasSelectableLines).toBe(false);
+  });
+
+  it("selectAllLines checks every +/- row (never context), and deselectAllLines clears them", () => {
+    const lines = FC_MULTI_LINE.hunks[0].lines;
+    workdirCtrl.selectAllLines();
+    expect(workdirCtrl.selectedLinesCount).toBe(2); // the '-' and '+' rows, not the context row
+    expect(workdirCtrl.isLineSelected("@@ -1,3 +1,3 @@", lines[0])).toBe(false); // context
+    expect(workdirCtrl.isLineSelected("@@ -1,3 +1,3 @@", lines[1])).toBe(true); // '-'
+    expect(workdirCtrl.isLineSelected("@@ -1,3 +1,3 @@", lines[2])).toBe(true); // '+'
+
+    workdirCtrl.deselectAllLines();
+    expect(workdirCtrl.selectedLinesCount).toBe(0);
+  });
+
+  it("selectAllLines then a shift-click starts a fresh range instead of extending from a stale anchor", () => {
+    const lines = FC_MULTI_LINE.hunks[0].lines;
+    workdirCtrl.selectAllLines(); // resets the range anchor
+    workdirCtrl.toggleLine("@@ -1,3 +1,3 @@", lines, 1, false); // unchecks the '-' row (was selected)
+    expect(workdirCtrl.selectedLinesCount).toBe(1);
+    expect(workdirCtrl.isLineSelected("@@ -1,3 +1,3 @@", lines[2])).toBe(true);
+  });
 });
 
 describe("stageFile / unstageFile / stageAll", () => {

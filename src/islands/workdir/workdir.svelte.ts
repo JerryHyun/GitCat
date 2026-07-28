@@ -581,6 +581,31 @@ class WorkdirState {
     this.lastClickedIdx = idx;
   }
 
+  // Whether the open diff has any selectable (+/-) row — gates the "Select all /
+  // Deselect all" control (a binary file / pure rename has none).
+  get hasSelectableLines(): boolean {
+    return this.diffHunks.some((h) => h.lines.some((l) => l.kind === "+" || l.kind === "-"));
+  }
+
+  // Select every +/- line across the open diff (or clear the whole selection) —
+  // a quick way to grab or reset the per-line staging checkboxes without
+  // clicking each hunk.
+  selectAllLines() {
+    const all: CheckedLine[] = [];
+    for (const hunk of this.diffHunks) {
+      for (const l of hunk.lines) {
+        if (l.kind === "+" || l.kind === "-") all.push({ header: hunk.header, kind: l.kind, oldNo: l.oldNo, newNo: l.newNo });
+      }
+    }
+    this.selectedLines = all;
+    this.lastClickedHeader = null;
+    this.lastClickedIdx = null;
+  }
+
+  deselectAllLines() {
+    this.clearLineSelection();
+  }
+
   // Every `+`/`-` row of one hunk as a single `HunkSelection` — the MVP
   // "Stage/Unstage/Discard hunk" buttons use this (whole-hunk is just the
   // line-level backend call with every eligible line included, see design §4).

@@ -430,16 +430,27 @@
      expanded .diffx modal: a "lines selected" action bar and the file's diff
      body (per-hunk toolbar + per-line staging checkboxes). -->
 {#snippet workdirLinesBar(file: string)}
-  {#if workdirCtrl.selectedLinesCount}
+  {#if workdirCtrl.hasSelectableLines}
     <div class="wd-lines-bar">
-      <span class="mut" style="font-size:11.5px">{workdirCtrl.selectedLinesCount} line{workdirCtrl.selectedLinesCount === 1 ? "" : "s"} selected</span>
-      {#if workdirCtrl.busy && workdirCtrl.busyTarget === file}
-        <span class="spinner"></span>
-      {:else if !workdirCtrl.selectedDiffStaged}
-        <button disabled={workdirCtrl.busy} onclick={() => workdirCtrl.stageLines(repo(), file, workdirCtrl.buildSelectedHunks())}>Stage selected</button>
-        <button class="danger" disabled={workdirCtrl.busy} onclick={() => workdirCtrl.confirmDiscardLines(file, workdirCtrl.buildSelectedHunks())}>Discard selected</button>
-      {:else}
-        <button disabled={workdirCtrl.busy} onclick={() => workdirCtrl.unstageLines(repo(), file, workdirCtrl.buildSelectedHunks())}>Unstage selected</button>
+      <!-- Select all / Deselect all: one toggle to grab every +/- line in the
+           diff or clear the whole selection, so a per-hunk selection can be
+           reset and re-picked without clicking each checkbox. -->
+      <button
+        class="wd-sel-toggle"
+        disabled={workdirCtrl.busy}
+        onclick={() => (workdirCtrl.selectedLinesCount ? workdirCtrl.deselectAllLines() : workdirCtrl.selectAllLines())}
+        >{workdirCtrl.selectedLinesCount ? "Deselect all" : "Select all"}</button
+      >
+      {#if workdirCtrl.selectedLinesCount}
+        <span class="mut" style="font-size:11.5px">{workdirCtrl.selectedLinesCount} line{workdirCtrl.selectedLinesCount === 1 ? "" : "s"} selected</span>
+        {#if workdirCtrl.busy && workdirCtrl.busyTarget === file}
+          <span class="spinner"></span>
+        {:else if !workdirCtrl.selectedDiffStaged}
+          <button disabled={workdirCtrl.busy} onclick={() => workdirCtrl.stageLines(repo(), file, workdirCtrl.buildSelectedHunks())}>Stage selected</button>
+          <button class="danger" disabled={workdirCtrl.busy} onclick={() => workdirCtrl.confirmDiscardLines(file, workdirCtrl.buildSelectedHunks())}>Discard selected</button>
+        {:else}
+          <button disabled={workdirCtrl.busy} onclick={() => workdirCtrl.unstageLines(repo(), file, workdirCtrl.buildSelectedHunks())}>Unstage selected</button>
+        {/if}
       {/if}
     </div>
   {/if}

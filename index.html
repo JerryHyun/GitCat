@@ -987,6 +987,10 @@ button{font-family:inherit;font-size:inherit;color:inherit;cursor:pointer}
 .wd-lines-bar button:hover:not([disabled]){border-color:var(--muted)}
 .wd-lines-bar button.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 40%,transparent)}
 .wd-lines-bar button[disabled]{opacity:.45;cursor:not-allowed}
+/* Select all / Deselect all — a subtler utility button than the solid
+   Stage/Discard actions beside it (transparent until hovered). */
+.wd-lines-bar .wd-sel-toggle{background:transparent;border-color:transparent;color:var(--muted)}
+.wd-lines-bar .wd-sel-toggle:hover:not([disabled]){color:var(--text);border-color:var(--border)}
 
 /* ============================== BISECT / REFLOG / RERERE / PLUMBING content
    ============================================================================
