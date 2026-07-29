@@ -1070,6 +1070,10 @@ button{font-family:inherit;font-size:inherit;color:inherit;cursor:pointer}
 
 /* Mainline-parent chooser for cherry-picking a merge commit. */
 .modal.mainline{width:min(520px,96vw)}
+
+/* Tama-styled in-app confirm dialog (see the tamaconfirm island). */
+.modal.tamaconfirm{width:min(460px,94vw)}
+.modal.tamaconfirm .tc-msg{margin:0;font-size:13px;line-height:1.6;color:var(--text);white-space:pre-line}
 .ml-list{display:flex;flex-direction:column;gap:8px}
 .ml-parent{display:flex;align-items:flex-start;gap:12px;text-align:left;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r-panel);cursor:pointer}
 .ml-parent:hover{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,var(--bg))}

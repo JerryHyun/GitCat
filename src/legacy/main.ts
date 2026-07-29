@@ -13,6 +13,7 @@ import { ribbonTickFracs, RIBBON_TOP_FRAC, RIBBON_BOT_FRAC, RIBBON_MIN_TICK_PX }
 import { dashboardCtrl } from "../islands/dashboard/dashboard.svelte.ts";
 import { repoSummaryCtrl } from "../islands/reposummary/reposummary.svelte.ts";
 import { syncProgressCtrl } from "../islands/syncprogress/syncprogress.svelte.ts";
+import { tamaConfirmCtrl } from "../islands/tamaconfirm/tamaconfirm.svelte.ts";
 // Hidden Easter egg — see its own header doc + this file's click-counter
 // right after gaze()/the idle-sleep interval below.
 import { tamaGalleryCtrl } from "../islands/tamagallery/tamagallery.svelte.ts";
@@ -1633,16 +1634,13 @@ async function globalUndo(){
       // DISCARD those changes — see safety.rs's undo()). Offer to keep them:
       // stash → undo → pop (undo_last_stashing).
       //
-      // SILENT-FAILURE FIX: this used a synchronous window.confirm(). In the
-      // release WKWebView a synchronous confirm() must present its panel on the
-      // busy main/UI thread, and can return false WITHOUT ever showing — so the
-      // whole dirty-tree Undo silently did nothing (no dialog, no toast). Use
-      // the NATIVE dialog plugin's async ask() instead (reliable; mirrors
-      // pickRepo's `d.open` use, with a plain-confirm fallback), and ALWAYS give
-      // feedback on the "no"/cancel branch so this path can never be silent again.
-      const d=window.__TAURI__.dialog;
+      // Uses the app's own Tama-styled confirm (tamaConfirmCtrl.ask), NOT an
+      // OS-native dialog. History: this was a synchronous window.confirm() that
+      // could silently return false in the release WKWebView (making Undo do
+      // nothing); then the native plugin dialog; now the in-app Tama dialog —
+      // reliable, on-brand, and always gives feedback on the cancel branch below.
       const msg="You have uncommitted changes, so Undo can't run — it resets the working tree.\n\nStash your changes, undo, then put them back? Nothing is lost; if re-applying conflicts you'll resolve it, and your changes are also kept in a stash.";
-      const proceed=(d&&d.ask) ? await d.ask(msg,{title:"Undo with stash?",kind:"warning"}) : confirm(msg);
+      const proceed=await tamaConfirmCtrl.ask({title:"Undo with stash?",message:msg,confirmLabel:"Stash & undo",cancelLabel:"Cancel",kind:"warning"});
       if(proceed){
         const r2=await tinvoke("undo_last_stashing",{path:CUR_REPO});
         if(r2&&r2.ok){

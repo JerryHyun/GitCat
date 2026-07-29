@@ -15,6 +15,7 @@ import Plumbing from "./islands/plumbing/Plumbing.svelte";
 import { plumbing } from "./islands/plumbing/plumbing.svelte.ts";
 import SyncProgress from "./islands/syncprogress/SyncProgress.svelte";
 import MainlinePicker from "./islands/mainlinepicker/MainlinePicker.svelte";
+import TamaConfirm from "./islands/tamaconfirm/TamaConfirm.svelte";
 import RepoSummary from "./islands/reposummary/RepoSummary.svelte";
 import { repoSummaryCtrl } from "./islands/reposummary/reposummary.svelte.ts";
 import Remotes from "./islands/remotes/Remotes.svelte";
@@ -143,6 +144,9 @@ mount(SyncProgress, { target: document.body });
 // Mainline-parent chooser — opened by resolver.startPick when the picked
 // commit is a merge (git needs `cherry-pick -m <n>`).
 mount(MainlinePicker, { target: document.body });
+// Tama-styled in-app confirm (promise-based `tamaConfirmCtrl.ask`) — the app's
+// own yes/no dialog instead of an OS-native one (e.g. the dirty-tree Undo).
+mount(TamaConfirm, { target: document.body });
 // Repository Summary: same on-demand-modal treatment as Reflog/Rerere/
 // Plumbing above, PLUS it also opens itself automatically the very first
 // time a given repo is opened in GitCat — see openRepo()'s own call to
