@@ -1631,9 +1631,19 @@ async function globalUndo(){
     } else if(!useStashUndo && /uncommitted changes/i.test((res&&res.message)||"")){
       // Undo refused because the working tree is dirty (its reset --hard would
       // DISCARD those changes — see safety.rs's undo()). Offer to keep them:
-      // stash → undo → pop (undo_last_stashing). Native confirm(), same as
-      // doDeleteBranch's force-delete prompt.
-      if(confirm("You have uncommitted changes, so Undo can't run — it resets the working tree.\n\nStash your changes, undo, then put them back? Nothing is lost; if re-applying conflicts you'll resolve it, and your changes are also kept in a stash.")){
+      // stash → undo → pop (undo_last_stashing).
+      //
+      // SILENT-FAILURE FIX: this used a synchronous window.confirm(). In the
+      // release WKWebView a synchronous confirm() must present its panel on the
+      // busy main/UI thread, and can return false WITHOUT ever showing — so the
+      // whole dirty-tree Undo silently did nothing (no dialog, no toast). Use
+      // the NATIVE dialog plugin's async ask() instead (reliable; mirrors
+      // pickRepo's `d.open` use, with a plain-confirm fallback), and ALWAYS give
+      // feedback on the "no"/cancel branch so this path can never be silent again.
+      const d=window.__TAURI__.dialog;
+      const msg="You have uncommitted changes, so Undo can't run — it resets the working tree.\n\nStash your changes, undo, then put them back? Nothing is lost; if re-applying conflicts you'll resolve it, and your changes are also kept in a stash.";
+      const proceed=(d&&d.ask) ? await d.ask(msg,{title:"Undo with stash?",kind:"warning"}) : confirm(msg);
+      if(proceed){
         const r2=await tinvoke("undo_last_stashing",{path:CUR_REPO});
         if(r2&&r2.ok){
           await reloadGraph(true);
@@ -1643,7 +1653,7 @@ async function globalUndo(){
           cheer('Rewound — <b>kept your changes</b>. <span class="jp">やったー♪</span>',TAMA_IMG.confident);
           if(r2.message) Tama.say(r2.message,4600);
         } else { Tama.warn((r2&&r2.message)||"Undo (with stash) failed."); }
-      }
+      } else { Tama.say("Undo cancelled — your uncommitted changes are untouched.",3200); }
     } else { Tama.warn((res&&res.message)||"Nothing to undo — no snapshots yet."); }
   }catch(e){ Tama.warn("Undo failed — "+e); console.error(e); }
   finally{ undoBusy=false; labelEl.innerHTML=label; Safety.updateBadge(); }
