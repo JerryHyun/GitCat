@@ -62,7 +62,7 @@
 
 use git2::{BranchType, Repository};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Wry};
+use tauri::{AppHandle, Wry};
 
 #[derive(Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -436,7 +436,7 @@ pub async fn fetch_stream(app: AppHandle<Wry>, path: String, remote: Option<Stri
             None => vec!["fetch", "--all", "--prune", "--progress"],
         };
         let mut emit = |line: &str| {
-            let _ = app.emit("sync-progress", SyncProgress { phase: "fetch".into(), line: line.to_string() });
+            crate::event_util::emit_on_main(&app, "sync-progress", SyncProgress { phase: "fetch".into(), line: line.to_string() });
         };
         match run_git_streaming(&path, &args, &mut emit) {
             Ok(out) if out.ok => RemoteResult::ok(
@@ -515,7 +515,7 @@ pub async fn pull_stream(app: AppHandle<Wry>, path: String) -> RemoteResult {
             Err(e) => return RemoteResult::err(format!("Safety snapshot failed, aborting: {e}")),
         };
         let mut emit = |line: &str| {
-            let _ = app.emit("sync-progress", SyncProgress { phase: "pull".into(), line: line.to_string() });
+            crate::event_util::emit_on_main(&app, "sync-progress", SyncProgress { phase: "pull".into(), line: line.to_string() });
         };
         match run_git_streaming(&path, &["pull", "--ff-only", "--progress"], &mut emit) {
             Ok(out) if out.ok => {

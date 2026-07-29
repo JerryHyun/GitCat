@@ -5,6 +5,7 @@ pub mod code_search; // Search Code: git-grep-based full-text search of the curr
 pub mod commands;
 pub mod conflict;
 pub mod dashboard; // backlog #11: minimal per-repo status read for the multi-repo dashboard
+pub mod event_util; // safe cross-thread event emit (marshal to main thread) — avoids the off-thread emit()/get_webview deadlock
 pub mod file_history; // read-only per-file commit history, following renames (git log --follow)
 pub mod filter_repo; // M5c: filter-repo wizard (backup / preview / run / restore)
 pub mod fsck; // backlog #13: fsck-based dangling-object recovery (list dangling commits; recovery reuses git_write::create_branch)

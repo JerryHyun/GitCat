@@ -67,7 +67,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use git2::Repository;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State, Wry};
+use tauri::{AppHandle, Manager, State, Wry};
 
 use crate::procutil::NoConsoleWindowExt;
 
@@ -78,7 +78,7 @@ pub struct CommitInfo {
     pub subject: String,
 }
 
-#[derive(Serialize, specta::Type)]
+#[derive(Clone, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct BisectStatus {
     pub ok: bool,
@@ -875,7 +875,7 @@ pub async fn bisect_run_start(app: AppHandle<Wry>, path: String, command: String
             &command,
             || state.is_cancelled(),
             |status| {
-                let _ = app.emit("bisect-run-progress", status);
+                crate::event_util::emit_on_main(&app, "bisect-run-progress", status.clone());
             },
         );
         match outcome {

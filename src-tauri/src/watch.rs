@@ -35,7 +35,7 @@ use std::time::Duration;
 
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
-use tauri::{AppHandle, Emitter, State, Wry};
+use tauri::{AppHandle, State, Wry};
 
 const DEBOUNCE: Duration = Duration::from_millis(400);
 
@@ -114,7 +114,7 @@ pub async fn watch_repo(app: AppHandle<Wry>, state: State<'_, WatchState>, path:
     let debouncer = crate::blocking::run_blocking(move || {
         start_watching(&path, move || {
             log::info!("[watch] relevant git-dir change → emit repo-changed");
-            let _ = handle.emit("repo-changed", ());
+            crate::event_util::emit_on_main(&handle, "repo-changed", ());
         })
     })
     .await?;

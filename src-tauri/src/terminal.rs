@@ -43,7 +43,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, State, Wry};
+use tauri::{AppHandle, State, Wry};
 
 struct TerminalSession {
     master: Box<dyn MasterPty + Send>,
@@ -141,12 +141,12 @@ pub async fn terminal_spawn(app: AppHandle<Wry>, registry: State<'_, TerminalReg
                 Ok(0) => break,
                 Ok(n) => {
                     let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
-                    let _ = app_for_thread.emit("terminal-output", TerminalOutputEvent { id: id_for_thread.clone(), data });
+                    crate::event_util::emit_on_main(&app_for_thread, "terminal-output", TerminalOutputEvent { id: id_for_thread.clone(), data });
                 }
                 Err(_) => break,
             }
         }
-        let _ = app_for_thread.emit("terminal-exit", TerminalExitEvent { id: id_for_thread.clone() });
+        crate::event_util::emit_on_main(&app_for_thread, "terminal-exit", TerminalExitEvent { id: id_for_thread.clone() });
     });
 
     Ok(id)
