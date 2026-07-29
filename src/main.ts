@@ -598,13 +598,13 @@ if (IN_TAURI) {
     void refreshFromExternalChange();
   });
 
-  // Streaming graph load: legacy/main.ts's own startGraphStream() kicks off
-  // the backend walk (src-tauri/src/commands.rs's stream_graph) and returns
-  // almost instantly. Each load's slices now arrive over a per-load ipc
-  // Channel that startGraphStream() wires straight to onGraphBatch() (see its
-  // own comment for why a Channel and not a global "graph-batch" event: the
-  // event path deadlocked the main thread on repo-open) — so there's no
-  // global event listener to register here anymore.
+  // Streaming graph load: the "graph-batch" event listener is registered inside
+  // legacy/main.ts (next to onGraphBatch, BEFORE its boot-time openRepo), not
+  // here — a new window opens its repo during boot, so the listener must be up
+  // before main.ts's own body runs. (Batches were briefly delivered via a
+  // per-load ipc Channel to dodge an emit deadlock; reverted because a Channel
+  // didn't reach a second app instance's window — the backend now emits via
+  // emit_on_main, deadlock-free.)
 
   // Silent startup update probe — delayed so it never competes with the
   // repo-load/graph-layout work a cold launch is already doing. `check(true)`

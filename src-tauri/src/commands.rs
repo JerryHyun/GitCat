@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 
 use git2::{Delta, DiffFindOptions, DiffOptions, Patch};
 use serde::Serialize;
-use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, Wry};
 
 use crate::git_read::{collect_refs, filter_hidden_chips, read_repo, seed_tip_oids, walk_repo};
@@ -204,13 +203,7 @@ impl GraphLoadState {
 /// `GraphBatch.error`, since by that point this command has already returned.
 #[tauri::command]
 #[specta::specta]
-pub async fn load_graph(
-    app: AppHandle<Wry>,
-    state: State<'_, GraphLoadState>,
-    path: String,
-    request_id: u64,
-    channel: Channel<GraphBatch>,
-) -> Result<(), String> {
+pub async fn load_graph(app: AppHandle<Wry>, state: State<'_, GraphLoadState>, path: String, request_id: u64) -> Result<(), String> {
     // Accepted SYNCHRONOUSLY, before the probe below even starts — any batch
     // the spawned walk emits from this point on will already match.
     state.accept(request_id);
@@ -225,8 +218,8 @@ pub async fn load_graph(
     // `run_blocking` primitive `blocking.rs` already wraps for every other
     // repo-touching command, just not awaited this one time. This is what
     // lets `load_graph` return here almost immediately while the real walk
-    // continues in the background, purely via the streamed `channel`.
-    tauri::async_runtime::spawn_blocking(move || stream_graph(&app2, request_id, &path, &channel));
+    // continues in the background, purely via emitted `"graph-batch"` events.
+    tauri::async_runtime::spawn_blocking(move || stream_graph(&app2, request_id, &path));
     Ok(())
 }
 
@@ -253,7 +246,7 @@ pub async fn load_graph(
 /// unit-testable without a real `AppHandle` — mirrors `watch.rs`'s
 /// `start_watching`/`watch_repo` split and `git_bisect.rs`'s
 /// `run_bisect`/`bisect_run_start` split (see `tests/graph.rs`).
-fn stream_graph(app: &AppHandle<Wry>, gen: u64, path: &str, channel: &Channel<GraphBatch>) {
+fn stream_graph(app: &AppHandle<Wry>, gen: u64, path: &str) {
     let state = app.state::<GraphLoadState>();
     if !state.is_current(gen) {
         return; // superseded before this task even got scheduled — skip the vb lookup/walk-setup entirely
@@ -279,14 +272,15 @@ fn stream_graph(app: &AppHandle<Wry>, gen: u64, path: &str, channel: &Channel<Gr
         || !state.is_current(gen),
         |batch| {
             let done = batch.done;
-            // Stream via an ipc::Channel, NOT AppHandle::emit. emit() delivers a
-            // global event by iterating the webviews map WHILE HOLDING its mutex
-            // and blocking on the main thread to run the JS — which deadlocks
-            // against any main-thread IPC call that also needs that mutex
-            // (`AppManager::get_webview`), a real hang seen on repo-open when the
-            // dashboard's IPC burst raced this walk. Channel::send evals on a
-            // captured webview handle without taking that lock, so it can't.
-            let _ = channel.send(batch);
+            // emit_on_main, NOT a bare app.emit and NOT an ipc::Channel. A bare
+            // off-thread emit deadlocks (holds the webviews mutex while blocking
+            // on the main thread — see event_util). An ipc::Channel avoided that
+            // but did NOT deliver in a second app INSTANCE (multi-window opens a
+            // whole separate process; the new window's graph stayed blank). A
+            // plain global "graph-batch" event broadcast to that process's own
+            // one window works there like it always did; emit_on_main marshals it
+            // to the main thread so it stays deadlock-free too.
+            crate::event_util::emit_on_main(app, "graph-batch", batch);
             if !done {
                 let elapsed = last_emit.elapsed();
                 if elapsed < MIN_BATCH_INTERVAL {

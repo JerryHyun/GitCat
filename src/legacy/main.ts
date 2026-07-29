@@ -2064,19 +2064,20 @@ async function startGraphStream(path){
   graphStreamComplete=false;
   loadedOids=new Set();
   setGraphLoadingPill(true,0);
-  // Stream batches over a per-load ipc Channel, NOT a global "graph-batch"
-  // event. The event path deadlocked the main thread on repo-open: emitting from
-  // the background walk holds Tauri's webviews mutex while blocking on the main
-  // thread to run the JS, and a concurrent main-thread IPC call needing that
-  // same mutex (AppManager::get_webview) hangs forever (see commands.rs). A
-  // Channel evals on a captured webview handle without taking that lock. Each
-  // load gets its own Channel; onGraphBatch still self-filters by generation, so
-  // a superseded stream's late batches are ignored exactly as before.
-  const ch = new window.__TAURI__.core.Channel();
-  ch.onmessage = onGraphBatch;
-  await tinvoke("load_graph", { path, requestId: myGen, channel: ch });
+  // Batches arrive via the global "graph-batch" event (listener registered just
+  // below, before the boot-time openRepo). This used a per-load ipc Channel to
+  // dodge the off-thread-emit deadlock, but a Channel did NOT deliver in a
+  // SECOND app instance (open-in-new-window is a whole separate process — the
+  // new window's graph stayed blank). The backend now emits again, but via
+  // emit_on_main (main-thread marshaled), so it's still deadlock-free. onGraphBatch
+  // self-filters by generation, so a superseded stream's late batches are ignored.
+  await tinvoke("load_graph", { path, requestId: myGen });
   return myGen;
 }
+// Registered ONCE, here in legacy/main.ts (not main.ts) and BEFORE the boot-time
+// openRepo below, so a new window (?repo=) whose first graph load fires during
+// boot can't miss early batches.
+if(IN_TAURI) window.__TAURI__.event.listen("graph-batch", (e)=>onGraphBatch(e.payload));
 // "graph-batch" event handler (registered once in src/main.ts, mirroring its
 // own "repo-changed" listener) — grows BACKEND/G with one incremental slice
 // at a time as the backend's revwalk+layout produces it, instead of the old

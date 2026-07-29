@@ -312,11 +312,12 @@ fn specta_builder() -> Builder<tauri::Wry> {
         // menu.rs's own handle_event — no command round trip for that path).
         windows::open_repo_in_new_window,
     ])
-    // `GraphBatch` now reaches bindings.ts as `load_graph`'s `Channel<GraphBatch>`
-    // parameter (it's streamed over that ipc::Channel, no longer a raw
-    // `"graph-batch"` event — see commands::stream_graph, changed to fix a
-    // main-thread emit deadlock), so specta would export it anyway; this explicit
-    // `.typ()` is kept as harmless belt-and-braces.
+    // `GraphBatch` is never a command's own parameter/return type — it's ONLY
+    // ever emitted over the raw `"graph-batch"` event (see commands::stream_graph
+    // / src/legacy/main.ts's own listener), so specta doesn't reach it from any
+    // command signature. This explicit `.typ()` is what exports it to bindings.ts.
+    // (It briefly rode `load_graph`'s `Channel<GraphBatch>` param; reverted
+    // because ipc::Channel didn't deliver in a second app instance.)
     .typ::<model::GraphBatch>()
     // Same raw-emit convention as GraphBatch above: `SyncProgress` is only ever
     // emitted over the "sync-progress" event (fetch_stream/pull_stream), never a
