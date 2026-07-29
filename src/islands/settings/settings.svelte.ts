@@ -106,6 +106,12 @@ export interface PersistedSettings {
   themeMode: ThemeMode;
   cherryPickRecordOriginDefault: boolean;
   autoCheckUpdates: boolean;
+  // Opt into the NIGHTLY update channel (unstable daily builds with verbose
+  // logging). Default OFF. When on, updaterCtrl.check() points at the nightly
+  // endpoint; turning it back off lets the next check install the latest STABLE
+  // even though its version is lower than the running nightly (see updater.rs's
+  // version_comparator). Read fresh at check time, not cached.
+  useNightlyChannel: boolean;
   // Whether Tama's synthesized sound effects (see src/legacy/sound.ts) play
   // on her more significant state changes (warn/danger/celebrate/hint-ish —
   // see sound.ts's own STATE_SOUND map). Read fresh on every play, not
@@ -187,6 +193,7 @@ const DEFAULTS: PersistedSettings = {
   themeMode: "dark",
   cherryPickRecordOriginDefault: false,
   autoCheckUpdates: true,
+  useNightlyChannel: false,
   soundEffectsEnabled: true,
   soundEffectsVolume: 1,
   showAllCommitTags: false,
@@ -271,6 +278,7 @@ class SettingsState {
   themeMode = $state<ThemeMode>(DEFAULTS.themeMode);
   cherryPickRecordOriginDefault = $state(DEFAULTS.cherryPickRecordOriginDefault);
   autoCheckUpdates = $state(DEFAULTS.autoCheckUpdates);
+  useNightlyChannel = $state(DEFAULTS.useNightlyChannel);
   soundEffectsEnabled = $state(DEFAULTS.soundEffectsEnabled);
   soundEffectsVolume = $state(DEFAULTS.soundEffectsVolume);
   showAllCommitTags = $state(DEFAULTS.showAllCommitTags);
@@ -541,6 +549,7 @@ class SettingsState {
     this.themeMode = s.themeMode;
     this.cherryPickRecordOriginDefault = s.cherryPickRecordOriginDefault;
     this.autoCheckUpdates = s.autoCheckUpdates;
+    this.useNightlyChannel = s.useNightlyChannel;
     this.soundEffectsEnabled = s.soundEffectsEnabled;
     this.soundEffectsVolume = s.soundEffectsVolume;
     this.showAllCommitTags = s.showAllCommitTags;
@@ -582,6 +591,11 @@ class SettingsState {
   setAutoCheckUpdates(v: boolean): void {
     this.autoCheckUpdates = v;
     saveSettings({ autoCheckUpdates: v });
+  }
+
+  setUseNightlyChannel(v: boolean): void {
+    this.useNightlyChannel = v;
+    saveSettings({ useNightlyChannel: v });
   }
 
   setSoundEffectsEnabled(v: boolean): void {

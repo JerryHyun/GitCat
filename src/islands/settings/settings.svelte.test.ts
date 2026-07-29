@@ -163,6 +163,7 @@ describe("loadSettings / saveSettings — localStorage persistence", () => {
       themeMode: "dark",
       cherryPickRecordOriginDefault: false,
       autoCheckUpdates: true,
+      useNightlyChannel: false,
       soundEffectsEnabled: true,
       soundEffectsVolume: 1,
       showAllCommitTags: false,
@@ -184,6 +185,7 @@ describe("loadSettings / saveSettings — localStorage persistence", () => {
       themeMode: "light",
       cherryPickRecordOriginDefault: true,
       autoCheckUpdates: true,
+      useNightlyChannel: false,
       soundEffectsEnabled: true,
       soundEffectsVolume: 0.9,
       showAllCommitTags: false,
@@ -203,6 +205,7 @@ describe("loadSettings / saveSettings — localStorage persistence", () => {
       themeMode: "dark",
       cherryPickRecordOriginDefault: false,
       autoCheckUpdates: true,
+      useNightlyChannel: false,
       soundEffectsEnabled: true,
       soundEffectsVolume: 1,
       showAllCommitTags: false,
@@ -231,6 +234,7 @@ describe("loadSettings / saveSettings — localStorage persistence", () => {
       themeMode: "dark",
       cherryPickRecordOriginDefault: false,
       autoCheckUpdates: true,
+      useNightlyChannel: false,
       soundEffectsEnabled: true,
       soundEffectsVolume: 1,
       showAllCommitTags: false,
@@ -337,6 +341,14 @@ describe("setThemeMode / setCherryPickRecordOriginDefault / setAutoCheckUpdates 
 
     expect(settingsCtrl.autoCheckUpdates).toBe(false);
     expect(loadSettings().autoCheckUpdates).toBe(false);
+  });
+
+  it("setUseNightlyChannel updates state and persists (opt-in nightly channel, default off)", () => {
+    expect(settingsCtrl.useNightlyChannel).toBe(false); // default
+    settingsCtrl.setUseNightlyChannel(true);
+
+    expect(settingsCtrl.useNightlyChannel).toBe(true);
+    expect(loadSettings().useNightlyChannel).toBe(true);
   });
 
   it("setSoundEffectsEnabled updates state and persists directly (no bridge call)", () => {

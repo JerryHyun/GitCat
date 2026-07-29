@@ -143,6 +143,31 @@ async getAppInfo() : Promise<AppInfo> {
     return await TAURI_INVOKE("get_app_info");
 },
 /**
+ * Check for an update on the STABLE (config endpoint) or NIGHTLY channel.
+ * 
+ * The `version_comparator` reports an update whenever the remote version simply
+ * DIFFERS from the current one (not only when strictly newer) — that is what
+ * lets a user switch nightly → stable, installing the latest STABLE even though
+ * its version number is LOWER than the running nightly (the "switch back to
+ * release" requirement). Within a channel both endpoints only ever move
+ * forward, so `!=` behaves like `>` there; it only ever yields a real downgrade
+ * across an intentional channel switch.
+ * 
+ * MUST take a `Webview` (never an `AppHandle`): it stashes the `Update` in
+ * `webview.resources_table()`, the PER-WEBVIEW table the plugin's
+ * `download_and_install` reads by rid. `AppHandle::resources_table()` is a
+ * DIFFERENT, global table, and install would then fail "resource not found."
+ * JS: `commands.checkForUpdate(nightly)`.
+ */
+async checkForUpdate(nightly: boolean) : Promise<Result<UpdateAvailable | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("check_for_update", { nightly }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Tauri command: pin the current HEAD under a fresh backup ref before a
  * mutation. JS: `invoke("create_snapshot", { path })`.
  * 
@@ -3911,6 +3936,14 @@ export type TreeObject = { sha: string; entries: TreeEntryRow[] }
  * Result of a global undo.
  */
 export type UndoResult = { ok: boolean; message: string; restoredTo: string | null; sealed: string | null }
+/**
+ * Update metadata for the frontend — the exact fields the plugin's JS `Update`
+ * class needs, minus `rawJson` (informational, unused by download/install; the
+ * frontend fills it as `{}`). `rid` is the resource id of the `Update` stashed
+ * in THIS webview's resource table, so the plugin's own `downloadAndInstall()`
+ * (which re-looks-it-up by rid in the same table) works unchanged.
+ */
+export type UpdateAvailable = { rid: number; currentVersion: string; version: string; date: string | null; notes: string | null }
 /**
  * A repo's branch-visibility filter, as read by `commands::load_graph`
  * (transparently, on every load) and written by the sidebar's own branch

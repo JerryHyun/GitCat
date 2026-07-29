@@ -20,6 +20,8 @@
 
 import { IN_TAURI } from "../../ipc/env";
 import type { Update } from "@tauri-apps/plugin-updater";
+import { commands } from "../../ipc/bindings";
+import { loadSettings } from "../settings/settings.svelte.ts";
 
 type Phase = "idle" | "checking" | "up-to-date" | "available" | "downloading" | "ready" | "error";
 
@@ -53,16 +55,37 @@ class UpdaterState {
       return;
     }
     try {
-      const { check } = await import("@tauri-apps/plugin-updater");
-      const u = await check();
-      if (!u) {
+      // Check the STABLE or NIGHTLY channel per the setting (read FRESH each
+      // time). Routed through the app's own command, not the plugin's JS
+      // `check()`, because that can only ever hit the one config endpoint —
+      // updater.rs points at the nightly endpoint when asked and uses a
+      // comparator that allows switching back to a lower-versioned stable. The
+      // resulting Update is stashed backend-side by resource id, so the plugin's
+      // own downloadAndInstall()/relaunch below still work unchanged.
+      const nightly = loadSettings().useNightlyChannel;
+      const res = await commands.checkForUpdate(nightly);
+      if (res.status === "error") {
+        this.error = "Couldn't check for updates — " + res.error;
+        this.phase = silent ? "idle" : "error";
+        return;
+      }
+      const data = res.data;
+      if (!data) {
         this.phase = silent ? "idle" : "up-to-date";
         return;
       }
-      this.update = u;
-      this.version = u.version;
-      this.currentVersion = u.currentVersion;
-      this.notes = u.body || null;
+      const { Update } = await import("@tauri-apps/plugin-updater");
+      this.update = new Update({
+        rid: data.rid,
+        currentVersion: data.currentVersion,
+        version: data.version,
+        date: data.date ?? undefined,
+        body: data.notes ?? undefined,
+        rawJson: {},
+      });
+      this.version = data.version;
+      this.currentVersion = data.currentVersion;
+      this.notes = data.notes || null;
       this.phase = "available";
     } catch (e) {
       this.error = "Couldn't check for updates — " + e;

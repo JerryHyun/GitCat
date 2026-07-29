@@ -41,6 +41,7 @@ pub mod tool_settings; // backlog #12: external diff/merge tool settings + deleg
 pub mod trust; // auto-trust WSL/UNC-path repos libgit2 refuses as "dubious ownership"
 pub mod watch; // live refresh: watch the open repo's git-dir for externally-made changes
 pub mod windows; // multi-window: spawn a fresh, fully independent GitCat process, optionally pointed directly at a repo
+pub mod updater; // channel-aware "check for updates" (stable vs nightly endpoint + downgrade-allowing comparator)
 pub mod wsl; // routes git_remote.rs's/submodule.rs's network commands through wsl.exe on a WSL-path repo, so credentials resolve inside the distro
 
 use tauri::Manager;
@@ -60,6 +61,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::commit_detail,
         commands::ancestors_of,
         commands::get_app_info,
+        updater::check_for_update,
         // Safety Manager (snapshot / list / global undo / retention prune)
         safety::create_snapshot,
         safety::list_snapshots,
@@ -442,7 +444,7 @@ pub fn run() {
     // `tracing` spans it emits, and `tauri`'s own per-emit line — which drowns
     // the real signal and would churn the 2 MB cap in seconds, so each of those
     // targets is held to Warn. Writes to ~/Library/Logs/com.jiucheng.gitcat/.
-    #[cfg(not(debug_assertions))]
+    #[cfg(all(not(debug_assertions), not(feature = "nightly")))]
     {
         app_builder = app_builder.plugin(
             tauri_plugin_log::Builder::new()
@@ -454,6 +456,29 @@ pub fn run() {
                 .level_for("hyper", log::LevelFilter::Warn)
                 .level_for("reqwest", log::LevelFilter::Warn)
                 .max_file_size(2_000_000)
+                .targets([tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                    file_name: Some("gitcat".into()),
+                })])
+                .build(),
+        );
+    }
+
+    // NIGHTLY build (`--features nightly`, the daily channel): maximum-verbosity
+    // logging for diagnosing hard bugs. Everything at Trace, including the webview
+    // stack (wry / tracing / tao / tauri are NOT muted here, unlike the stable
+    // block above) — EXCEPT hyper/reqwest, held to Debug because at Trace they
+    // dump raw TLS/HTTP bytes (megabytes per network call: noise, not signal). A
+    // 10 MB cap with a few rotated files kept (KeepSome) so several past sessions
+    // stay diagnosable. Writes to the same ~/Library/Logs/com.jiucheng.gitcat/.
+    #[cfg(all(not(debug_assertions), feature = "nightly"))]
+    {
+        app_builder = app_builder.plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Trace)
+                .level_for("hyper", log::LevelFilter::Debug)
+                .level_for("reqwest", log::LevelFilter::Debug)
+                .max_file_size(10_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
                 .targets([tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
                     file_name: Some("gitcat".into()),
                 })])

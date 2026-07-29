@@ -13,6 +13,19 @@
   import type { ThemeMode, SnapshotRetentionMode } from "./settings.svelte.ts";
   import type { ConfigScope } from "../../ipc/bindings";
   import { playTamaSound } from "../../legacy/sound.ts";
+  import { updaterCtrl } from "../updater/updater.svelte.ts";
+  import { aboutCtrl } from "../about/about.svelte.ts";
+
+  // Switching update channel: persist the choice, then immediately surface what's
+  // available on the NEWLY-selected channel — turning nightly ON offers the
+  // latest nightly; turning it OFF offers the latest STABLE (a "downgrade" back
+  // from a running nightly, see updater.rs). Open About so the outcome is visible
+  // and the explicit "Install" click there is the confirmation.
+  function onNightlyToggle(e: Event) {
+    settingsCtrl.setUseNightlyChannel((e.target as HTMLInputElement).checked);
+    aboutCtrl.show();
+    void updaterCtrl.check(false);
+  }
 
   function onKeydown(e: KeyboardEvent) {
     if (e.key === "Escape" && settingsCtrl.open) settingsCtrl.close();
@@ -102,6 +115,13 @@
         />
         Automatically check for updates on launch
       </label>
+      <label class="set-toggle" style="margin-bottom:4px">
+        <input type="checkbox" checked={settingsCtrl.useNightlyChannel} onchange={onNightlyToggle} />
+        Use nightly builds
+      </label>
+      <div class="mut" style="font-size:11.5px;margin:0 0 14px 26px;line-height:1.5">
+        Unstable daily builds with verbose debug logging. You can switch back to the latest stable release at any time.
+      </div>
 
       <h4 class="d-lab">Auto-fetch</h4>
       <label

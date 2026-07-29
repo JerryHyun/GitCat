@@ -1,0 +1,162 @@
+name: Nightly
+
+# Daily build of the OPT-IN nightly channel — but ONLY when `main` has advanced
+# since the last nightly. Produces a single macOS Apple Silicon bundle built with
+# `--features nightly` (max-verbosity Trace logging — see lib.rs), published to a
+# ROLLING `nightly` PRERELEASE that carries its own `latest.json` at
+# releases/download/nightly/latest.json. Deliberately separate from the stable
+# "latest": the app only checks this endpoint when the user turns on nightly
+# builds (Settings → Updates), and updater.rs's comparator lets them switch back
+# to the latest stable at any time. `workflow_dispatch(force)` rebuilds even with
+# no new commits.
+on:
+  schedule:
+    - cron: "0 7 * * *" # daily, 07:00 UTC
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Build even if main hasn't advanced since the last nightly"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# A slow build must not be cancelled by the next day's cron — queue it instead.
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  # Decide whether there's anything new to build, and compute the nightly
+  # version. Cheap ubuntu job so we don't spin up a macOS runner for a no-op.
+  gate:
+    name: Decide whether to build
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.gate.outputs.should_build }}
+      version: ${{ steps.gate.outputs.version }}
+      sha: ${{ steps.gate.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Gate on new commits + compute the nightly version
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          HEAD=$(git rev-parse HEAD)
+          SHORT=$(git rev-parse --short HEAD)
+          DATE=$(date -u +%Y%m%d)
+          # Nightly version = next stable patch + a semver PRERELEASE identifier,
+          # so it sorts BELOW that eventual stable (0.9.6) yet ABOVE the last
+          # stable (0.9.5). The date identifier is numeric → monotonic per day;
+          # the sha disambiguates same-day rebuilds. e.g. 0.9.6-nightly.20260729.a1b2c3d
+          BASE=$(jq -r .version src-tauri/tauri.conf.json)
+          NEXT=$(echo "$BASE" | awk -F. '{printf "%d.%d.%d", $1, $2, $3 + 1}')
+          VERSION="${NEXT}-nightly.${DATE}.${SHORT}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha=$HEAD" >> "$GITHUB_OUTPUT"
+          # The sha the CURRENT nightly release was built from lives as a marker
+          # in its body. No release / no marker → build. Equal to HEAD → skip
+          # (unless a manual force run).
+          LAST=$(gh release view nightly --repo "$GITHUB_REPOSITORY" --json body -q .body 2>/dev/null | sed -n 's/^nightly-sha: //p' | head -1 || true)
+          if [ "$LAST" = "$HEAD" ] && [ "${{ inputs.force }}" != "true" ]; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "main hasn't advanced since the last nightly ($HEAD) — skipping."
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Roll the `nightly` release: delete the old one (and its tag) and create a
+  # fresh DRAFT PRERELEASE the build uploads into. The sha marker for tomorrow's
+  # gate is written into the body here.
+  prepare:
+    name: Refresh the rolling nightly release
+    needs: gate
+    if: needs.gate.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+    steps:
+      - name: Delete old nightly release+tag, create a fresh draft prerelease
+        id: create
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete nightly --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh release create nightly \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "${{ needs.gate.outputs.sha }}" \
+            --title "GitCat nightly (${{ needs.gate.outputs.version }})" \
+            --notes $'Unstable daily build (macOS Apple Silicon) with verbose Trace logging. Opt in via Settings → Updates → “Use nightly builds”; you can switch back to the latest stable release at any time.\n\nnightly-sha: ${{ needs.gate.outputs.sha }}' \
+            --draft --prerelease
+          # The list endpoint DOES include drafts (with contents:write) — the
+          # get-by-tag one doesn't — so grab the draft's id for tauri-action.
+          RID=$(gh api "repos/$GITHUB_REPOSITORY/releases" --jq '.[] | select(.tag_name=="nightly") | .id' | head -1)
+          echo "release_id=$RID" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: macOS (Apple Silicon)
+    needs: [gate, prepare]
+    if: needs.gate.outputs.should_build == 'true'
+    runs-on: macos-latest # Apple Silicon (arm64)
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+      - name: Install Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install Rust stable (aarch64-apple-darwin)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: nightly-aarch64-apple-darwin
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      # Transient, UNcommitted version bump. tauri.conf.json's `.version` drives
+      # the app's self-reported current_version (updater) + the bundle version;
+      # keep Cargo.toml consistent (get_app_info reads it). Cargo.lock regenerates
+      # itself during the build (no --locked), so it doesn't need editing.
+      - name: Apply the nightly version
+        run: |
+          VERSION="${{ needs.gate.outputs.version }}"
+          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > /tmp/tc.json && mv /tmp/tc.json src-tauri/tauri.conf.json
+          sed -i.bak -E "s/^version = \"[^\"]+\"/version = \"$VERSION\"/" src-tauri/Cargo.toml && rm -f src-tauri/Cargo.toml.bak
+      # `--features nightly` compiles the Trace-logging arm; uploads the bundle +
+      # its .sig and merges the platform entry into the release's latest.json,
+      # by releaseId (same mechanism release.yml relies on). Same minisign signing
+      # secrets, so the app verifies the nightly against the same pubkey.
+      - name: Build + upload to the nightly release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+          args: --features nightly --target aarch64-apple-darwin
+
+  # Publish the draft (keeping the prerelease flag) — this creates the `nightly`
+  # tag and makes releases/download/nightly/latest.json resolve. NEVER drop the
+  # prerelease flag: that would let it show up as the stable "latest".
+  finalize:
+    name: Publish the nightly release
+    needs: [gate, prepare, build]
+    if: needs.gate.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish (undraft, keep prerelease)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit nightly --repo "$GITHUB_REPOSITORY" --draft=false --prerelease
