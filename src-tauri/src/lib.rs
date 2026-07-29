@@ -311,16 +311,11 @@ fn specta_builder() -> Builder<tauri::Wry> {
         // menu.rs's own handle_event — no command round trip for that path).
         windows::open_repo_in_new_window,
     ])
-    // `GraphBatch` is never a command's own parameter/return type — it's ONLY
-    // ever emitted over the raw `"graph-batch"` event (see
-    // commands::stream_graph / src/legacy/main.ts's own listener), matching
-    // this codebase's established raw-emit/raw-listen convention (watch.rs's
-    // "repo-changed", git_bisect.rs's "bisect-run-progress") rather than
-    // tauri-specta's own typed `Event` derive/`collect_events!` mechanism,
-    // which isn't used anywhere else here. Without this explicit `.typ()`
-    // call the type would never get exported to bindings.ts at all, since
-    // specta only walks types reachable from a REGISTERED command's own
-    // signature by default.
+    // `GraphBatch` now reaches bindings.ts as `load_graph`'s `Channel<GraphBatch>`
+    // parameter (it's streamed over that ipc::Channel, no longer a raw
+    // `"graph-batch"` event — see commands::stream_graph, changed to fix a
+    // main-thread emit deadlock), so specta would export it anyway; this explicit
+    // `.typ()` is kept as harmless belt-and-braces.
     .typ::<model::GraphBatch>()
     // Same raw-emit convention as GraphBatch above: `SyncProgress` is only ever
     // emitted over the "sync-progress" event (fetch_stream/pull_stream), never a
@@ -440,15 +435,22 @@ pub fn run() {
     // build finally keeps a log. LogDir only (a bundled app has no terminal),
     // size-capped via the default KeepOne rotation so a long-running session
     // can't grow it without bound (~2 MB, most-recent only), at Info for the
-    // app's own lifecycle events while holding tauri's own per-emit INFO (the
-    // "graph-batch" flood) to Warn so real signal isn't drowned out. Writes to
-    // ~/Library/Logs/com.jiucheng.gitcat/gitcat.log on macOS.
+    // app's own lifecycle events. The webview stack logs at INFO extremely
+    // chattily — `wry` (one line per ipc:// custom-protocol request), the
+    // `tracing` spans it emits, and `tauri`'s own per-emit line — which drowns
+    // the real signal and would churn the 2 MB cap in seconds, so each of those
+    // targets is held to Warn. Writes to ~/Library/Logs/com.jiucheng.gitcat/.
     #[cfg(not(debug_assertions))]
     {
         app_builder = app_builder.plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
                 .level_for("tauri", log::LevelFilter::Warn)
+                .level_for("wry", log::LevelFilter::Warn)
+                .level_for("tracing", log::LevelFilter::Warn)
+                .level_for("tao", log::LevelFilter::Warn)
+                .level_for("hyper", log::LevelFilter::Warn)
+                .level_for("reqwest", log::LevelFilter::Warn)
                 .max_file_size(2_000_000)
                 .targets([tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
                     file_name: Some("gitcat".into()),

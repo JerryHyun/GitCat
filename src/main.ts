@@ -600,11 +600,11 @@ if (IN_TAURI) {
 
   // Streaming graph load: legacy/main.ts's own startGraphStream() kicks off
   // the backend walk (src-tauri/src/commands.rs's stream_graph) and returns
-  // almost instantly; every actual slice of data arrives here instead,
-  // forwarded straight to onGraphBatch() (bridge.ts's own doc comment has
-  // the full protocol — generation-based staleness filtering, incremental
-  // BACKEND/G growth, the "done" final-settle step).
-  w.__TAURI__?.event.listen("graph-batch", (e: { payload: unknown }) => bridge.onGraphBatch(e.payload));
+  // almost instantly. Each load's slices now arrive over a per-load ipc
+  // Channel that startGraphStream() wires straight to onGraphBatch() (see its
+  // own comment for why a Channel and not a global "graph-batch" event: the
+  // event path deadlocked the main thread on repo-open) — so there's no
+  // global event listener to register here anymore.
 
   // Silent startup update probe — delayed so it never competes with the
   // repo-load/graph-layout work a cold launch is already doing. `check(true)`

@@ -324,7 +324,8 @@ fn hidden_branch_chip_is_dropped_even_though_its_commit_remains_reachable_via_a_
 
 // ---------------------------------------------------------------------------
 // Streaming (stream_graph_core) — commands.rs's testable core, no AppHandle
-// needed. `load_graph` itself just wires this to real GraphLoadState/app.emit.
+// needed. `load_graph` itself just wires this to the real GraphLoadState and
+// streams each batch over an ipc::Channel (see stream_graph).
 // ---------------------------------------------------------------------------
 
 /// Concatenate every batch's rows/lane/color/merge, and reconstruct a CSR

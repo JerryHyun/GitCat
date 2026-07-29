@@ -36,9 +36,9 @@ export const commands = {
  * but somehow fails mid-walk (rare) is instead surfaced via a final
  * `GraphBatch.error`, since by that point this command has already returned.
  */
-async loadGraph(path: string, requestId: number) : Promise<Result<null, string>> {
+async loadGraph(path: string, requestId: number, channel: TAURI_CHANNEL<GraphBatch>) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("load_graph", { path, requestId }) };
+    return { status: "ok", data: await TAURI_INVOKE("load_graph", { path, requestId, channel }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -3828,6 +3828,7 @@ phase: string;
  * One raw git progress segment (see `feed_progress`'s `\r`/`\n` split).
  */
 line: string }
+export type TAURI_CHANNEL<TSend> = null
 export type TagObject = { sha: string; name: string; tagger: PlumbingPerson | null; message: string; targetOid: string; targetKind: string }
 /**
  * One planner row's chosen action, as sent back to [`rebase_interactive_start`].

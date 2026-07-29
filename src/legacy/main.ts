@@ -2054,7 +2054,17 @@ async function startGraphStream(path){
   graphStreamComplete=false;
   loadedOids=new Set();
   setGraphLoadingPill(true,0);
-  await tinvoke("load_graph", { path, requestId: myGen });
+  // Stream batches over a per-load ipc Channel, NOT a global "graph-batch"
+  // event. The event path deadlocked the main thread on repo-open: emitting from
+  // the background walk holds Tauri's webviews mutex while blocking on the main
+  // thread to run the JS, and a concurrent main-thread IPC call needing that
+  // same mutex (AppManager::get_webview) hangs forever (see commands.rs). A
+  // Channel evals on a captured webview handle without taking that lock. Each
+  // load gets its own Channel; onGraphBatch still self-filters by generation, so
+  // a superseded stream's late batches are ignored exactly as before.
+  const ch = new window.__TAURI__.core.Channel();
+  ch.onmessage = onGraphBatch;
+  await tinvoke("load_graph", { path, requestId: myGen, channel: ch });
   return myGen;
 }
 // "graph-batch" event handler (registered once in src/main.ts, mirroring its
