@@ -223,15 +223,13 @@ class DetailState {
 
   // Whether the "Revert commit" button should be disabled: the existing
   // `resolver.busy` re-entrancy guard, OR the selected commit being a merge.
-  // `git revert` (like `git cherry-pick`) refuses a merge commit with a
-  // jargon-y "commit X is a merge but no -m option was given" unless `-m`/
-  // `--mainline` is given, which revert_start deliberately doesn't support
-  // (see git_revert.rs's module doc — same deliberate scope limit as
-  // cherry-pick). Cherry-pick's own equivalent limitation is enforced earlier,
-  // at the drag gesture (`legalPick` in legacy/main.ts: `G.isMerge[src] =>
-  // "can't cherry-pick a merge"`), so the user never even attempts it and no
-  // safety snapshot is wasted. Revert has a real button instead of a drag
-  // gesture, so the button itself is where that same guard belongs.
+  // `git revert` refuses a merge commit with a jargon-y "commit X is a merge
+  // but no -m option was given" unless `-m`/`--mainline` is given, which
+  // revert_start deliberately doesn't support (see git_revert.rs's module doc).
+  // Cherry-pick DID share this limit, but now handles a merge by asking which
+  // parent is the mainline (resolver.startPick → merge_parents → the mainline
+  // chooser); revert has no such chooser yet, so its button stays disabled for
+  // a merge. A natural follow-up is to give revert the same mainline chooser.
   get revertDisabled(): boolean {
     return resolver.busy || !!this.commit?.merge;
   }

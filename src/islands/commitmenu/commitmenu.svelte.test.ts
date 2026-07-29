@@ -146,12 +146,14 @@ describe("openAt", () => {
 });
 
 describe("cherryPick", () => {
-  it("is a no-op when the target is a merge commit (mirrors legalPick's guard)", async () => {
+  it("a merge commit is now allowed — delegates to startPick (which asks for the mainline) and closes", async () => {
+    mockInTauri = true;
     commitMenuCtrl.openAt("/repo", "aaa1111", "a merge", true, 0, 0);
     await commitMenuCtrl.cherryPick();
-    expect(resolver.startPick).not.toHaveBeenCalled();
-    expect(resolver.openDemo).not.toHaveBeenCalled();
-    expect(commitMenuCtrl.open).toBe(true); // untouched — guard returns before close()
+    // The merge/mainline handling lives in resolver.startPick now, so the menu
+    // just delegates like it does for any commit — no isMerge block here.
+    expect(resolver.startPick).toHaveBeenCalledWith("/repo", "aaa1111", false);
+    expect(commitMenuCtrl.open).toBe(false);
   });
 
   it("design mode (not IN_TAURI): opens the resolver's demo and closes the menu", async () => {

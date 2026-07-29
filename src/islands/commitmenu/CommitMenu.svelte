@@ -67,11 +67,7 @@
           <span class="spinner"></span><span class="mut">{commitMenuCtrl.pendingLabel}</span>
         </div>
       {:else}
-        <button
-          disabled={commitMenuCtrl.isMerge}
-          title={commitMenuCtrl.isMerge ? "Can't cherry-pick a merge commit" : undefined}
-          onclick={() => commitMenuCtrl.cherryPick()}>Cherry-pick onto HEAD</button
-        >
+        <button onclick={() => commitMenuCtrl.cherryPick()}>Cherry-pick onto HEAD</button>
         <button onclick={() => commitMenuCtrl.merge()}>Merge into HEAD</button>
         <button
           disabled={commitMenuCtrl.isMerge}

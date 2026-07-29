@@ -163,15 +163,13 @@ class CommitMenuState {
 
   // ── mutating actions (menu view) ────────────────────────────────────────
 
-  // Cherry-pick the right-clicked commit onto HEAD. Guarded on isMerge — same
-  // "can't cherry-pick a merge" rule the drag gesture enforces via legalPick
-  // in legacy/main.ts (G.isMerge[src] => reject) — a merge commit's
-  // Cherry-pick entry is disabled in the view rather than hidden (see
-  // CommitMenu.svelte), so reaching here at all would mean the view's own
-  // guard was bypassed; this is the belt-and-braces backstop, same shape as
-  // detailCtrl.revertCommit()'s `if (!c || c.merge) return;`.
+  // Cherry-pick the right-clicked commit onto HEAD. A MERGE commit is allowed
+  // now (no isMerge guard) — resolver.startPick asks which parent is the
+  // mainline (git's `-m`) before running, exactly like the drag gesture does
+  // since legalPick stopped rejecting merges. Right-click is the handy path
+  // when the source and HEAD are too far apart on the graph to drag between.
   async cherryPick() {
-    if (this.isMerge || this.busy) return;
+    if (this.busy) return;
     const repo = this.repo, sha = this.sha;
     if (!IN_TAURI) {
       this.close();
