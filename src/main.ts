@@ -14,6 +14,7 @@ import { rerereCtrl } from "./islands/rerere/rerere.svelte.ts";
 import Plumbing from "./islands/plumbing/Plumbing.svelte";
 import { plumbing } from "./islands/plumbing/plumbing.svelte.ts";
 import SyncProgress from "./islands/syncprogress/SyncProgress.svelte";
+import MainlinePicker from "./islands/mainlinepicker/MainlinePicker.svelte";
 import RepoSummary from "./islands/reposummary/RepoSummary.svelte";
 import { repoSummaryCtrl } from "./islands/reposummary/reposummary.svelte.ts";
 import Remotes from "./islands/remotes/Remotes.svelte";
@@ -139,6 +140,9 @@ mount(Plumbing, { target: document.body });
 // Fetch/Pull live-progress modal — opened by doFetch/doPull (legacy/main.ts),
 // which is reached from both the topbar buttons and the native Fetch/Pull menu.
 mount(SyncProgress, { target: document.body });
+// Mainline-parent chooser — opened by resolver.startPick when the picked
+// commit is a merge (git needs `cherry-pick -m <n>`).
+mount(MainlinePicker, { target: document.body });
 // Repository Summary: same on-demand-modal treatment as Reflog/Rerere/
 // Plumbing above, PLUS it also opens itself automatically the very first
 // time a given repo is opened in GitCat — see openRepo()'s own call to

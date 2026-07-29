@@ -97,6 +97,7 @@
 import { commands } from "../../ipc/bindings";
 import * as bridge from "../../legacy/bridge";
 import { workdirCtrl } from "../workdir/workdir.svelte.ts";
+import { mainlinePickerCtrl } from "../mainlinepicker/mainlinepicker.svelte.ts";
 import type { ApplyPatchResult, ConflictFile, ConflictHunk, MergeResult, MergeSquashResult, PickResult, RebaseResult, RevertResult, StashResolveResult, WorkdirResult } from "../../ipc/bindings";
 
 // specta generates `side: string`; keep the precise union at the call boundary.
@@ -470,6 +471,29 @@ class ResolverState {
       bridge.tama.warn("Open a repository first.");
       return;
     }
+    // A merge commit can't be cherry-picked without a mainline parent (`-m`).
+    // Ask which parent up front; a plain commit skips this (empty parents).
+    let mainline: number | null = null;
+    try {
+      const p = await commands.mergeParents(repo, sha);
+      if (p.status === "ok" && p.data.length >= 2) {
+        mainline = await mainlinePickerCtrl.choose(sha, p.data);
+        if (mainline == null) return; // user cancelled the chooser
+      } else if (p.status === "error") {
+        bridge.tama.warn("Couldn't read the commit's parents — " + p.error);
+        return;
+      }
+    } catch (e) {
+      bridge.tama.warn("Couldn't read the commit's parents — " + e);
+      return;
+    }
+    await this.runPick(repo, sha, recordOrigin, mainline);
+  }
+
+  // The actual pick, split out so the dirty-tree "stash and retry" path
+  // (applyOutcome's retry closure) reuses the already-chosen `mainline` instead
+  // of re-opening the parent chooser.
+  private async runPick(repo: string, sha: string, recordOrigin: boolean, mainline: number | null) {
     this.demo = false;
     this.dirtyBlock = null;
     this.dirtyBlockStuck = null;
@@ -478,8 +502,8 @@ class ResolverState {
     this.busy = true;
     bridge.tama.event("mutation.caution", { count: 1 });
     try {
-      const res = await commands.cherryPick(repo, sha, recordOrigin);
-      await this.applyOutcome(res, sha, () => this.startPick(repo, sha, recordOrigin));
+      const res = await commands.cherryPick(repo, sha, recordOrigin, mainline);
+      await this.applyOutcome(res, sha, () => this.runPick(repo, sha, recordOrigin, mainline));
     } catch (e) {
       bridge.tama.warn("Cherry-pick failed — " + e);
     } finally {

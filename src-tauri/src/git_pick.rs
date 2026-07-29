@@ -73,6 +73,19 @@ impl PickResult {
     }
 }
 
+/// One parent of a merge commit, for the mainline chooser the UI shows before
+/// cherry-picking a merge (git refuses a merge without `-m <n>`). `number` is
+/// 1-based, matching git's own `-m` numbering; parent 1 is the branch the merge
+/// was made ON (merged INTO), parent 2 the branch merged in.
+#[derive(Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeParent {
+    pub number: u32,
+    pub sha: String,
+    pub short_sha: String,
+    pub summary: String,
+}
+
 /// EMPIRICALLY VERIFIED (git 2.x): a cherry-pick refused because local
 /// changes are in the way has (at least) two distinct message shapes —
 /// unstaged working-tree collisions enumerate tab-indented paths after
@@ -341,6 +354,45 @@ fn classify(
 // Tauri commands (registered in lib.rs)
 // ---------------------------------------------------------------------------
 
+/// Parents of `sha` for the mainline chooser — an EMPTY vec (not an error) when
+/// the commit has fewer than 2 parents (not a merge, so no `-m` is needed and
+/// the UI cherry-picks it directly). Read-only: opens the repo and reads the
+/// commit, never mutates. The UI calls this before `cherry_pick`; if it returns
+/// ≥2 parents it shows the chooser, then re-invokes `cherry_pick` with the
+/// picked `mainline`.
+/// JS: `invoke("merge_parents", { path, sha })`.
+#[tauri::command]
+#[specta::specta]
+pub async fn merge_parents(path: String, sha: String) -> Result<Vec<MergeParent>, String> {
+    crate::blocking::run_blocking(move || merge_parents_inner(path, sha)).await
+}
+
+fn merge_parents_inner(path: String, sha: String) -> Result<Vec<MergeParent>, String> {
+    validate_sha(&sha)?;
+    let repo = crate::trust::open_repo(&path).map_err(|e| format!("Cannot open repository: {}", e.message()))?;
+    let oid = repo
+        .revparse_single(&sha)
+        .map_err(|e| format!("Cannot resolve {sha}: {}", e.message()))?
+        .id();
+    let commit = repo.find_commit(oid).map_err(|e| format!("Cannot read commit {sha}: {}", e.message()))?;
+    if commit.parent_count() < 2 {
+        return Ok(Vec::new());
+    }
+    Ok(commit
+        .parents()
+        .enumerate()
+        .map(|(i, parent)| {
+            let full = parent.id().to_string();
+            MergeParent {
+                number: (i as u32) + 1,
+                short_sha: full.chars().take(8).collect(),
+                sha: full,
+                summary: parent.summary().unwrap_or("").to_string(),
+            }
+        })
+        .collect())
+}
+
 /// Cherry-pick `sha` onto the current branch (HEAD). Snapshots FIRST, then runs
 /// `git cherry-pick [-x] --no-edit --end-of-options <sha>`. `record_origin`
 /// (the `-x` toggle) appends "(cherry picked from commit …)" to the message.
@@ -359,11 +411,11 @@ fn classify(
 /// that takes, not just the cherry-pick UI.
 #[tauri::command]
 #[specta::specta]
-pub async fn cherry_pick(path: String, sha: String, record_origin: Option<bool>) -> PickResult {
-    crate::blocking::run_blocking(move || cherry_pick_inner(path, sha, record_origin)).await
+pub async fn cherry_pick(path: String, sha: String, record_origin: Option<bool>, mainline: Option<u32>) -> PickResult {
+    crate::blocking::run_blocking(move || cherry_pick_inner(path, sha, record_origin, mainline)).await
 }
 
-fn cherry_pick_inner(path: String, sha: String, record_origin: Option<bool>) -> PickResult {
+fn cherry_pick_inner(path: String, sha: String, record_origin: Option<bool>, mainline: Option<u32>) -> PickResult {
     if let Err(e) = validate_sha(&sha) {
         return PickResult::error(e);
     }
@@ -385,10 +437,18 @@ fn cherry_pick_inner(path: String, sha: String, record_origin: Option<bool>) -> 
         Err(e) => return PickResult::error(format!("Safety snapshot failed, aborting: {e}")),
     };
 
-    // git cherry-pick [-x] --no-edit --end-of-options <sha>
+    // git cherry-pick [-x] [-m <n>] --no-edit --end-of-options <sha>
+    // `-m <n>` (1-based mainline parent) is REQUIRED for a merge commit and
+    // rejected for a non-merge, so the UI only sends it after `merge_parents`
+    // confirmed a merge and the user chose a parent (see merge_parents).
+    let mainline_str = mainline.map(|m| m.to_string());
     let mut args: Vec<&str> = vec!["cherry-pick"];
     if record_origin.unwrap_or(false) {
         args.push("-x");
+    }
+    if let Some(ref m) = mainline_str {
+        args.push("-m");
+        args.push(m);
     }
     args.push("--no-edit");
     args.push("--end-of-options");

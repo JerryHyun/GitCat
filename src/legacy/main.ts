@@ -1044,9 +1044,10 @@ function legalPick(src,tgt){
   if(tgt===-2) return {ok:false,why:"drop on a commit, not the working tree"};
   if(tgt==null) return {ok:false,why:"drop on a commit"};
   if(tgt===src) return {ok:false,why:"onto itself"};
-  if(G&&G.isMerge&&G.isMerge[src]) return {ok:false,why:"can't cherry-pick a merge"};
+  // A merge commit IS cherry-pickable now — resolver.startPick asks which
+  // parent is the mainline (git's `-m`) before running. (Was rejected here.)
   if(isAncestorTarget(src,tgt)) return {ok:false,why:"target is an ancestor"};
-  return {ok:true,why:"→ "+hhex(tgt)};
+  return {ok:true,why:(G&&G.isMerge&&G.isMerge[src]?"pick merge → ":"→ ")+hhex(tgt)};
 }
 /* merge legality: mirrors legalPick's spirit (dropping onto an ancestor or
    onto itself is illegal) — but unlike cherry-pick, merging a merge commit's

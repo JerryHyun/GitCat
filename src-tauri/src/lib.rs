@@ -151,6 +151,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         conflict::conflict_file_hunks,
         conflict::resolve_conflict_hunks,
         // Cherry-pick (M2b): drag-onto-HEAD + continue / abort
+        git_pick::merge_parents,
         git_pick::cherry_pick,
         git_pick::cherry_pick_continue,
         git_pick::cherry_pick_abort,

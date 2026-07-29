@@ -25,6 +25,7 @@ vi.mock("../../legacy/bridge", () => ({
 
 vi.mock("../../ipc/bindings", () => ({
   commands: {
+    mergeParents: vi.fn(),
     cherryPick: vi.fn(),
     cherryPickContinue: vi.fn(),
     cherryPickAbort: vi.fn(),
@@ -57,7 +58,12 @@ vi.mock("../../ipc/bindings", () => ({
   },
 }));
 
+vi.mock("../mainlinepicker/mainlinepicker.svelte.ts", () => ({
+  mainlinePickerCtrl: { choose: vi.fn() },
+}));
+
 import { commands } from "../../ipc/bindings";
+import { mainlinePickerCtrl } from "../mainlinepicker/mainlinepicker.svelte.ts";
 import * as bridge from "../../legacy/bridge";
 import type {
   ConflictFile,
@@ -160,6 +166,9 @@ beforeEach(() => {
   vi.mocked(commands.workdirStatus).mockResolvedValue(
     ok({ staged: [], unstaged: [], conflicted: 0, branch: "main", hasStash: false }),
   );
+  // Default every commit to "not a merge" so startPick skips the mainline
+  // chooser; the merge-specific tests override this with a 2-parent list.
+  vi.mocked(commands.mergeParents).mockResolvedValue(ok([]));
 });
 
 describe("isolation", () => {
@@ -195,9 +204,40 @@ describe("startPick", () => {
 
     await resolver.startPick("repo1", "sha1", true);
 
-    expect(commands.cherryPick).toHaveBeenCalledWith("repo1", "sha1", true);
+    expect(commands.cherryPick).toHaveBeenCalledWith("repo1", "sha1", true, null);
     expect(bridge.reloadGraph).toHaveBeenCalledWith(true);
     expect(resolver.open).toBe(false);
+    expect(resolver.busy).toBe(false);
+  });
+
+  it("a merge commit asks for the mainline parent and passes the chosen number to cherryPick", async () => {
+    vi.mocked(commands.mergeParents).mockResolvedValueOnce(
+      ok([
+        { number: 1, sha: "p1", shortSha: "p1abc", summary: "merged into" },
+        { number: 2, sha: "p2", shortSha: "p2def", summary: "merged in" },
+      ]),
+    );
+    vi.mocked(mainlinePickerCtrl.choose).mockResolvedValueOnce(2);
+    vi.mocked(commands.cherryPick).mockResolvedValueOnce(pickResult({ state: "clean", message: "Cherry-picked." }));
+
+    await resolver.startPick("repo1", "mergeSha", false);
+
+    expect(mainlinePickerCtrl.choose).toHaveBeenCalledWith("mergeSha", expect.arrayContaining([expect.objectContaining({ number: 1 })]));
+    expect(commands.cherryPick).toHaveBeenCalledWith("repo1", "mergeSha", false, 2);
+  });
+
+  it("cancelling the mainline chooser aborts the pick — cherryPick is never called", async () => {
+    vi.mocked(commands.mergeParents).mockResolvedValueOnce(
+      ok([
+        { number: 1, sha: "p1", shortSha: "p1abc", summary: "merged into" },
+        { number: 2, sha: "p2", shortSha: "p2def", summary: "merged in" },
+      ]),
+    );
+    vi.mocked(mainlinePickerCtrl.choose).mockResolvedValueOnce(null); // user hit Cancel/Esc
+
+    await resolver.startPick("repo1", "mergeSha", false);
+
+    expect(commands.cherryPick).not.toHaveBeenCalled();
     expect(resolver.busy).toBe(false);
   });
 
@@ -796,7 +836,7 @@ describe("dirtyBlock (stash-and-retry chooser)", () => {
     await resolver.stashAndRetryDirtyBlock();
 
     expect(commands.stashSave).toHaveBeenCalledWith("repo1", expect.stringContaining("cherry-pick"), true);
-    expect(commands.cherryPick).toHaveBeenLastCalledWith("repo1", "sha9", true);
+    expect(commands.cherryPick).toHaveBeenLastCalledWith("repo1", "sha9", true, null);
     expect(commands.stashPop).not.toHaveBeenCalled();
     expect(resolver.dirtyBlock).toBeNull();
     expect(bridge.reloadGraph).toHaveBeenCalledWith(true);
@@ -834,7 +874,7 @@ describe("dirtyBlock (stash-and-retry chooser)", () => {
 
     await resolver.stashAndRetryDirtyBlockReapply();
 
-    expect(commands.cherryPick).toHaveBeenLastCalledWith("repo1", "sha9", true);
+    expect(commands.cherryPick).toHaveBeenLastCalledWith("repo1", "sha9", true, null);
     expect(commands.stashList).not.toHaveBeenCalled();
     expect(commands.stashPop).not.toHaveBeenCalled();
     expect(bridge.tama.warn).not.toHaveBeenCalled();

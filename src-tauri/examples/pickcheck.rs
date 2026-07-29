@@ -17,14 +17,14 @@ fn main() {
             return;
         }
         Some("abort") => {
-            println!("cherry_pick     -> {}", j(&tauri::async_runtime::block_on(cherry_pick(p.clone(), sha, Some(true)))));
+            println!("cherry_pick     -> {}", j(&tauri::async_runtime::block_on(cherry_pick(p.clone(), sha, Some(true), None))));
             println!("abort           -> {}", j(&tauri::async_runtime::block_on(cherry_pick_abort(p))));
             return;
         }
         _ => {}
     }
     // full conflict -> resolve(theirs) -> continue flow
-    println!("cherry_pick     -> {}", j(&tauri::async_runtime::block_on(cherry_pick(p.clone(), sha, Some(true)))));
+    println!("cherry_pick     -> {}", j(&tauri::async_runtime::block_on(cherry_pick(p.clone(), sha, Some(true), None))));
     let st = tauri::async_runtime::block_on(conflict_status(p.clone())).unwrap();
     println!("conflict_status -> {}", j(&st));
     if let Some(f) = st.files.first() {

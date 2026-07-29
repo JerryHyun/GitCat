@@ -1251,6 +1251,23 @@ async resolveConflictHunks(path: string, file: string, resolvedContent: string) 
     return await TAURI_INVOKE("resolve_conflict_hunks", { path, file, resolvedContent });
 },
 /**
+ * Parents of `sha` for the mainline chooser — an EMPTY vec (not an error) when
+ * the commit has fewer than 2 parents (not a merge, so no `-m` is needed and
+ * the UI cherry-picks it directly). Read-only: opens the repo and reads the
+ * commit, never mutates. The UI calls this before `cherry_pick`; if it returns
+ * ≥2 parents it shows the chooser, then re-invokes `cherry_pick` with the
+ * picked `mainline`.
+ * JS: `invoke("merge_parents", { path, sha })`.
+ */
+async mergeParents(path: string, sha: string) : Promise<Result<MergeParent[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("merge_parents", { path, sha }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Cherry-pick `sha` onto the current branch (HEAD). Snapshots FIRST, then runs
  * `git cherry-pick [-x] --no-edit --end-of-options <sha>`. `record_origin`
  * (the `-x` toggle) appends "(cherry picked from commit …)" to the message.
@@ -1268,8 +1285,8 @@ async resolveConflictHunks(path: string, file: string, resolvedContent: string) 
  * plain sync `fn` here would freeze the whole app window for however long
  * that takes, not just the cherry-pick UI.
  */
-async cherryPick(path: string, sha: string, recordOrigin: boolean | null) : Promise<PickResult> {
-    return await TAURI_INVOKE("cherry_pick", { path, sha, recordOrigin });
+async cherryPick(path: string, sha: string, recordOrigin: boolean | null, mainline: number | null) : Promise<PickResult> {
+    return await TAURI_INVOKE("cherry_pick", { path, sha, recordOrigin, mainline });
 },
 /**
  * Continue an in-progress cherry-pick after the user resolved the conflict
@@ -3376,6 +3393,13 @@ export type LocalBranch = { name: string; sha: string; ahead: number | null; beh
  * the merge-status check alone can't identify.
  */
 lastCommitTime: number }
+/**
+ * One parent of a merge commit, for the mainline chooser the UI shows before
+ * cherry-picking a merge (git refuses a merge without `-m <n>`). `number` is
+ * 1-based, matching git's own `-m` numbering; parent 1 is the branch the merge
+ * was made ON (merged INTO), parent 2 the branch merged in.
+ */
+export type MergeParent = { number: number; sha: string; shortSha: string; summary: string }
 /**
  * Result of `merge_queue_status` — a plain read, mirrors git_bisect.rs's own
  * `BisectStatus`: always returns a value (`in_progress:false` + empty vecs
