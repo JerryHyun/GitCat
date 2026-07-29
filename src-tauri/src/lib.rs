@@ -469,7 +469,11 @@ pub fn run() {
     // block above) — EXCEPT hyper/reqwest, held to Debug because at Trace they
     // dump raw TLS/HTTP bytes (megabytes per network call: noise, not signal). A
     // 10 MB cap with a few rotated files kept (KeepSome) so several past sessions
-    // stay diagnosable. Writes to the same ~/Library/Logs/com.jiucheng.gitcat/.
+    // stay diagnosable. Writes to a SEPARATE `gitcat-nightly.log` (not the stable
+    // build's `gitcat.log`) so the two channels' logs never interleave — a user
+    // can have both installed / switch between them, and a nightly's Trace spam
+    // must not drown the stable log (nor vice versa). Same
+    // ~/Library/Logs/com.jiucheng.gitcat/ directory.
     #[cfg(all(not(debug_assertions), feature = "nightly"))]
     {
         app_builder = app_builder.plugin(
@@ -480,7 +484,7 @@ pub fn run() {
                 .max_file_size(10_000_000)
                 .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
                 .targets([tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
-                    file_name: Some("gitcat".into()),
+                    file_name: Some("gitcat-nightly".into()),
                 })])
                 .build(),
         );
