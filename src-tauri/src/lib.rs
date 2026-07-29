@@ -341,13 +341,38 @@ pub fn run() {
             .header("// @ts-nocheck\n"), "../src/ipc/bindings.ts")
         .expect("failed to export typescript bindings");
 
-    // `mut` is only ever reassigned inside the debug_assertions block below —
-    // genuinely unused in a release build, where that block doesn't compile
-    // at all. #[allow] rather than restructuring around it: the alternative
-    // (two full separate builder chains) would duplicate every `.plugin()`/
-    // `.manage()` call below across both branches for one conditional line.
+    // `app_builder` is reassigned to add a plugin in the debug_assertions block
+    // below (a dev inspector) AND in the release `not(debug_assertions)` block
+    // (the crash-log plugin), so `mut` is used in every build; the #[allow] is
+    // a harmless belt-and-braces. #[allow] rather than restructuring: the
+    // alternative (two full separate builder chains) would duplicate every
+    // `.plugin()`/`.manage()` call below across both branches for one line.
     #[allow(unused_mut)]
     let mut app_builder = tauri::Builder::default();
+
+    // Record Rust panics to the log. Before this, a panic in a RELEASE build
+    // aborted with no trace at all (release kept no logs — see the release
+    // logging block further below), so a crash left nothing to diagnose. This
+    // won't catch an OS-level kill (a jetsam/out-of-memory termination happens
+    // externally, with no chance to run) — but it turns a silent Rust-side
+    // panic into a logged one. Chains to the previous hook so the default
+    // backtrace/abort still happens; log::error! is picked up by
+    // tauri-plugin-log once installed (a panic before that only hits the
+    // default hook, which is rare — pre-window startup).
+    {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let loc = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_else(|| "unknown".into());
+            let msg = info
+                .payload()
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("<non-string panic payload>");
+            log::error!("PANIC at {loc}: {msg}");
+            prev(info);
+        }));
+    }
     // Dev-only profiling/inspection, never shipped in a release build. Pick
     // EXACTLY ONE of the two, never both: both tauri-plugin-devtools and
     // console-subscriber (tokio-console) try to install the process-global
@@ -407,6 +432,29 @@ pub fn run() {
                     .build(),
             );
         }
+    }
+
+    // Release crash black box. None of the dev inspectors above exist in a
+    // release build (they're all debug/env-gated), so there's nothing here to
+    // fight tauri-plugin-log's process-global logger — install it so a shipped
+    // build finally keeps a log. LogDir only (a bundled app has no terminal),
+    // size-capped via the default KeepOne rotation so a long-running session
+    // can't grow it without bound (~2 MB, most-recent only), at Info for the
+    // app's own lifecycle events while holding tauri's own per-emit INFO (the
+    // "graph-batch" flood) to Warn so real signal isn't drowned out. Writes to
+    // ~/Library/Logs/com.jiucheng.gitcat/gitcat.log on macOS.
+    #[cfg(not(debug_assertions))]
+    {
+        app_builder = app_builder.plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .level_for("tauri", log::LevelFilter::Warn)
+                .max_file_size(2_000_000)
+                .targets([tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                    file_name: Some("gitcat".into()),
+                })])
+                .build(),
+        );
     }
 
     app_builder
