@@ -210,7 +210,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <!-- svelte-ignore a11y_mouse_events_have_key_events -->
 <div class="ref-scroll" id="refScroll" data-vimnav-list onmouseover={onRefHover} onmouseleave={() => (nameTip = null)} onfocusout={() => (nameTip = null)}>
-  <details class="ref-group" open>
+  <details class="ref-group">
     <summary><span class="tw">&#9656;</span>Local<span class="count" id="cntLocal">{sidebarCtrl.locals.length}</span></summary>
     <div class="ref-list" id="refLocal">
       {#each sidebarCtrl.locals.filter((b) => matches(b.name)) as b (b.name)}
@@ -318,7 +318,7 @@
       {/if}
     </div>
   </details>
-  <details class="ref-group" open>
+  <details class="ref-group">
     <summary
       ><span class="tw">&#9656;</span>Remote<span class="count" id="cntRemote">{sidebarCtrl.remotes.length}</span><button
         class="manage-btn"
