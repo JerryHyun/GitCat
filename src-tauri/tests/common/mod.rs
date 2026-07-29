@@ -65,6 +65,13 @@ impl TempRepo {
         // the host's global config or GECOS data.
         repo.must(&["config", "user.name", "GitCat Test"]);
         repo.must(&["config", "user.email", "test@gitcat.example"]);
+        // Disable background auto-gc/maintenance: a test that creates MANY commits
+        // rapidly (dashboard's `stays_cheap_…` runs a 300-commit loop) otherwise
+        // intermittently trips `git gc --auto` repacking behind the next commit —
+        // observed as a flaky CI failure "error: bad tree object HEAD" mid-loop.
+        // No test needs gc, so turn it off outright for every throwaway repo.
+        repo.must(&["config", "gc.auto", "0"]);
+        repo.must(&["config", "maintenance.auto", "false"]);
         repo
     }
 
