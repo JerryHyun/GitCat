@@ -78,24 +78,39 @@ jobs:
     if: needs.gate.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     outputs:
-      release_id: ${{ steps.create.outputs.release_id }}
+      release_id: ${{ steps.create.outputs.result }}
     steps:
-      - name: Delete old nightly release+tag, create a fresh draft prerelease
-        id: create
+      - name: Delete the old nightly release + tag (rolling channel)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release delete nightly --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
-          gh release create nightly \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "${{ needs.gate.outputs.sha }}" \
-            --title "GitCat nightly (${{ needs.gate.outputs.version }})" \
-            --notes $'Unstable daily build (macOS Apple Silicon) with verbose Trace logging. Opt in via Settings → Updates → “Use nightly builds”; you can switch back to the latest stable release at any time.\n\nnightly-sha: ${{ needs.gate.outputs.sha }}' \
-            --draft --prerelease
-          # The list endpoint DOES include drafts (with contents:write) — the
-          # get-by-tag one doesn't — so grab the draft's id for tauri-action.
-          RID=$(gh api "repos/$GITHUB_REPOSITORY/releases" --jq '.[] | select(.tag_name=="nightly") | .id' | head -1)
-          echo "release_id=$RID" >> "$GITHUB_OUTPUT"
+        run: gh release delete nightly --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+      # Create via the API (not `gh release create`) so we get the new draft's id
+      # back DIRECTLY from the response — the previous `gh api list | jq
+      # select(tag_name)` approach returned EMPTY (a just-created draft isn't yet
+      # consistent in the list endpoint), which left tauri-action with no
+      # releaseId and it silently skipped every upload. Mirrors release.yml's
+      # create-release job, which returns release.id the same reliable way.
+      - name: Create a fresh draft prerelease + capture its id
+        id: create
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const sha = "${{ needs.gate.outputs.sha }}"
+            const version = "${{ needs.gate.outputs.version }}"
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: "nightly",
+              target_commitish: sha,
+              name: `GitCat nightly (${version})`,
+              // The `nightly-sha:` marker is what tomorrow's gate reads to decide
+              // whether main advanced. Keep it on its own line.
+              body: `Unstable daily build (macOS Apple Silicon) with verbose Trace logging. Opt in via Settings → Updates → “Use nightly builds”; you can switch back to the latest stable release at any time.\n\nnightly-sha: ${sha}`,
+              draft: true,
+              prerelease: true,
+            })
+            core.info(`Created draft nightly release ${data.id}`)
+            return data.id
 
   build:
     name: macOS (Apple Silicon)
