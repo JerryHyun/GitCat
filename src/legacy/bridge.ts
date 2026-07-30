@@ -117,6 +117,11 @@ export {
   // updateBackToParentBtn), so it doesn't need a bridge re-export of its own.
   enterSubmodule,
   goBackToParent,
+  // The unified jump primitive the submodule-nav strip (src/islands/submodulenav)
+  // uses for sibling / breadcrumb / tree jumps: navigateToRepo(absolutePath,
+  // chain) opens the target and sets NAV_STACK to `chain`. enterSubmodule /
+  // goBackToParent are thin wrappers over it. Hoisted `function`, no TDZ risk.
+  navigateToRepo,
   NAV_STACK,
 } from "./main";
 

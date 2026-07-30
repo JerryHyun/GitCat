@@ -68,8 +68,11 @@ button{font-family:inherit;font-size:inherit;color:inherit;cursor:pointer}
 /* ============================== APP GRID ============================== */
 .app{height:100vh;display:grid;
   grid-template-columns:var(--sidebar-w) minmax(0,1fr) var(--detail-w);
-  grid-template-rows:var(--topbar-h) minmax(0,1fr);
-  grid-template-areas:"topbar topbar topbar" "sidebar graph detail"}
+  /* Row 2 (subnav) is `auto`: it collapses to 0 when the submodule-nav strip
+     renders nothing (SubmoduleNav.svelte's own {#if visible}) — a plain repo
+     with no submodules shows no strip and loses no vertical space. */
+  grid-template-rows:var(--topbar-h) auto minmax(0,1fr);
+  grid-template-areas:"topbar topbar topbar" "subnav subnav subnav" "sidebar graph detail"}
 /* graceful degradation for narrower windows so the graph keeps room */
 @media (max-width:1180px){:root{--sidebar-w:224px;--detail-w:300px}}
 @media (max-width:980px){:root{--sidebar-w:200px;--detail-w:264px}}
@@ -186,6 +189,56 @@ button{font-family:inherit;font-size:inherit;color:inherit;cursor:pointer}
 .icon-btn{width:32px;height:32px;display:grid;place-items:center;background:var(--elevated);
   border:1px solid var(--border);border-radius:var(--r-control);transition:border-color .12s,background-color .12s}
 .icon-btn:hover{border-color:var(--muted)}
+
+/* ======================= SUBMODULE NAV STRIP ========================
+   A slim toolbar under the topbar (src/islands/submodulenav): a 🌳 tree button,
+   a "root › child › current" breadcrumb, and the current level's sibling tabs.
+   The grid row is `auto`, so when the island renders nothing this element has no
+   children and takes zero height. */
+.subnav{grid-area:subnav;position:relative}
+.subnav-inner{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;
+  background:var(--panel);border-bottom:1px solid var(--border);overflow-x:auto;overflow-y:hidden;white-space:nowrap}
+.subnav-inner::-webkit-scrollbar{height:0}
+.sn-tree-btn{flex:none;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;
+  border:1px solid var(--border);border-radius:6px;background:var(--elevated);color:var(--muted)}
+.sn-tree-btn svg{width:15px;height:15px}
+.sn-tree-btn:hover{color:var(--text);border-color:var(--muted)}
+.sn-tree-btn.on{color:var(--accent);border-color:var(--accent)}
+.sn-crumbs{flex:none;display:flex;align-items:center;gap:3px}
+.sn-sep{color:var(--muted);font-size:12px;opacity:.7}
+.sn-crumb{display:inline-flex;align-items:center;gap:5px;padding:3px 7px;border:0;border-radius:6px;background:transparent;
+  color:var(--muted);font-size:12px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sn-crumb:hover:not([disabled]){background:var(--elevated);color:var(--text)}
+.sn-crumb.current{color:var(--text);font-weight:600;cursor:default}
+/* A faint divider between the breadcrumb (where you are) and the sibling tabs
+   (where you can go sideways). */
+.sn-tabs{flex:none;display:flex;align-items:center;gap:5px;padding-left:9px;margin-left:2px;border-left:1px solid var(--border)}
+.sn-tab{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border:1px solid var(--border);border-radius:var(--r-pill);
+  background:var(--elevated);color:var(--text);font-size:12px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sn-tab:hover:not([disabled]){border-color:var(--muted)}
+.sn-tab.current{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,transparent);cursor:default}
+.sn-tab[disabled]:not(.current){opacity:.55}
+/* Status dot — same palette the sidebar's own submodule rows use. */
+.sn-dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--muted)}
+.sn-dot[data-status="clean"]{background:var(--success)}
+.sn-dot[data-status="dirty"]{background:var(--warn,#d8a657)}
+.sn-dot[data-status="out-of-date"]{background:var(--accent)}
+.sn-dot[data-status="conflicted"]{background:var(--danger)}
+.sn-dot[data-status="not-initialized"],.sn-dot[data-status="removed"],.sn-dot[data-status="unreadable"]{background:var(--muted)}
+/* Full-tree popover, anchored under the 🌳 button. */
+.sn-tree-backdrop{position:fixed;inset:0;z-index:70}
+.sn-tree-pop{position:absolute;z-index:71;left:8px;top:34px;min-width:230px;max-width:min(420px,90vw);max-height:60vh;overflow:auto;
+  background:var(--panel);border:1px solid var(--border);border-radius:var(--r-panel);box-shadow:0 12px 34px rgba(0,0,0,.4);padding:5px}
+.sn-tree-head{padding:4px 8px 6px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.sn-tree-empty{display:flex;align-items:center;gap:8px;padding:8px;color:var(--muted);font-size:12px}
+.sn-node{display:flex;align-items:center;gap:7px;width:100%;padding:5px 8px;border:0;border-radius:6px;background:transparent;
+  color:var(--text);font-size:12.5px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sn-node:hover:not([disabled]){background:var(--elevated)}
+.sn-node.current{background:color-mix(in srgb,var(--accent) 14%,transparent);cursor:default}
+.sn-node.disabled{opacity:.5;cursor:default}
+.sn-node-ic{flex:none;width:14px;height:14px;color:var(--muted)}
+.sn-node-name{overflow:hidden;text-overflow:ellipsis}
+.sn-here{margin-left:auto;padding-left:10px;font-size:10px;color:var(--accent);text-transform:uppercase;letter-spacing:.03em}
 
 /* ============================== SIDEBAR ============================== */
 .sidebar{grid-area:sidebar;display:flex;flex-direction:column;min-height:0;position:relative;
@@ -1972,6 +2025,12 @@ button{font-family:inherit;font-size:inherit;color:inherit;cursor:pointer}
       </button>
     </div>
   </header>
+
+  <!-- Submodule navigator strip — filled by the SubmoduleNav Svelte island
+       (src/islands/submodulenav). A grid row under the topbar spanning all
+       three columns; empty (and zero-height) unless the current repo is part
+       of a submodule hierarchy. -->
+  <nav class="subnav" id="submoduleNavMount"></nav>
 
   <!-- ============================ SIDEBAR ============================ -->
   <aside class="sidebar">

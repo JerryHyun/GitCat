@@ -9,6 +9,7 @@ import { sidebarCtrl } from "../islands/sidebar/sidebar.svelte.ts";
 import { workdirCtrl } from "../islands/workdir/workdir.svelte.ts";
 import { commitMenuCtrl } from "../islands/commitmenu/commitmenu.svelte.ts";
 import { snapshotPreviewCtrl } from "../islands/snapshotpreview/snapshotpreview.svelte.ts";
+import { submoduleNavCtrl } from "../islands/submodulenav/submodulenav.svelte.ts";
 import { ribbonTickFracs, RIBBON_TOP_FRAC, RIBBON_BOT_FRAC, RIBBON_MIN_TICK_PX } from "./ribbon.ts";
 import { orderRefs } from "./reforder.ts";
 import { dashboardCtrl } from "../islands/dashboard/dashboard.svelte.ts";
@@ -2529,42 +2530,46 @@ async function openRepo(path){
    the user's deliberately left the chain to open something unrelated, going
    back no longer makes sense. */
 export let NAV_STACK=[];
-// Pushes CUR_REPO (the repo being left) onto NAV_STACK, then opens
-// `absolutePath` — straight from SubmoduleInfo.absolutePath (see its own doc
-// comment in src/ipc/bindings.ts), never string-concatenated by this file —
-// via the SAME openRepo() every "open a repository" path already uses: real
-// graph, real workdir panel, real branches/tags/bisect/rebase, even its own
-// nested Submodules section. Zero duplicated UI — this repo simply IS the
-// submodule now. Only pushes once openRepo() actually reports success (the
-// same "don't touch persistent state until the load succeeded" discipline
-// openRepo itself uses for CUR_REPO/BACKEND above) so a failed load — bad
-// path, the submodule vanished on disk, etc. — doesn't leave a stale,
-// unbalanced stack entry that a later goBackToParent() would pop into
-// nothing useful.
-async function enterSubmodule(absolutePath){
-  const parent=CUR_REPO; // capture BEFORE openRepo() reassigns it below
+// THE submodule-navigation primitive: open `absolutePath` (SubmoduleInfo's own
+// field — never string-concatenated here) via the SAME openRepo() every "open a
+// repository" path uses, and set NAV_STACK to `chain` (the ancestor list,
+// root..immediate-parent, that this target sits under). Real graph, workdir,
+// branches/tags/bisect/rebase, even its own nested Submodules — the app simply
+// IS that repo now. enterSubmodule/goBackToParent below and the submodule-nav
+// strip's sibling/tree/breadcrumb jumps are ALL just "open this repo with THAT
+// chain", so one function covers every direction — down into a child, sideways
+// to a sibling, up to any ancestor, or across to an arbitrary tree node.
+//
+// Same "don't touch persistent state until the load succeeded" discipline
+// openRepo itself uses for CUR_REPO/BACKEND: NAV_STACK is only rewritten once
+// openRepo actually reports success, so a failed load (bad path, the submodule
+// vanished on disk, transiently locked) leaves the user exactly where they were,
+// free to retry, rather than stranded on a half-updated stack. Refreshes the nav
+// strip on success so it always mirrors where the app landed.
+async function navigateToRepo(absolutePath, chain){
   const ok=await openRepo(absolutePath);
-  if(ok){ NAV_STACK.push(parent); updateBackToParentBtn(); }
+  if(ok){
+    NAV_STACK.length=0;
+    for(const c of chain) NAV_STACK.push(c);
+    updateBackToParentBtn();
+    await submoduleNavCtrl.refresh(CUR_REPO);
+  }
   return ok;
 }
-// Pops the most recently pushed ancestor and opens it via openRepo — pushes
-// nothing itself (going backward), symmetric with enterSubmodule above. PEEKS
-// at the top of NAV_STACK first (does NOT pop yet), and only actually pops +
-// updates the button once openRepo reports success — the exact same "don't
-// touch persistent state until the load succeeded" discipline enterSubmodule
-// uses above. If the parent repo fails to load (transiently locked,
-// permission-denied, or actually moved/deleted since it was left), popping
-// FIRST would silently drop the stack entry forever: the next Back click
-// would skip straight past that level (or, if this was the last entry, the
-// Back button would vanish outright) with no way to retry short of the
-// folder picker. Leaving NAV_STACK untouched on failure means the user can
-// simply click Back again once the transient condition clears.
+// Enter a submodule from wherever we are: its chain is the current ancestor
+// stack plus the repo we're leaving (captured BEFORE openRepo reassigns
+// CUR_REPO). Thin wrapper over navigateToRepo — the sidebar's per-row "Open"
+// still calls this by name.
+async function enterSubmodule(absolutePath){
+  const chain=[...NAV_STACK, CUR_REPO]; // capture before navigateToRepo→openRepo reassigns CUR_REPO
+  return navigateToRepo(absolutePath, chain);
+}
+// Go back up one level: the parent is the top of the stack, and its own chain is
+// everything below it. The topbar "← Back to …" button still calls this.
 async function goBackToParent(){
   if(!NAV_STACK.length) return false;
-  const parent=NAV_STACK[NAV_STACK.length-1]; // peek — do NOT pop yet
-  const ok=await openRepo(parent);
-  if(ok){ NAV_STACK.pop(); updateBackToParentBtn(); }
-  return ok;
+  const parent=NAV_STACK[NAV_STACK.length-1];
+  return navigateToRepo(parent, NAV_STACK.slice(0,-1));
 }
 // Shows/hides the topbar "← Back to <parent repo name>" affordance and, when
 // shown, fills in the name — derived from NAV_STACK's top entry via
@@ -2819,7 +2824,7 @@ async function pickRepo(){
     // locked, etc.), leave the user still mid-chain with the stack already
     // wiped and no way back short of re-navigating the whole chain by hand.
     const ok=await openRepo(typeof dir==="string"?dir:(dir.path||String(dir)));
-    if(ok){ NAV_STACK.length=0; updateBackToParentBtn(); }
+    if(ok){ NAV_STACK.length=0; updateBackToParentBtn(); await submoduleNavCtrl.refresh(CUR_REPO); }
   }
 }
 function bootEmpty(){
@@ -2839,6 +2844,7 @@ function bootEmpty(){
   Safety.snaps=[]; Safety.updateBadge();
   if(IN_TAURI) tinvoke("unwatch_repo").catch(e=>console.error("unwatch_repo",e));
   sidebarCtrl.reset();
+  submoduleNavCtrl.reset(); // collapse the submodule-nav strip — no repo, nothing to navigate
   G={N:0,commitLane:[],commitColor:[],isMerge:[],gapStart:[0],gapTop:[],gapBot:[],gapColor:[],refs:[],snapRows:[],snapTs:{}};
   state.selectedRow=-1; state.hoverRow=-1; state.scrollTop=state.scrollTarget=0; state.panX=state.panTarget=0;
   bisectDrawerCtrl.clearLocalMarks();
@@ -2903,7 +2909,9 @@ if(IN_TAURI){
   // returns the fully percent-decoded value — no separate decodeURIComponent
   // needed (that would double-decode a path containing a literal '%').
   const initialRepo=new URLSearchParams(location.search).get("repo");
-  if(initialRepo) openRepo(initialRepo); else bootEmpty();
+  // Refresh the submodule-nav strip after the initial open lands (openRepo here
+  // is deliberately not awaited) so it appears if this repo has submodules.
+  if(initialRepo) openRepo(initialRepo).then(ok=>{ if(ok) submoduleNavCtrl.refresh(CUR_REPO); }); else bootEmpty();
 }
 else { loadGraph(10000); }          // plain browser (design mode): synthetic demo data
 requestAnimationFrame(tick);
@@ -2925,4 +2933,4 @@ export { reloadGraph, cheer, highlight, Tama, TAMA_IMG, requestRedraw,
   // select/openRepo above). NAV_STACK itself is already exported directly at
   // its declaration above (`export let NAV_STACK`), same as CUR_REPO — not
   // re-listed here, that would be a duplicate export.
-  enterSubmodule, goBackToParent };
+  enterSubmodule, goBackToParent, navigateToRepo };

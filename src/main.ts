@@ -64,6 +64,8 @@ import BisectDrawer from "./islands/bisectdrawer/BisectDrawer.svelte";
 import { openBisectEntry } from "./islands/bisectdrawer/bisectdrawer.svelte.ts";
 import Sidebar from "./islands/sidebar/Sidebar.svelte";
 import { sidebarCtrl } from "./islands/sidebar/sidebar.svelte.ts";
+import SubmoduleNav from "./islands/submodulenav/SubmoduleNav.svelte";
+import { submoduleNavCtrl } from "./islands/submodulenav/submodulenav.svelte.ts";
 import { IN_TAURI } from "./ipc/env";
 import * as bridge from "./legacy/bridge";
 import { dlog } from "./devlog";
@@ -128,6 +130,12 @@ mount(BisectDrawer, { target: document.getElementById("bisectPanelMount")! });
 
 mount(Sidebar, { target: document.getElementById("sidebarRefs")! });
 sidebarCtrl.refresh(bridge.CUR_REPO as unknown as string);
+
+// Submodule navigator strip (grid row under the topbar). legacy/main.ts's boot
+// open / navigateToRepo / pickRepo call submoduleNavCtrl.refresh() themselves,
+// but seed it here too for the case a repo is already open at mount time.
+mount(SubmoduleNav, { target: document.getElementById("submoduleNavMount")! });
+submoduleNavCtrl.refresh(bridge.CUR_REPO as unknown as string);
 
 // Reflog/Rerere/Plumbing: on-demand modals now (Tools menu / ⌘K — see
 // menu.rs / cmdk.svelte.ts), each opened via its own controller's show()
