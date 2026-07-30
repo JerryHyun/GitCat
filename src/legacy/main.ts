@@ -12,6 +12,7 @@ import { snapshotPreviewCtrl } from "../islands/snapshotpreview/snapshotpreview.
 import { submoduleNavCtrl } from "../islands/submodulenav/submodulenav.svelte.ts";
 import { ribbonTickFracs, RIBBON_TOP_FRAC, RIBBON_BOT_FRAC, RIBBON_MIN_TICK_PX } from "./ribbon.ts";
 import { orderRefs } from "./reforder.ts";
+import { LruCache } from "./graphcache.ts";
 import { dashboardCtrl } from "../islands/dashboard/dashboard.svelte.ts";
 import { repoSummaryCtrl } from "../islands/reposummary/reposummary.svelte.ts";
 import { syncProgressCtrl } from "../islands/syncprogress/syncprogress.svelte.ts";
@@ -2163,6 +2164,55 @@ let lastLoadTruncated=false;
 let loadedSeedTips=new Set();
 let loadedHeadOid=null;
 let lastRefSig=null;
+// Warm-graph cache: keep the last few FULLY-loaded repo graphs in memory so
+// switching back to one (the common superproject↔submodule↔sibling dance) is
+// instant instead of a full re-stream. A deliberate memory-for-latency trade —
+// a large repo's BACKEND is tens of MB, so this is capped at a handful of repos
+// (LruCache evicts the least-recently-used past the cap). Each entry is a
+// snapshot of everything restoreGraphFromCache() needs to put the graph straight
+// back on screen: the CSR BACKEND + derived G, the incremental-refresh baseline
+// (so a cheap reconcile can tell what changed while away), and the view state
+// (scroll/selection) so you land exactly where you left. Per-process (a new
+// window is a separate process), same as every other module var here.
+const GRAPH_CACHE_CAP=8;
+const graphCache=new LruCache(GRAPH_CACHE_CAP);
+// Snapshot the CURRENTLY-open graph under its path before we navigate away, so a
+// later return restores it. Only caches a COMPLETE, non-truncated load — a
+// half-streamed or memory-capped graph would restore wrong. Cheap: it stores
+// references, not deep copies (the live BACKEND/G are about to be REPLACED by the
+// next load, never mutated in place, so the snapshot stays frozen).
+function cacheCurrentGraph(){
+  if(!CUR_REPO || !BACKEND || !graphStreamComplete || lastLoadTruncated) return;
+  graphCache.set(CUR_REPO, {
+    backend:BACKEND, g:G, loadedOids, seedTips:loadedSeedTips, headOid:loadedHeadOid,
+    refSig:lastRefSig, refRot:new Map(refRot), scrollTarget:state.scrollTarget,
+  });
+}
+// Put a previously-cached graph for `path` straight back on screen — no stream,
+// no wait. Returns true on a hit. openRepo() still refreshes the sidebar/safety/
+// submodule panels and kicks off a cheap staleness reconcile (reloadGraph →
+// tryFastRefresh) so a repo changed while we were away still converges. Removes
+// the entry on restore (it's the live graph now; re-cached on the next
+// switch-away) so the cache never double-holds the active repo.
+function restoreGraphFromCache(path){
+  const c=graphCache.get(path);
+  if(!c) return false;
+  graphCache.delete(path);
+  BACKEND=c.backend; G=c.g; loadedOids=c.loadedOids;
+  loadedSeedTips=c.seedTips; loadedHeadOid=c.headOid; lastRefSig=c.refSig;
+  graphStreamComplete=true; lastLoadTruncated=false;
+  refRot.clear(); for(const [k,v] of c.refRot) refRot.set(k,v);
+  overflowHit.clear(); bufferValid=false;
+  recomputeLayout();                                  // rebuild scroll bounds for this G.N
+  state.scrollTop=state.scrollTarget=clampScroll(c.scrollTarget); // land back at the same place
+  // Selection resets to none, exactly like a fresh load (loadGraph) would — the
+  // detail panel goes back to the repo's hero splash rather than showing a
+  // just-left repo's commit.
+  state.selectedRow=-1; state.hoverRow=-1;
+  detailCtrl.showHero(BACKEND.n, 0);
+  dirty=true;
+  return true;
+}
 // Top-right "still loading" pill (see #loadingPill / index.html). Shown for the
 // whole graph stream — from startGraphStream() until onGraphBatch() sees the
 // stream's `done` — since the centered overlay hides on the FIRST batch while the
@@ -2390,6 +2440,10 @@ async function openRepo(path){
   if(openRepoBusy) return false;
   openRepoBusy=true;
   dlog("repo", "openRepo", path);
+  // Warm-cache the repo we're LEAVING (its live BACKEND/G, still fully loaded)
+  // before anything below replaces it, so returning to it later is instant. Reads
+  // the current CUR_REPO/BACKEND/scroll — all still the outgoing repo's here.
+  cacheCurrentGraph();
   // Invalidate any still-streaming graph's generation RIGHT NOW — before the
   // awaits below (and before startGraphStream() sets the real one for this open).
   // If the previous repo was still streaming in, its already-queued "graph-batch"
@@ -2423,18 +2477,20 @@ async function openRepo(path){
   // below), not just around loadGraph() — Dashboard.svelte's own
   // openRepository() closes its modal BEFORE awaiting this whole function,
   // so this overlay is the only cue left once that modal is gone.
+  // The overlay is shown only on a real (streamed) load below — a warm-cache hit
+  // paints instantly and needs no "Loading…" cue. Declared here for the finally.
   const graphLoading=$("#graphLoading");
-  if(graphLoading) graphLoading.style.display="";
   Tama.set("thinking");
   try{
-    // load_graph itself now returns almost instantly (a generation id, not
-    // the whole graph — see startGraphStream()'s own doc comment); the OLD
-    // double-rAF forced-paint hack here existed specifically to keep the
-    // browser from looking hung during the ONE giant, unavoidably-synchronous
-    // stretch that response used to require — there's no such stretch left
-    // to paint around now that the real data arrives in small streamed
-    // batches instead of one big blob.
-    await startGraphStream(path);
+    // Warm-cache hit: put the previously-loaded graph straight back on screen —
+    // no stream, no overlay, no wait. Miss: show the overlay and stream fresh
+    // (load_graph itself returns almost instantly — a generation id, not the
+    // whole graph — then batches arrive via onGraphBatch).
+    const cacheHit=restoreGraphFromCache(path);
+    if(!cacheHit){
+      if(graphLoading) graphLoading.style.display="";
+      await startGraphStream(path);
+    }
     CUR_REPO = path;
     // Auto-prune old Safety-Manager snapshots per the user's retention policy,
     // once per repo-open. Fire-and-forget (never awaited — must not delay the
@@ -2465,12 +2521,13 @@ async function openRepo(path){
     // Undoes bootEmpty()'s own hide — a no-op unless the repo being opened
     // right now was reached via closeRepo() first.
     const bp=$(".branch-pill"); if(bp) bp.style.display="";
-    // BACKEND is still empty at this point (startGraphStream() just reset
+    // MISS only: BACKEND is empty at this point (startGraphStream() just reset
     // it) — this paints the canvas's OWN empty/reset state immediately;
     // onGraphBatch() (registered in src/main.ts) takes over from here as
     // "graph-batch" events stream in, growing BACKEND/G and eventually
-    // showing the "Loaded N commits…" toast itself once the walk finishes.
-    loadGraph(0);
+    // showing the "Loaded N commits…" toast itself once the walk finishes. On a
+    // cache HIT the restored graph is already on screen — nothing to reset.
+    if(!cacheHit) loadGraph(0);
     await sidebarCtrl.refresh(CUR_REPO);
     await Safety.refresh();
     // Auto-detect where this repo sits in any submodule hierarchy and refresh the
@@ -2487,6 +2544,15 @@ async function openRepo(path){
     }catch(e){ console.error("superproject chain", e); NAV_STACK.length=0; }
     updateBackToParentBtn();
     await submoduleNavCtrl.refresh(CUR_REPO);
+    // Cache HIT: the graph was restored from memory instantly. Reconcile any
+    // change that landed while we were away — cheap (a single graphFastRefresh
+    // compare) when nothing changed, a full re-stream only if it did. Reset the
+    // "thinking" mascot (no onGraphBatch runs on a hit to do it). Fire-and-forget
+    // so the instant restore isn't blocked on the reconcile.
+    if(cacheHit){
+      Tama.set("curious"); Tama.say("Back to "+repoBasename(path)+". にゃ〜",1800);
+      void reloadGraph(true);
+    }
     // Live refresh: watch this repo's git-dir for changes made outside the
     // app (terminal commits, another tool, a background fetch) — see
     // src-tauri/src/watch.rs. Best-effort: a watch failure shouldn't block
@@ -2816,6 +2882,9 @@ async function pickRepo(){
   }
 }
 function bootEmpty(){
+  // Cache the repo being closed before we drop it, so reopening it is instant too
+  // (a no-op at cold boot, where there's no repo/BACKEND to cache).
+  cacheCurrentGraph();
   BACKEND=null;
   CUR_REPO=null;
   // Invalidates any still-in-flight "graph-batch" stream for whatever repo
