@@ -35,6 +35,7 @@ function memoryStorage(): Storage {
 vi.mock("../../legacy/bridge", () => ({
   applyThemeMode: vi.fn(),
   setGraphShowAllTags: vi.fn(),
+  setGraphLabelPriority: vi.fn(),
   setTamaEnabled: vi.fn(),
   tama: { set: vi.fn(), say: vi.fn(), warn: vi.fn(), event: vi.fn() },
 }));
@@ -167,6 +168,7 @@ describe("loadSettings / saveSettings — localStorage persistence", () => {
       soundEffectsEnabled: true,
       soundEffectsVolume: 1,
       showAllCommitTags: false,
+      graphLabelPriority: "tag",
       autoFetchEnabled: false,
       autoFetchIntervalMinutes: 15,
       snapshotRetentionMode: "off",
@@ -189,6 +191,7 @@ describe("loadSettings / saveSettings — localStorage persistence", () => {
       soundEffectsEnabled: true,
       soundEffectsVolume: 0.9,
       showAllCommitTags: false,
+      graphLabelPriority: "tag",
       autoFetchEnabled: false,
       autoFetchIntervalMinutes: 15,
       snapshotRetentionMode: "off",
@@ -209,6 +212,7 @@ describe("loadSettings / saveSettings — localStorage persistence", () => {
       soundEffectsEnabled: true,
       soundEffectsVolume: 1,
       showAllCommitTags: false,
+      graphLabelPriority: "tag",
       autoFetchEnabled: false,
       autoFetchIntervalMinutes: 15,
       snapshotRetentionMode: "off",
@@ -238,6 +242,7 @@ describe("loadSettings / saveSettings — localStorage persistence", () => {
       soundEffectsEnabled: true,
       soundEffectsVolume: 1,
       showAllCommitTags: false,
+      graphLabelPriority: "tag",
       autoFetchEnabled: false,
       autoFetchIntervalMinutes: 15,
       snapshotRetentionMode: "off",
@@ -379,6 +384,14 @@ describe("setThemeMode / setCherryPickRecordOriginDefault / setAutoCheckUpdates 
     expect(settingsCtrl.showAllCommitTags).toBe(true);
     expect(loadSettings().showAllCommitTags).toBe(true);
     expect(bridge.setGraphShowAllTags).toHaveBeenCalledWith(true);
+  });
+
+  it("setGraphLabelPriority updates state, persists, and applies via bridge.setGraphLabelPriority", () => {
+    settingsCtrl.setGraphLabelPriority("branch");
+
+    expect(settingsCtrl.graphLabelPriority).toBe("branch");
+    expect(loadSettings().graphLabelPriority).toBe("branch");
+    expect(bridge.setGraphLabelPriority).toHaveBeenCalledWith("branch");
   });
 
   it("setTamaEnabled updates state, persists, and applies via bridge.setTamaEnabled", () => {

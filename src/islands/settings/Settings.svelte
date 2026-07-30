@@ -10,7 +10,7 @@
   // mirrors SetupWizard's own identity step markup closely — see
   // settings.svelte.ts's header doc for why.
   import { settingsCtrl, CURATED_CONFIG_FIELDS, AUTO_FETCH_INTERVAL_OPTIONS, SETTINGS_TABS } from "./settings.svelte.ts";
-  import type { ThemeMode, SnapshotRetentionMode } from "./settings.svelte.ts";
+  import type { ThemeMode, SnapshotRetentionMode, GraphLabelPriority } from "./settings.svelte.ts";
   import type { ConfigScope } from "../../ipc/bindings";
   import { playTamaSound } from "../../legacy/sound.ts";
   import { updaterCtrl } from "../updater/updater.svelte.ts";
@@ -95,6 +95,19 @@
         />
         Show all tags on a commit
       </label>
+
+      <p class="mut" style="font-size:11.5px;margin:0 0 8px">
+        When a commit's labels don't all fit the gutter, show this kind first. Click a row's <b>+N</b> chip to cycle the rest into view.
+      </p>
+      <div class="rm-form" style="margin-bottom:14px;max-width:220px">
+        <select
+          value={settingsCtrl.graphLabelPriority}
+          onchange={(e) => settingsCtrl.setGraphLabelPriority((e.target as HTMLSelectElement).value as GraphLabelPriority)}
+        >
+          <option value="tag">Tags first</option>
+          <option value="branch">Branches first</option>
+        </select>
+      </div>
 
       <h4 class="d-lab">Cherry-pick</h4>
       <label class="set-toggle" style="margin-bottom:14px" title="Append '(cherry picked from …)' to the resulting commit message">

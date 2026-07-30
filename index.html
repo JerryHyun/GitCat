@@ -255,10 +255,15 @@ button{font-family:inherit;font-size:inherit;color:inherit;cursor:pointer}
    onRefHover). position:fixed so it escapes .ref-scroll/.sidebar overflow and
    extends past the sidebar's right edge over the graph. max-width only caps a
    pathologically long name (still far wider than the sidebar). */
-.rname-tip{position:fixed;z-index:9000;pointer-events:none;max-width:min(560px,80vw);
+.rname-tip{position:fixed;z-index:9000;pointer-events:none;max-width:min(340px,80vw);
   background:var(--elevated);color:var(--text);border:1px solid var(--border);border-radius:6px;
-  padding:4px 9px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  padding:6px 8px;font-size:12px;display:flex;flex-direction:column;gap:3px;
   box-shadow:0 6px 20px rgba(0,0,0,.4)}
+.rname-tip .rt-row{display:flex;align-items:center;gap:7px;white-space:nowrap;overflow:hidden}
+.rname-tip .rt-row.cur .rt-name{font-weight:700}
+.rname-tip .rt-dot{width:8px;height:8px;border-radius:50%;flex:none}
+.rname-tip .rt-name{overflow:hidden;text-overflow:ellipsis}
+.rname-tip .rt-kind{margin-left:auto;padding-left:10px;font-size:10px;color:var(--muted);flex:none;text-transform:uppercase;letter-spacing:.03em}
 .ref-item.current .rname{font-weight:700}
 .ref-item .ab{flex:none;white-space:nowrap;font-family:var(--mono);font-size:10px;color:var(--muted)}
 .ref-item .ab .up{color:var(--success)} .ref-item .ab .dn{color:var(--danger)}

@@ -101,6 +101,10 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
 
 // Safety-Manager snapshot auto-cleanup policy — see PersistedSettings below.
 export type SnapshotRetentionMode = "off" | "count" | "age" | "hybrid";
+// Which ref chip wins the front of a commit's gutter labels when the graph is
+// too narrow to show them all. "tag" is the backend's own order (a tag beats the
+// branch); "branch" promotes the checked-out/local branch ahead of tags.
+export type GraphLabelPriority = "tag" | "branch";
 
 export interface PersistedSettings {
   themeMode: ThemeMode;
@@ -132,6 +136,10 @@ export interface PersistedSettings {
   // row is a real layout change existing users haven't opted into, unlike
   // the other toggles here which don't affect the graph's own rendering.
   showAllCommitTags: boolean;
+  // Which kind of ref wins the front of a commit's gutter labels when the graph
+  // can't fit them all (and thus which one the "+N" cycle starts from). "tag"
+  // keeps the app's original tag-first order; "branch" puts the branch first.
+  graphLabelPriority: GraphLabelPriority;
   // Periodically `git fetch --all --prune` while a repo is open, so
   // ahead/behind counts and incoming remote changes stay current without a
   // manual Pull. Off by default — unlike autoCheckUpdates (checking GitHub
@@ -197,6 +205,7 @@ const DEFAULTS: PersistedSettings = {
   soundEffectsEnabled: true,
   soundEffectsVolume: 1,
   showAllCommitTags: false,
+  graphLabelPriority: "tag",
   autoFetchEnabled: false,
   autoFetchIntervalMinutes: 15,
   snapshotRetentionMode: "off",
@@ -282,6 +291,7 @@ class SettingsState {
   soundEffectsEnabled = $state(DEFAULTS.soundEffectsEnabled);
   soundEffectsVolume = $state(DEFAULTS.soundEffectsVolume);
   showAllCommitTags = $state(DEFAULTS.showAllCommitTags);
+  graphLabelPriority = $state<GraphLabelPriority>(DEFAULTS.graphLabelPriority);
   autoFetchEnabled = $state(DEFAULTS.autoFetchEnabled);
   autoFetchIntervalMinutes = $state(DEFAULTS.autoFetchIntervalMinutes);
   snapshotRetentionMode = $state<SnapshotRetentionMode>(DEFAULTS.snapshotRetentionMode);
@@ -553,6 +563,7 @@ class SettingsState {
     this.soundEffectsEnabled = s.soundEffectsEnabled;
     this.soundEffectsVolume = s.soundEffectsVolume;
     this.showAllCommitTags = s.showAllCommitTags;
+    this.graphLabelPriority = s.graphLabelPriority;
     this.autoFetchEnabled = s.autoFetchEnabled;
     this.autoFetchIntervalMinutes = s.autoFetchIntervalMinutes;
     this.snapshotRetentionMode = s.snapshotRetentionMode;
@@ -616,6 +627,12 @@ class SettingsState {
     this.showAllCommitTags = v;
     saveSettings({ showAllCommitTags: v });
     bridge.setGraphShowAllTags(v); // applies to the canvas immediately — see legacy/main.ts
+  }
+
+  setGraphLabelPriority(v: GraphLabelPriority): void {
+    this.graphLabelPriority = v;
+    saveSettings({ graphLabelPriority: v });
+    bridge.setGraphLabelPriority(v); // reorders the gutter chips live — see legacy/main.ts
   }
 
   // The background timer itself lives in main.ts (mirrors the existing

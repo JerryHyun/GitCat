@@ -10,6 +10,7 @@ import { workdirCtrl } from "../islands/workdir/workdir.svelte.ts";
 import { commitMenuCtrl } from "../islands/commitmenu/commitmenu.svelte.ts";
 import { snapshotPreviewCtrl } from "../islands/snapshotpreview/snapshotpreview.svelte.ts";
 import { ribbonTickFracs, RIBBON_TOP_FRAC, RIBBON_BOT_FRAC, RIBBON_MIN_TICK_PX } from "./ribbon.ts";
+import { orderRefs } from "./reforder.ts";
 import { dashboardCtrl } from "../islands/dashboard/dashboard.svelte.ts";
 import { repoSummaryCtrl } from "../islands/reposummary/reposummary.svelte.ts";
 import { syncProgressCtrl } from "../islands/syncprogress/syncprogress.svelte.ts";
@@ -511,21 +512,16 @@ function renderContent(st, rowLo, rowHi, strip){
     // rings; kept undimmed by the ancestor overlay (which skips headRow).
     if(r===headRow){ ctx.save(); ctx.shadowColor=theme.accent; ctx.shadowBlur=7; ctx.beginPath(); ctx.arc(x,y,dotR+4.5,0,TAU); ctx.strokeStyle=theme.accent; ctx.lineWidth=2.6; ctx.stroke(); ctx.restore(); }
     let cx=bcw>0?tx+MSG_TEXT_PAD:tx; ctx.font=layout.chipFont;
-    // Ref labels. In column mode (bcw>0) they live in the left BRANCH/TAG gutter
-    // [BRANCH_PAD_L,bcw), left-aligned and tinted in THIS row's branch colour (so
-    // the label matches the row's band), and the subject stays put at tx. When
-    // the window is too narrow for a column (bcw===0) we fall back to the old
-    // inline chips just right of the graph, advancing cx so the subject follows.
-    // drawChip truncates a label that would cross its limit and stops the loop
-    // once no room is left, so a long/multi-ref row never garbles the next column.
+    // Ref labels — drawGutterChips lays them out in display order (priority +
+    // per-commit rotation), tinted in column mode to THIS row's branch colour so
+    // the label matches the row's band, and adds a "+N" pill when they don't all
+    // fit. In column mode (bcw>0) they live in the left BRANCH/TAG gutter and the
+    // subject stays put at tx; when the window is too narrow for a column
+    // (bcw===0) they fall back to inline chips, advancing cx so the subject
+    // follows past whatever was drawn (chips + any pill).
     const bcol=LANE_COLORS[G.commitColor[r]];
-    if(bcw>0){ const bxLimit=bcw-6; let bxc=BRANCH_PAD_L;
-      if(showAllTags&&G.allRefs){ const list=G.allRefs[r]; for(let i=0;i<list.length&&bxc<bxLimit;i++) bxc=drawChip(bxc,y,list[i].label,list[i].kind,bxLimit-bxc,bcol)+6; }
-      else { const ref=G.refs[r]; if(ref&&bxc<bxLimit) drawChip(bxc,y,ref.label,ref.kind,bxLimit-bxc,bcol); }
-    } else { const chipLimit=W-AUTHOR_GUTTER-MIN_SUBJECT_W;
-      if(showAllTags&&G.allRefs){ const list=G.allRefs[r]; for(let i=0;i<list.length&&cx<chipLimit;i++) cx=drawChip(cx,y,list[i].label,list[i].kind,chipLimit-cx)+8; }
-      else { const ref=G.refs[r]; if(ref&&cx<chipLimit) cx=drawChip(cx,y,ref.label,ref.kind,chipLimit-cx)+8; }
-    }
+    if(bcw>0){ drawGutterChips(r,BRANCH_PAD_L,bcw-6,y,bcol,6); }
+    else { cx=drawGutterChips(r,cx,W-AUTHOR_GUTTER-MIN_SUBJECT_W,y,null,8); }
     // Skip the per-row message/author/sha text while scrolling FAST (fastScroll):
     // glyph rasterisation is the single biggest per-frame cost on a software-
     // rendered canvas, and at this speed the text is an unreadable blur anyway
@@ -612,7 +608,7 @@ function draw(){
 // tick() forces a FULL. `bufferG` (G's object identity, reassigned on every data
 // change) is compared separately in tick().
 function bufferKeyNow(){
-  return view.renderDpr+"|"+Math.round(state.panX*100)+"|"+layout.zoom+"|"+cv.width+"|"+cv.height+"|"+bandH()+"|"+colW.graph+"|"+colW.branch+"|"+(showAllTags?1:0)+"|"+themeEpoch+"|"+(bisectDrawerCtrl.active()?1:0)+"|"+bisectDrawerCtrl.cur+"|"+(state.drag?1:0)+"|"+state.selectedRow+"|"+state.hoverRow;
+  return view.renderDpr+"|"+Math.round(state.panX*100)+"|"+layout.zoom+"|"+cv.width+"|"+cv.height+"|"+bandH()+"|"+colW.graph+"|"+colW.branch+"|"+(showAllTags?1:0)+"|"+(graphTagsFirst?1:0)+"|"+refRotEpoch+"|"+themeEpoch+"|"+(bisectDrawerCtrl.active()?1:0)+"|"+bisectDrawerCtrl.cur+"|"+(state.drag?1:0)+"|"+state.selectedRow+"|"+state.hoverRow;
 }
 // True when the row-highlight fades have reached their targets — a blit copies
 // baked pixels, so a mid-animation alpha (fading a selection/hover tint in/out)
@@ -706,28 +702,98 @@ function drawWorkdirBand(){
 // already use. `maxWidth<=pad*2+8` means there's no usable room at all
 // (not even a one-char label plus ellipsis would read as anything but a
 // sliver) — draws nothing and returns `x` unchanged rather than a garbled chip.
-function drawChip(x,y,label,kind,maxWidth,colorOverride){
-  const col=colorOverride||(kind==="branch"?LANE_COLORS[0]:kind==="tag"?theme.accent2||"#7FB6A6":theme.accent);
+const CHIP_PAD=6;
+// Measure a chip's drawn width, truncating the label to fit `maxWidth` (px). It
+// stays a pure measurement (no drawing) so drawGutterChips can decide fit —
+// including reserving room for a "+N" pill — before committing paint. Returns
+// null when there isn't room for even a minimal chip.
+function measureChip(label,kind,maxWidth){
   ctx.font=layout.chipFont;
-  const pad=6;
-  if(maxWidth!=null&&maxWidth<=pad*2+8) return x;
+  if(maxWidth!=null&&maxWidth<=CHIP_PAD*2+8) return null;
   let text=label.length>LABEL_MAX?label.slice(0,LABEL_MAX):label;
   if(maxWidth!=null){
-    const textMax=maxWidth-pad*2;
+    const textMax=maxWidth-CHIP_PAD*2;
     if(ctx.measureText(text).width>textMax){
       while(text.length>1&&ctx.measureText(text+"…").width>textMax) text=text.slice(0,-1);
       text+="…";
     }
   }
-  const w=ctx.measureText(text).width+pad*2, h=Math.round(16.5*Math.min(1.25,layout.zoom));
+  return {text, w:ctx.measureText(text).width+CHIP_PAD*2};
+}
+// Paint a pre-measured chip (see measureChip). `colorOverride` tints the whole
+// chip to the row's branch colour in column mode; otherwise the kind colour.
+function paintChip(x,y,text,w,kind,colorOverride){
+  const col=colorOverride||refKindColor(kind);
+  ctx.font=layout.chipFont;
+  const h=Math.round(16.5*Math.min(1.25,layout.zoom));
   ctx.beginPath(); if(ctx.roundRect)ctx.roundRect(x,y-h/2,w,h,4);else ctx.rect(x,y-h/2,w,h);
   ctx.fillStyle=col; ctx.globalAlpha=kind==="head"?0.95:0.26; ctx.fill(); ctx.globalAlpha=1;
   ctx.lineWidth=1; ctx.strokeStyle=col; ctx.stroke();
   // Non-head labels draw their text in the bright theme.text (NOT the branch
   // colour on a same-colour tint, which read as low-contrast/blurry) — the colour
   // identity stays in the border + fill tint. head stays dark-on-solid.
-  ctx.fillStyle=kind==="head"?theme.bg:theme.text; ctx.textAlign="left"; ctx.fillText(text,x+pad,y+0.5);
+  ctx.fillStyle=kind==="head"?theme.bg:theme.text; ctx.textAlign="left"; ctx.fillText(text,x+CHIP_PAD,y+0.5);
   return x+w;
+}
+// The muted "+N" overflow pill telling you N more refs are hidden here and that
+// clicking cycles them into view. Returns its width so the caller can record a
+// click target. Deliberately quieter than a real chip (dashed-feel low-contrast
+// fill) so it reads as an affordance, not another label.
+function paintPlus(x,y,n){
+  ctx.font=layout.chipFont;
+  const text="+"+n, w=ctx.measureText(text).width+CHIP_PAD*2, h=Math.round(16.5*Math.min(1.25,layout.zoom));
+  ctx.beginPath(); if(ctx.roundRect)ctx.roundRect(x,y-h/2,w,h,4);else ctx.rect(x,y-h/2,w,h);
+  ctx.fillStyle=theme.muted; ctx.globalAlpha=0.14; ctx.fill(); ctx.globalAlpha=1;
+  ctx.lineWidth=1; ctx.strokeStyle=theme.muted; ctx.globalAlpha=0.55; ctx.stroke(); ctx.globalAlpha=1;
+  ctx.fillStyle=theme.muted; ctx.textAlign="left"; ctx.fillText(text,x+CHIP_PAD,y+0.5);
+  return w;
+}
+// Greedily lay out up to `cap` chips from `list` starting at x0, each truncated
+// to the room remaining before `xLimit`. Pure layout (measure only) — returns
+// the placed chips with their x/width so the caller paints them after deciding
+// whether a "+N" pill needs reserving.
+function fitChips(list,cap,x0,xLimit,gap){
+  const out=[]; let x=x0;
+  for(let i=0;i<cap&&i<list.length;i++){
+    const m=measureChip(list[i].label,list[i].kind,xLimit-x);
+    if(!m) break;
+    out.push({label:list[i].label, kind:list[i].kind, text:m.text, x, w:m.w});
+    x+=m.w+gap;
+  }
+  return out;
+}
+// Draw a row's ref chips into the gutter (or inline before the subject), plus a
+// "+N" pill when some don't fit — recording that pill's x-span in overflowHit so
+// a click there cycles the row (see endPointer). Returns the x just past the
+// last thing drawn (inline mode advances the subject past it). `colorOverride`
+// is the row's branch colour in column mode, null inline. Reserved room for the
+// pill (RESERVE) is generous enough for a two-digit count so it always fits.
+const PLUS_RESERVE=34;
+function drawGutterChips(row,x0,xLimit,y,colorOverride,gap){
+  overflowHit.delete(row);
+  const list=orderedRefsFor(row);
+  if(!list.length) return x0;
+  const cap=showAllTags?list.length:1;
+  // First fit with no reservation; if everything intended fits, no pill needed.
+  let placed=fitChips(list,cap,x0,xLimit,gap);
+  let overflow=list.length-placed.length;
+  if(overflow>0){
+    // Re-fit leaving room for the pill, so it never collides with the last chip.
+    placed=fitChips(list,cap,x0,xLimit-PLUS_RESERVE-gap,gap);
+    overflow=list.length-placed.length;
+  }
+  let endX=x0;
+  for(const c of placed){ paintChip(c.x,y,c.text,c.w,c.kind,colorOverride); endX=c.x+c.w; }
+  if(overflow>0){
+    const px=placed.length?endX+gap:x0;
+    ctx.font=layout.chipFont;
+    const pw=ctx.measureText("+"+overflow).width+CHIP_PAD*2;
+    // Only draw the pill when it actually fits — a user can drag the branch
+    // column down to almost nothing, and a pill bleeding into the graph channel
+    // would be worse than just omitting it there.
+    if(px+pw<=xLimit){ paintPlus(px,y,overflow); overflowHit.set(row,{x0:px, x1:px+pw}); endX=px+pw; }
+  }
+  return endX;
 }
 function drawDragGhost(){
   const d=state.drag, rowH=layout.rowH, st=state.scrollTop, bh=bandH();
@@ -829,16 +895,37 @@ function dividerAt(x){ const bcw=layout.branchColW; if(bcw<=0) return null;
   return null; }
 // The ref chip(s) at screen-x `mx` in `row`'s BRANCH/TAG gutter, or null when mx
 // isn't over a labelled gutter cell — the hover-tooltip + right-click-checkout
-// target. Returns the whole ref list so the tooltip shows every co-located ref
-// and the context menu can offer each branch.
+// target. Returns the whole ref list IN DISPLAY ORDER (so the tooltip lists
+// every co-located ref, top one = what's currently shown) regardless of the
+// show-all-tags mode, since the tooltip is exactly where you read the ones the
+// gutter couldn't fit.
 function labelAt(mx,row){
   if(!G||layout.branchColW<=0||mx>=layout.branchColW||row<0) return null;
-  if(showAllTags&&G.allRefs){ const l=G.allRefs[row]; return l&&l.length?l:null; }
-  const ref=G.refs&&G.refs[row]; return ref?[ref]:null;
+  const l=orderedRefsFor(row); return l.length?l:null;
 }
+// The hover tooltip: one ref per line, each with a kind-coloured dot and a muted
+// kind label, the current (top) one bolded. Built from DOM nodes (textContent,
+// never innerHTML) so an exotic branch/tag name can't inject markup. Much
+// clearer than the old single "a · b · c" line, especially for the hidden refs
+// behind a "+N" pill.
 function showLabelTip(refs,cx,cy){ const t=$("#graphLabelTip"); if(!t) return;
-  if(refs&&refs.length){ t.textContent=refs.map(r=>r.label).join("   ·   "); t.style.left=(cx+13)+"px"; t.style.top=(cy+15)+"px"; t.style.display="block"; }
-  else t.style.display="none";
+  if(refs&&refs.length){
+    // pointermove fires this every frame over the gutter; only rebuild the child
+    // nodes when the ref set actually changed (a new row / a cycle), otherwise
+    // just reposition — no per-frame DOM churn.
+    const sig=refs.map(r=>r.kind+":"+r.label).join("|");
+    if(t.dataset.sig!==sig){
+      t.dataset.sig=sig; t.textContent="";
+      refs.forEach((r,i)=>{
+        const line=document.createElement("div"); line.className="rt-row"+(i===0?" cur":"");
+        const dot=document.createElement("span"); dot.className="rt-dot"; dot.style.background=refKindColor(r.kind); line.appendChild(dot);
+        const name=document.createElement("span"); name.className="rt-name"; name.textContent=r.label; line.appendChild(name);
+        const kind=document.createElement("span"); kind.className="rt-kind"; kind.textContent=refKindLabel(r.kind); line.appendChild(kind);
+        t.appendChild(line);
+      });
+    }
+    t.style.left=(cx+13)+"px"; t.style.top=(cy+15)+"px"; t.style.display="block";
+  } else { t.style.display="none"; t.dataset.sig=""; }
 }
 cv.addEventListener("pointerdown",(e)=>{
   // Primary (left) button only — a right-click (button 2, or a middle-click)
@@ -901,6 +988,11 @@ function endPointer(e){
   if(sbDrag){sbDrag=null;state.pointerActive=false;return;}
   if(colDrag){colDrag=null;state.pointerActive=false;cv.style.cursor="default";saveColW();return;}
   if(down){
+    // A clean click on a row's "+N" overflow pill cycles that row's labels
+    // (bringing the next hidden ref to the front) instead of selecting — the
+    // pill is a distinct affordance, so it leaves the current selection alone.
+    if(!down.moved&&down.hit&&down.hit.row>=0){ const oh=overflowHit.get(down.hit.row);
+      if(oh&&p.x>=oh.x0&&p.x<=oh.x1){ cycleRefs(down.hit.row); down=null; state.pointerActive=false; return; } }
     if(!down.moved&&down.hit){ if(down.hit.row===-2) selectWorkdir(); else select(down.hit.row); }
     else if(!down.moved&&!down.hit) deselect();
     else if(state.drag){
@@ -1562,6 +1654,44 @@ function applyThemeMode(mode){
 // applyThemeMode above; boot seeds it from the persisted value below.
 let showAllTags=false;
 function setGraphShowAllTags(v){ showAllTags=v; dirty=true; }
+// Global "label priority" preference (settings.svelte.ts's graphLabelPriority).
+// The backend hands refs tag-first; when a narrow gutter can only show one, that
+// means the tag wins. `graphTagsFirst=false` ("Branches first") promotes the
+// checked-out branch / local branches ahead of tags instead. Seeded on boot,
+// updated live by the setter — same idiom as setGraphShowAllTags above.
+let graphTagsFirst=true;
+function setGraphLabelPriority(v){ graphTagsFirst=(v!=="branch"); dirty=true; }
+// Per-commit ref rotation for the "+N" overflow chip: sha -> how many places the
+// row's ref list has been spun left (see cycleRefs / drawGutterChips). Keyed by
+// sha so it survives a streaming re-layout; cleared when a fresh graph loads.
+// `refRotEpoch` bumps on every cycle and folds into bufferKeyNow() so a click
+// forces a FULL redraw instead of blitting stale pixels. `overflowHit` records
+// each visible row's "+N" chip x-span (CSS px, scroll-independent) for click
+// hit-testing — rebuilt per row as it renders.
+const refRot=new Map();
+let refRotEpoch=0;
+const overflowHit=new Map();
+function rowSha(row){ return (BACKEND&&BACKEND.rows[row]&&BACKEND.rows[row].sha)||("r"+row); }
+// This row's ref chips in display order: priority-sorted then rotated. Uses the
+// FULL list (allRefs) so rotation can reach every ref even when only the primary
+// (refs[0]) would otherwise show.
+function orderedRefsFor(row){
+  const list=(G&&G.allRefs&&G.allRefs[row])||(G&&G.refs&&G.refs[row]?[G.refs[row]]:[]);
+  return orderRefs(list, graphTagsFirst, refRot.get(rowSha(row))||0);
+}
+// Spin this row's labels one place left, bringing the next hidden ref to the
+// front — the "+N" chip's click action. No-op with fewer than two refs.
+function cycleRefs(row){
+  const list=(G&&G.allRefs&&G.allRefs[row])||[];
+  if(list.length<2) return;
+  const k=rowSha(row);
+  refRot.set(k,((refRot.get(k)||0)+1)%list.length);
+  refRotEpoch++; bufferValid=false; dirty=true;
+}
+// Chip colour/label per ref kind — shared by paintChip, the "+N" pill and the
+// hover tooltip so the three surfaces stay visually consistent.
+function refKindColor(kind){ return kind==="branch"?LANE_COLORS[0]:kind==="tag"?(theme.accent2||"#7FB6A6"):kind==="remote"?theme.muted:theme.accent; }
+function refKindLabel(kind){ return kind==="head"?"current":kind==="remote"?"remote":kind==="tag"?"tag":"branch"; }
 // "Serious work" mode (settings.svelte.ts's tamaEnabled) — toggles a single
 // CSS class (see index.html's own `.tama-off` rule) that hides every
 // DECORATIVE Tama portrait (the nook's animated sprite, the Detail
@@ -2056,6 +2186,9 @@ async function startGraphStream(path){
   dlog("graph", "stream START gen", myGen, "—", path);
   graphGeneration = myGen;
   BACKEND = { n:0, oids:[], lane:[], color:[], merge:[], gapStart:[0], gapTop:[], gapBot:[], gapColor:[], rows:[], refs:[], allRefs:[], ncol:7, laneCount:0 };
+  // A fresh graph (repo switch or refresh) invalidates any per-commit label
+  // rotation the user had spun up — the ref set itself may have changed.
+  refRot.clear(); overflowHit.clear();
   // A fresh stream: the incremental-refresh baseline is now stale until this
   // load finishes. loadedOids is rebuilt from scratch as batches arrive; the
   // fast path (see reloadGraph) is disabled until `done` sets graphStreamComplete.
@@ -2751,6 +2884,7 @@ $("#backToParentBtn").addEventListener("click", goBackToParent);
 // any DOM element here — there's no longer a live per-pick checkbox to seed.
 applyThemeMode(loadSettings().themeMode);
 setGraphShowAllTags(loadSettings().showAllCommitTags);
+setGraphLabelPriority(loadSettings().graphLabelPriority);
 setTamaEnabled(loadSettings().tamaEnabled);
 $("#dangerTamaImg").src=TAMA_IMG.alarm; $("#tamaCheerImg").src=TAMA_IMG.happy;
 // Window resize re-renders live (standard); the panel-divider drag is what
@@ -2784,7 +2918,7 @@ function requestRedraw(){ dirty=true; }
 export { reloadGraph, cheer, highlight, Tama, TAMA_IMG, requestRedraw,
   G, BACKEND, state, layout, view, cv, clampScroll, select, selectWorkdir, goToUncommitted, goToHead, openHelpPage, toggleFocusMode, hhex, msgOf, AUTHORS,
   fakeAgo, relTime, absTime, pickRepo, closeRepo, armDanger, updateBranchPill,
-  openRepo, doFetch, doPull, doPush, bandH, applyThemeMode, setGraphShowAllTags, setTamaEnabled, onGraphBatch,
+  openRepo, doFetch, doPull, doPush, bandH, applyThemeMode, setGraphShowAllTags, setGraphLabelPriority, setTamaEnabled, onGraphBatch,
   // submodule navigation (see the "12a) SUBMODULE NAVIGATION STACK" section
   // above for the full design) — enterSubmodule/goBackToParent are hoisted
   // `function` declarations, so no TDZ risk (same reasoning as
