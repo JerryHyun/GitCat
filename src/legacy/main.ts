@@ -2473,6 +2473,20 @@ async function openRepo(path){
     loadGraph(0);
     await sidebarCtrl.refresh(CUR_REPO);
     await Safety.refresh();
+    // Auto-detect where this repo sits in any submodule hierarchy and refresh the
+    // submodule-nav strip — the SINGLE owner of NAV_STACK. Because this runs for
+    // EVERY open (picker, dashboard, deep-link, in-app sibling/tree/back jump),
+    // the strip is always right: a directly-opened submodule shows its parent +
+    // siblings, and switching repos never leaves a stale breadcrumb. NAV_STACK is
+    // now a cache of git's own answer (submodule_superproject_chain) rather than a
+    // hand-tracked stack. Best-effort: any failure just yields a standalone repo.
+    try{
+      const chainRes=await commands.submoduleSuperprojectChain(path);
+      NAV_STACK.length=0;
+      if(chainRes.status==="ok") for(const p of chainRes.data) NAV_STACK.push(p);
+    }catch(e){ console.error("superproject chain", e); NAV_STACK.length=0; }
+    updateBackToParentBtn();
+    await submoduleNavCtrl.refresh(CUR_REPO);
     // Live refresh: watch this repo's git-dir for changes made outside the
     // app (terminal commits, another tool, a background fetch) — see
     // src-tauri/src/watch.rs. Best-effort: a watch failure shouldn't block
@@ -2530,46 +2544,25 @@ async function openRepo(path){
    the user's deliberately left the chain to open something unrelated, going
    back no longer makes sense. */
 export let NAV_STACK=[];
-// THE submodule-navigation primitive: open `absolutePath` (SubmoduleInfo's own
-// field — never string-concatenated here) via the SAME openRepo() every "open a
-// repository" path uses, and set NAV_STACK to `chain` (the ancestor list,
-// root..immediate-parent, that this target sits under). Real graph, workdir,
-// branches/tags/bisect/rebase, even its own nested Submodules — the app simply
-// IS that repo now. enterSubmodule/goBackToParent below and the submodule-nav
-// strip's sibling/tree/breadcrumb jumps are ALL just "open this repo with THAT
-// chain", so one function covers every direction — down into a child, sideways
-// to a sibling, up to any ancestor, or across to an arbitrary tree node.
-//
-// Same "don't touch persistent state until the load succeeded" discipline
-// openRepo itself uses for CUR_REPO/BACKEND: NAV_STACK is only rewritten once
-// openRepo actually reports success, so a failed load (bad path, the submodule
-// vanished on disk, transiently locked) leaves the user exactly where they were,
-// free to retry, rather than stranded on a half-updated stack. Refreshes the nav
-// strip on success so it always mirrors where the app landed.
-async function navigateToRepo(absolutePath, chain){
-  const ok=await openRepo(absolutePath);
-  if(ok){
-    NAV_STACK.length=0;
-    for(const c of chain) NAV_STACK.push(c);
-    updateBackToParentBtn();
-    await submoduleNavCtrl.refresh(CUR_REPO);
-  }
-  return ok;
+// THE submodule-navigation entry point: just open `absolutePath` (SubmoduleInfo's
+// own field / a NAV_STACK entry — never string-concatenated here). openRepo()
+// now re-derives NAV_STACK from git's own superproject chain and refreshes the
+// nav strip on every open (see its body above), so there's nothing to track by
+// hand: entering a child, hopping to a sibling, jumping to any ancestor or an
+// arbitrary tree node are ALL just "open that repo", and the strip follows. This
+// stays a named function so the submodule-nav strip + sidebar can bridge it.
+async function navigateToRepo(absolutePath){
+  return openRepo(absolutePath);
 }
-// Enter a submodule from wherever we are: its chain is the current ancestor
-// stack plus the repo we're leaving (captured BEFORE openRepo reassigns
-// CUR_REPO). Thin wrapper over navigateToRepo — the sidebar's per-row "Open"
-// still calls this by name.
+// The sidebar's per-row "Open" — same thing, kept by name for that caller.
 async function enterSubmodule(absolutePath){
-  const chain=[...NAV_STACK, CUR_REPO]; // capture before navigateToRepo→openRepo reassigns CUR_REPO
-  return navigateToRepo(absolutePath, chain);
+  return openRepo(absolutePath);
 }
-// Go back up one level: the parent is the top of the stack, and its own chain is
-// everything below it. The topbar "← Back to …" button still calls this.
+// The topbar "← Back to …" button: open the immediate parent (top of the derived
+// stack). openRepo re-derives the rest of the chain from there.
 async function goBackToParent(){
   if(!NAV_STACK.length) return false;
-  const parent=NAV_STACK[NAV_STACK.length-1];
-  return navigateToRepo(parent, NAV_STACK.slice(0,-1));
+  return openRepo(NAV_STACK[NAV_STACK.length-1]);
 }
 // Shows/hides the topbar "← Back to <parent repo name>" affordance and, when
 // shown, fills in the name — derived from NAV_STACK's top entry via
@@ -2814,17 +2807,12 @@ async function pickRepo(){
                       : await window.__TAURI__.core.invoke("plugin:dialog|open",{options:{directory:true,title:"Open a Git repository"}});
   }catch(e){ console.error(e); Tama.say("Dialog error — "+e); return; }
   if(dir){
-    // Picking a brand-new repo via the normal picker deliberately leaves any
-    // submodule-navigation chain behind — going back no longer makes sense
-    // once the user's chosen something unrelated to what they navigated
-    // into. But that's only committed AFTER openRepo() actually reports
-    // success (same discipline as enterSubmodule/goBackToParent above):
-    // clearing NAV_STACK/hiding the Back button BEFORE awaiting openRepo
-    // would, on a failed pick (not a git repo, permission error, transiently
-    // locked, etc.), leave the user still mid-chain with the stack already
-    // wiped and no way back short of re-navigating the whole chain by hand.
-    const ok=await openRepo(typeof dir==="string"?dir:(dir.path||String(dir)));
-    if(ok){ NAV_STACK.length=0; updateBackToParentBtn(); await submoduleNavCtrl.refresh(CUR_REPO); }
+    // openRepo() re-derives NAV_STACK from git's superproject chain and refreshes
+    // the nav strip itself (see its body), so picking a brand-new repo just works:
+    // an unrelated top-level repo detects no parent (empty chain, strip hides),
+    // and — nicely — picking a submodule FOLDER directly detects its parent +
+    // siblings automatically, exactly like navigating into it in-app would.
+    await openRepo(typeof dir==="string"?dir:(dir.path||String(dir)));
   }
 }
 function bootEmpty(){
@@ -2909,9 +2897,9 @@ if(IN_TAURI){
   // returns the fully percent-decoded value — no separate decodeURIComponent
   // needed (that would double-decode a path containing a literal '%').
   const initialRepo=new URLSearchParams(location.search).get("repo");
-  // Refresh the submodule-nav strip after the initial open lands (openRepo here
-  // is deliberately not awaited) so it appears if this repo has submodules.
-  if(initialRepo) openRepo(initialRepo).then(ok=>{ if(ok) submoduleNavCtrl.refresh(CUR_REPO); }); else bootEmpty();
+  // openRepo() derives NAV_STACK + refreshes the submodule-nav strip itself, so a
+  // repo opened by deep-link that happens to be a submodule shows its context too.
+  if(initialRepo) openRepo(initialRepo); else bootEmpty();
 }
 else { loadGraph(10000); }          // plain browser (design mode): synthetic demo data
 requestAnimationFrame(tick);

@@ -91,6 +91,17 @@ pub fn wsl_target(path: &str) -> Option<(String, String)> {
     Some((distro.to_string(), format!("/{}", rest.join("/"))))
 }
 
+/// Inverse of the WSL half of [`wsl_target`]: given a distro and an in-distro
+/// absolute linux path, rebuild the `\\wsl.localhost\<distro>\...` UNC path the
+/// app uses to refer to a WSL repo. Needed to map a linux path git printed from
+/// INSIDE the distro (e.g. `rev-parse --show-superproject-working-tree`, which
+/// runs via `wsl.exe` and knows nothing of the Windows-side UNC form) back into
+/// the app's own path format so it round-trips through `openRepo`/`wsl_target`.
+pub fn unc_from_linux(distro: &str, linux: &str) -> String {
+    let rel = linux.trim_start_matches('/').replace('/', "\\");
+    format!("\\\\wsl.localhost\\{distro}\\{rel}")
+}
+
 /// Build a `git -C <path> <args>` invocation, transparently routed through
 /// `wsl.exe -d <distro> -e git -C <linux-path> <args>` when `path` is a WSL
 /// UNC path — see module doc comment.
@@ -417,6 +428,21 @@ mod tests {
             wsl_target("//wsl.localhost/Ubuntu/home/jc/repo"),
             Some(("Ubuntu".to_string(), "/home/jc/repo".to_string()))
         );
+    }
+
+    #[test]
+    fn unc_from_linux_round_trips_back_through_wsl_target() {
+        // A linux path git printed from inside the distro maps back to the app's
+        // UNC form, and wsl_target parses that right back to (distro, linux).
+        let unc = unc_from_linux("Ubuntu", "/home/jc/super");
+        assert_eq!(unc, r"\\wsl.localhost\Ubuntu\home\jc\super");
+        assert_eq!(wsl_target(&unc), Some(("Ubuntu".to_string(), "/home/jc/super".to_string())));
+    }
+
+    #[test]
+    fn unc_from_linux_handles_distro_root_and_dotted_names() {
+        assert_eq!(unc_from_linux("Ubuntu-22.04", "/"), r"\\wsl.localhost\Ubuntu-22.04\");
+        assert_eq!(unc_from_linux("Debian", "/srv/x"), r"\\wsl.localhost\Debian\srv\x");
     }
 
     #[test]

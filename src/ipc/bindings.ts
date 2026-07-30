@@ -2437,6 +2437,25 @@ async submoduleStatus(path: string) : Promise<Result<SubmoduleInfo[], string>> {
 }
 },
 /**
+ * Tauri command: the chain of superproject working trees ABOVE `path`,
+ * root-first, or an empty vec when `path` is a standalone repo. This is what
+ * lets the app reconstruct a submodule's parent + siblings when it's opened
+ * DIRECTLY (folder picker / dashboard / a `?repo=` deep-link), not only when
+ * navigated into in-app — so the submodule-nav strip appears either way. Walks
+ * [`superproject_of`] one level at a time (a nested submodule's own immediate
+ * parent is itself a submodule checkout, which this follows naturally), with a
+ * depth cap + visited-set so a pathological/cyclic layout can't loop forever.
+ * Read-only. JS call: `invoke("submodule_superproject_chain", { path })`.
+ */
+async submoduleSuperprojectChain(path: string) : Promise<Result<string[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("submodule_superproject_chain", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Register `submodule_path`'s URL (and branch, if `.gitmodules` sets one)
  * into the superproject's OWN `.git/config` (`git submodule init -- <path>`)
  * — does NOT clone. The overwhelmingly common precondition for

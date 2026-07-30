@@ -250,6 +250,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
         watch::unwatch_repo,
         // Submodules (M1 of 4): read-only status view
         submodule::submodule_status,
+        // Superproject detection: the ancestor chain above a repo, so opening a
+        // submodule directly still shows its parent + siblings (submodule-nav strip)
+        submodule::submodule_superproject_chain,
         // Submodules (M2 of 4): init (register URL, no clone) / update (clone
         // + checkout, optionally --init/--recursive, never --force)
         submodule::submodule_init,

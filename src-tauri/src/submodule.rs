@@ -589,6 +589,56 @@ fn run_git(path: &str, args: &[&str]) -> Result<GitOut, String> {
     })
 }
 
+/// This repo's IMMEDIATE superproject working tree, or `None` when it isn't a
+/// submodule. `git rev-parse --show-superproject-working-tree` is the only
+/// robust way to answer this — it consults the gitlink/`.git`-file wiring rather
+/// than guessing from directory layout, so it's correct even for a submodule
+/// checked out at a path unrelated to its name, and (walked one level at a time)
+/// for arbitrary nesting. For a WSL repo git runs inside the distro and prints a
+/// linux path, mapped back to the app's UNC form via this repo's own distro.
+fn superproject_of(path: &str) -> Option<String> {
+    let out = run_git(path, &["rev-parse", "--show-superproject-working-tree"]).ok()?;
+    if !out.ok || out.stdout.is_empty() {
+        return None;
+    }
+    match crate::wsl::wsl_target(path) {
+        Some((distro, _)) => Some(crate::wsl::unc_from_linux(&distro, &out.stdout)),
+        None => Some(out.stdout.clone()),
+    }
+}
+
+/// Tauri command: the chain of superproject working trees ABOVE `path`,
+/// root-first, or an empty vec when `path` is a standalone repo. This is what
+/// lets the app reconstruct a submodule's parent + siblings when it's opened
+/// DIRECTLY (folder picker / dashboard / a `?repo=` deep-link), not only when
+/// navigated into in-app — so the submodule-nav strip appears either way. Walks
+/// [`superproject_of`] one level at a time (a nested submodule's own immediate
+/// parent is itself a submodule checkout, which this follows naturally), with a
+/// depth cap + visited-set so a pathological/cyclic layout can't loop forever.
+/// Read-only. JS call: `invoke("submodule_superproject_chain", { path })`.
+#[tauri::command]
+#[specta::specta]
+pub async fn submodule_superproject_chain(path: String) -> Result<Vec<String>, String> {
+    let mut chain: Vec<String> = Vec::new(); // immediate-parent-first while building
+    let mut seen: HashSet<String> = HashSet::new();
+    seen.insert(path.clone());
+    let mut cur = path;
+    let mut depth = 0;
+    while depth < 32 {
+        depth += 1;
+        match superproject_of(&cur) {
+            Some(parent) if !seen.contains(&parent) => {
+                seen.insert(parent.clone());
+                chain.push(parent.clone());
+                cur = parent;
+            }
+            _ => break, // reached a standalone root, or a cycle guard tripped
+        }
+    }
+    chain.reverse(); // root-first
+    Ok(chain)
+}
+
 fn git_error_message(out: &GitOut) -> String {
     if !out.stderr.is_empty() {
         out.stderr.clone()

@@ -4,19 +4,14 @@
 // submodule MUTATION (init/update/sync/add/remove) still lives in the sidebar's
 // Submodules section.
 //
-// The whole thing rides on ONE primitive in legacy/main.ts —
-// `navigateToRepo(absolutePath, chain)` — which sets NAV_STACK to `chain` and
-// re-opens the app at `absolutePath` (openRepo, same as every other "open a
-// repository" path). Enter a child, hop to a sibling, jump to any ancestor or an
-// arbitrary tree node: all of it is just "open this repo with THAT ancestor
-// chain", so a single call covers the lot. legacy/main.ts's enterSubmodule /
-// goBackToParent are now thin wrappers over it, and it refreshes THIS controller
-// on success — so the strip always mirrors wherever the app actually is.
-//
-// Reads bridge.NAV_STACK (ancestors, root..immediate-parent) and bridge.CUR_REPO
-// (the open repo) — both live bindings — and asks the backend for one level of
-// `submodule_status` at a time (the current level for the sibling tabs; walked
-// recursively, lazily on open, for the tree).
+// Navigation is dead simple now: every jump is just "open that repo".
+// legacy/main.ts's openRepo() re-derives NAV_STACK from git's own superproject
+// chain (submodule_superproject_chain) and refreshes THIS controller on EVERY
+// open — folder picker, dashboard, deep-link, or an in-app sibling/tree/back
+// jump alike. So this controller never tracks a chain by hand: it reads
+// bridge.NAV_STACK (git's answer: ancestors, root..immediate-parent) and
+// bridge.CUR_REPO (both live bindings) to render the breadcrumb + sibling tabs,
+// and calls bridge.navigateToRepo(absolutePath) (== openRepo) to move.
 import * as bridge from "../../legacy/bridge";
 import { commands } from "../../ipc/bindings";
 import { IN_TAURI } from "../../ipc/env";
@@ -26,33 +21,41 @@ import type { SubmoduleInfo } from "../../ipc/bindings";
 function basename(p: string): string {
   return p.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || p;
 }
+// Tolerant path equality for the "which tab is the current repo" highlight only.
+// CUR_REPO (whatever the OS picker / a git-CLI-derived NAV_STACK entry produced)
+// and a submodule's git2-built absolutePath can name the SAME dir in slightly
+// different spellings — back- vs forward-slashes, a trailing slash, a lower-case
+// Windows drive. Normalise those away. A missed match only means the current
+// tab isn't dimmed (still harmless/clickable), never a wrong jump.
+function samePath(a: string, b: string): boolean {
+  const norm = (p: string) =>
+    p
+      .replace(/\\/g, "/")
+      .replace(/\/+$/, "")
+      .replace(/^([a-z]):/i, (_m, d) => d.toUpperCase() + ":");
+  return norm(a) === norm(b);
+}
 
-// One clickable step in the "root › vendor/lib-a › nested" path. `chain` is the
-// ancestor list (root..parent) to hand navigateToRepo when jumping HERE.
+// One clickable step in the "root › vendor/lib-a › nested" path.
 export interface RepoCrumb {
   name: string;
   absolutePath: string;
-  chain: string[];
   current: boolean;
 }
 // One sibling tab at the current level (or, at the top, the superproject's own
-// submodules to dive into). All siblings share the same parent, hence one
-// `chain` for the row — stored per-tab so a test can assert the jump target.
+// submodules to dive into).
 export interface SiblingTab {
   name: string;
   absolutePath: string;
   status: string;
   canOpen: boolean;
   current: boolean;
-  chain: string[];
 }
-// A node in the full-tree popover. `chain` is root..parent for THIS node; the
-// synthetic root has chain [] (jump to root = navigateToRepo(root, [])).
+// A node in the full-tree popover.
 export interface TreeNode {
   name: string;
   absolutePath: string;
   status: string; // "" for the synthetic superproject root
-  chain: string[];
   canOpen: boolean;
   current: boolean;
   isRoot: boolean;
@@ -62,12 +65,11 @@ export interface TreeNode {
 const TREE_MAX_DEPTH = 8; // matches the backend's own recursion guard; also caps a pathological tree
 
 // A tiny stand-in so the browser design-mode preview (IN_TAURI === false) shows
-// a representative strip instead of an empty bar — mirrors the sidebar's own
-// DEMO_SUBMODULES idea without importing its (private) list.
+// a representative strip instead of an empty bar.
 const DEMO_SIBLINGS: SiblingTab[] = [
-  { name: "vendor/lib-a", absolutePath: "/demo/gitcat/vendor/lib-a", status: "clean", canOpen: true, current: false, chain: ["/demo/gitcat"] },
-  { name: "vendor/lib-b", absolutePath: "/demo/gitcat/vendor/lib-b", status: "dirty", canOpen: true, current: false, chain: ["/demo/gitcat"] },
-  { name: "third_party/tool", absolutePath: "/demo/gitcat/third_party/tool", status: "out-of-date", canOpen: true, current: false, chain: ["/demo/gitcat"] },
+  { name: "vendor/lib-a", absolutePath: "/demo/gitcat/vendor/lib-a", status: "clean", canOpen: true, current: false },
+  { name: "vendor/lib-b", absolutePath: "/demo/gitcat/vendor/lib-b", status: "dirty", canOpen: true, current: false },
+  { name: "third_party/tool", absolutePath: "/demo/gitcat/third_party/tool", status: "out-of-date", canOpen: true, current: false },
 ];
 
 class SubmoduleNavState {
@@ -95,32 +97,24 @@ class SubmoduleNavState {
   }
 
   // Rebuild the breadcrumb + sibling tabs for wherever the app currently is.
-  // Called by navigateToRepo on success and by the repo-reset paths (pickRepo /
-  // closeRepo / boot) — never on a timer, so it can't show a stale location.
+  // openRepo() calls this after it has set NAV_STACK (from git's superproject
+  // chain), so it always reflects the real location — never on a timer.
   async refresh(repo: string): Promise<void> {
     if (!IN_TAURI) {
       // Design-mode preview: a superproject sitting on three demo submodules.
-      this.path = [{ name: "gitcat", absolutePath: "/demo/gitcat", chain: [], current: true }];
+      this.path = [{ name: "gitcat", absolutePath: "/demo/gitcat", current: true }];
       this.siblings = DEMO_SIBLINGS;
       return;
     }
     const stack = this.stack().slice();
-    // Breadcrumb: each ancestor (jump-to chain = everything before it), then the
-    // current repo (jump-to chain = the whole ancestor stack).
-    const crumbs: RepoCrumb[] = stack.map((abs, i) => ({
-      name: basename(abs),
-      absolutePath: abs,
-      chain: stack.slice(0, i),
-      current: false,
-    }));
-    crumbs.push({ name: basename(repo), absolutePath: repo, chain: stack.slice(), current: true });
+    // Breadcrumb: each ancestor, then the current repo (the last, marked current).
+    const crumbs: RepoCrumb[] = stack.map((abs) => ({ name: basename(abs), absolutePath: abs, current: false }));
+    crumbs.push({ name: basename(repo), absolutePath: repo, current: true });
     this.path = crumbs;
 
-    // Sibling tabs: one level of the CURRENT level's parent (root..parent's last,
-    // or the repo itself at the top). Their shared parent chain is the current
-    // repo's own chain (the ancestor stack), or [repo] at the top level.
+    // Sibling tabs: one level of the current level's parent (root..parent's last,
+    // or the repo itself at the top, whose submodules are dive-in targets).
     const listFrom = stack.length ? stack[stack.length - 1] : repo;
-    const sibChain = stack.length ? stack.slice() : [repo];
     try {
       const res = await commands.submoduleStatus(listFrom);
       const subs: SubmoduleInfo[] = res.status === "ok" ? res.data : [];
@@ -129,8 +123,7 @@ class SubmoduleNavState {
         absolutePath: s.absolutePath,
         status: s.status,
         canOpen: submoduleCanOpen(s.status),
-        current: s.absolutePath === repo,
-        chain: sibChain,
+        current: samePath(s.absolutePath, repo),
       }));
     } catch (e) {
       console.error("submodulenav.refresh", e);
@@ -138,12 +131,12 @@ class SubmoduleNavState {
     }
   }
 
-  // Jump anywhere. `key` scopes the row spinner (and guards double-clicks);
-  // jumping to the already-open repo is a no-op. navigateToRepo refreshes this
-  // controller itself on success, so there's nothing to reconcile here after.
-  async jumpTo(absolutePath: string, chain: string[], key: string): Promise<void> {
+  // Jump anywhere = open that repo; openRepo re-derives NAV_STACK and refreshes
+  // this controller. `key` scopes the row spinner (and guards double-clicks);
+  // jumping to the already-open repo is a no-op.
+  async jumpTo(absolutePath: string, key: string): Promise<void> {
     if (this.busy) return;
-    if (absolutePath === this.cur()) return; // already here
+    if (samePath(absolutePath, this.cur())) return; // already here
     if (!IN_TAURI) {
       bridge.tama.set("hint");
       bridge.tama.say("Switched to " + basename(absolutePath) + " (demo).");
@@ -152,7 +145,7 @@ class SubmoduleNavState {
     this.busy = true;
     this.busyTarget = key;
     try {
-      await bridge.navigateToRepo(absolutePath, chain);
+      await bridge.navigateToRepo(absolutePath);
     } catch (e) {
       console.error("submodulenav.jumpTo", e);
       bridge.tama.warn("Couldn't switch to " + basename(absolutePath));
@@ -165,26 +158,25 @@ class SubmoduleNavState {
   jumpToCrumb(i: number): Promise<void> {
     const c = this.path[i];
     if (!c || c.current) return Promise.resolve();
-    return this.jumpTo(c.absolutePath, c.chain, "crumb:" + i);
+    return this.jumpTo(c.absolutePath, "crumb:" + i);
   }
 
   jumpToSibling(s: SiblingTab): Promise<void> {
     if (s.current || !s.canOpen) return Promise.resolve();
-    return this.jumpTo(s.absolutePath, s.chain, "sib:" + s.absolutePath);
+    return this.jumpTo(s.absolutePath, "sib:" + s.absolutePath);
   }
 
   jumpToNode(n: TreeNode): Promise<void> {
     if (n.current) return Promise.resolve();
     if (!n.isRoot && !n.canOpen) return Promise.resolve();
     this.closeTree();
-    return this.jumpTo(n.absolutePath, n.chain, "node:" + n.absolutePath);
+    return this.jumpTo(n.absolutePath, "node:" + n.absolutePath);
   }
 
   // Full-tree popover: built eagerly on open by walking submodule_status from the
   // root superproject (NAV_STACK[0] ?? CUR_REPO). Cheap for the small trees this
   // is for; a visited-set + depth cap keep a cyclic/absurd tree bounded, and only
-  // openable nodes are descended into (uninitialised/removed/unreadable have
-  // nothing to walk).
+  // openable nodes are descended into.
   async toggleTree(): Promise<void> {
     if (this.treeOpen) {
       this.closeTree();
@@ -194,9 +186,9 @@ class SubmoduleNavState {
     if (!IN_TAURI) {
       const root = "/demo/gitcat";
       this.tree = {
-        name: "gitcat", absolutePath: root, status: "", chain: [], canOpen: true, current: true, isRoot: true,
+        name: "gitcat", absolutePath: root, status: "", canOpen: true, current: true, isRoot: true,
         children: DEMO_SIBLINGS.map((s) => ({
-          name: s.name, absolutePath: s.absolutePath, status: s.status, chain: [root],
+          name: s.name, absolutePath: s.absolutePath, status: s.status,
           canOpen: s.canOpen, current: false, isRoot: false, children: [],
         })),
       };
@@ -207,10 +199,10 @@ class SubmoduleNavState {
       const stack = this.stack();
       const root = stack.length ? stack[0] : this.cur();
       const cur = this.cur();
-      const children = await this.walk(root, [], new Set([root]), 0, cur);
+      const children = await this.walk(root, new Set([root]), 0, cur);
       this.tree = {
-        name: basename(root), absolutePath: root, status: "", chain: [],
-        canOpen: true, current: root === cur, isRoot: true, children,
+        name: basename(root), absolutePath: root, status: "",
+        canOpen: true, current: samePath(root, cur), isRoot: true, children,
       };
     } catch (e) {
       console.error("submodulenav.toggleTree", e);
@@ -235,7 +227,7 @@ class SubmoduleNavState {
     this.tree = null;
   }
 
-  private async walk(absPath: string, chain: string[], visited: Set<string>, depth: number, cur: string): Promise<TreeNode[]> {
+  private async walk(absPath: string, visited: Set<string>, depth: number, cur: string): Promise<TreeNode[]> {
     if (depth >= TREE_MAX_DEPTH) return [];
     let subs: SubmoduleInfo[] = [];
     try {
@@ -248,17 +240,16 @@ class SubmoduleNavState {
     const out: TreeNode[] = [];
     for (const s of subs) {
       const canOpen = submoduleCanOpen(s.status);
-      const nodeChain = [...chain, absPath];
       let children: TreeNode[] = [];
       // Descend only into openable, not-yet-visited nodes — a cycle guard AND
       // the natural stop for uninitialised/removed/unreadable rows.
       if (canOpen && !visited.has(s.absolutePath)) {
         visited.add(s.absolutePath);
-        children = await this.walk(s.absolutePath, nodeChain, visited, depth + 1, cur);
+        children = await this.walk(s.absolutePath, visited, depth + 1, cur);
       }
       out.push({
-        name: s.path, absolutePath: s.absolutePath, status: s.status, chain: nodeChain,
-        canOpen, current: s.absolutePath === cur, isRoot: false, children,
+        name: s.path, absolutePath: s.absolutePath, status: s.status,
+        canOpen, current: samePath(s.absolutePath, cur), isRoot: false, children,
       });
     }
     return out;

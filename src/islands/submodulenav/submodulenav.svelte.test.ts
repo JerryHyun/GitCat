@@ -1,7 +1,8 @@
 // Tests for the submodule-navigator controller. Same isolation strategy as the
 // other island tests: bridge (a live re-export of legacy/main.ts, which boots the
 // whole canvas app on import) and the sidebar module are mocked so neither is
-// ever evaluated here.
+// ever evaluated here. NAV_STACK / CUR_REPO stand in for whatever openRepo has
+// derived from git's superproject chain; navigateToRepo(absolutePath) is the jump.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 let mockNavStack: string[] = [];
@@ -72,13 +73,11 @@ describe("refresh — breadcrumb + siblings", () => {
     expect(submoduleNavCtrl.path[0].current).toBe(true);
     expect(submoduleNavCtrl.siblings.map((s) => s.name)).toEqual(["vendor/lib-a", "vendor/lib-b"]);
     expect(submoduleNavCtrl.siblings.every((s) => !s.current)).toBe(true);
-    // Dive-in children hang off the repo itself.
-    expect(submoduleNavCtrl.siblings[0].chain).toEqual(["/repo"]);
     expect(submoduleNavCtrl.visible).toBe(true);
   });
 
   it("inside a submodule, siblings come from the PARENT and the current one is flagged", async () => {
-    mockNavStack = ["/repo"];
+    mockNavStack = ["/repo"]; // openRepo derived this from git's superproject chain
     mockCurRepo = "/repo/vendor/lib-a";
     vi.mocked(commands.submoduleStatus).mockResolvedValueOnce(
       ok([sub("vendor/lib-a", "/repo/vendor/lib-a", "clean"), sub("vendor/lib-b", "/repo/vendor/lib-b", "dirty")]),
@@ -88,13 +87,21 @@ describe("refresh — breadcrumb + siblings", () => {
 
     expect(commands.submoduleStatus).toHaveBeenCalledWith("/repo"); // parent, not the current repo
     expect(submoduleNavCtrl.path.map((c) => c.name)).toEqual(["repo", "lib-a"]);
-    expect(submoduleNavCtrl.path[0].chain).toEqual([]); // jumping to root clears the stack
-    expect(submoduleNavCtrl.path[1].chain).toEqual(["/repo"]); // jumping to current keeps the parent
+    expect(submoduleNavCtrl.path[1].current).toBe(true);
     const cur = submoduleNavCtrl.siblings.find((s) => s.absolutePath === "/repo/vendor/lib-a");
     const other = submoduleNavCtrl.siblings.find((s) => s.absolutePath === "/repo/vendor/lib-b");
     expect(cur?.current).toBe(true);
     expect(other?.current).toBe(false);
-    expect(other?.chain).toEqual(["/repo"]); // a sibling shares the current level's parent chain
+  });
+
+  it("marks the current sibling even when CUR_REPO's spelling differs (trailing slash / separators)", async () => {
+    // openRepo may set CUR_REPO from the OS picker while submodule_status builds
+    // its absolutePath via git2 — samePath() bridges the cosmetic difference.
+    mockNavStack = ["/repo"];
+    mockCurRepo = "/repo/vendor/lib-a/"; // trailing slash
+    vi.mocked(commands.submoduleStatus).mockResolvedValueOnce(ok([sub("vendor/lib-a", "/repo/vendor/lib-a", "clean")]));
+    await submoduleNavCtrl.refresh(mockCurRepo);
+    expect(submoduleNavCtrl.siblings[0].current).toBe(true);
   });
 
   it("a plain repo with no submodules keeps the strip hidden", async () => {
@@ -118,30 +125,30 @@ describe("refresh — breadcrumb + siblings", () => {
   });
 });
 
-describe("jumps go through navigateToRepo(target, chain)", () => {
-  it("jumpToSibling opens the sibling with the shared parent chain", async () => {
+describe("jumps = navigateToRepo(absolutePath) (openRepo re-derives the chain)", () => {
+  it("jumpToSibling opens the sibling", async () => {
     mockNavStack = ["/repo"];
     mockCurRepo = "/repo/vendor/lib-a";
     await submoduleNavCtrl.jumpToSibling({
-      name: "vendor/lib-b", absolutePath: "/repo/vendor/lib-b", status: "dirty", canOpen: true, current: false, chain: ["/repo"],
+      name: "vendor/lib-b", absolutePath: "/repo/vendor/lib-b", status: "dirty", canOpen: true, current: false,
     });
-    expect(navigateToRepo).toHaveBeenCalledWith("/repo/vendor/lib-b", ["/repo"]);
+    expect(navigateToRepo).toHaveBeenCalledWith("/repo/vendor/lib-b");
   });
 
   it("jumpToSibling is a no-op for the current sibling or a non-openable one", async () => {
-    await submoduleNavCtrl.jumpToSibling({ name: "x", absolutePath: "/repo/x", status: "clean", canOpen: true, current: true, chain: [] });
-    await submoduleNavCtrl.jumpToSibling({ name: "y", absolutePath: "/repo/y", status: "not-initialized", canOpen: false, current: false, chain: [] });
+    await submoduleNavCtrl.jumpToSibling({ name: "x", absolutePath: "/repo/x", status: "clean", canOpen: true, current: true });
+    await submoduleNavCtrl.jumpToSibling({ name: "y", absolutePath: "/repo/y", status: "not-initialized", canOpen: false, current: false });
     expect(navigateToRepo).not.toHaveBeenCalled();
   });
 
-  it("jumpToCrumb(0) jumps to root with an empty chain; the current crumb is a no-op", async () => {
+  it("jumpToCrumb(0) opens the root; the current crumb is a no-op", async () => {
     mockNavStack = ["/repo"];
     mockCurRepo = "/repo/vendor/lib-a";
     vi.mocked(commands.submoduleStatus).mockResolvedValueOnce(ok([sub("vendor/lib-a", "/repo/vendor/lib-a", "clean")]));
     await submoduleNavCtrl.refresh("/repo/vendor/lib-a");
 
     await submoduleNavCtrl.jumpToCrumb(0); // root
-    expect(navigateToRepo).toHaveBeenCalledWith("/repo", []);
+    expect(navigateToRepo).toHaveBeenCalledWith("/repo");
 
     navigateToRepo.mockClear();
     await submoduleNavCtrl.jumpToCrumb(1); // current — no-op
@@ -150,7 +157,7 @@ describe("jumps go through navigateToRepo(target, chain)", () => {
 
   it("jumping to the already-open repo is a no-op", async () => {
     mockCurRepo = "/repo/vendor/lib-a";
-    await submoduleNavCtrl.jumpTo("/repo/vendor/lib-a", ["/repo"], "sib:/repo/vendor/lib-a");
+    await submoduleNavCtrl.jumpTo("/repo/vendor/lib-a", "sib:/repo/vendor/lib-a");
     expect(navigateToRepo).not.toHaveBeenCalled();
   });
 
@@ -158,19 +165,19 @@ describe("jumps go through navigateToRepo(target, chain)", () => {
     mockCurRepo = "/repo";
     let release: (v: boolean) => void = () => {};
     navigateToRepo.mockImplementationOnce(() => new Promise((r) => (release = r)));
-    const p = submoduleNavCtrl.jumpTo("/repo/a", ["/repo"], "sib:/repo/a");
+    const p = submoduleNavCtrl.jumpTo("/repo/a", "sib:/repo/a");
     expect(submoduleNavCtrl.busy).toBe(true);
-    await submoduleNavCtrl.jumpTo("/repo/b", ["/repo"], "sib:/repo/b"); // ignored
+    await submoduleNavCtrl.jumpTo("/repo/b", "sib:/repo/b"); // ignored
     release(true);
     await p;
     expect(navigateToRepo).toHaveBeenCalledTimes(1);
-    expect(navigateToRepo).toHaveBeenCalledWith("/repo/a", ["/repo"]);
+    expect(navigateToRepo).toHaveBeenCalledWith("/repo/a");
     expect(submoduleNavCtrl.busy).toBe(false);
   });
 });
 
 describe("full-tree popover", () => {
-  it("walks submodule_status recursively, tagging the current node and each node's chain", async () => {
+  it("walks submodule_status recursively, tagging the current node", async () => {
     mockNavStack = ["/repo"];
     mockCurRepo = "/repo/vendor/lib-a";
     vi.mocked(commands.submoduleStatus).mockImplementation(async (p: string) => {
@@ -185,14 +192,11 @@ describe("full-tree popover", () => {
     const root = submoduleNavCtrl.tree!;
     expect(root.isRoot).toBe(true);
     expect(root.name).toBe("repo");
-    expect(root.chain).toEqual([]);
     expect(root.children.map((c) => c.name)).toEqual(["vendor/lib-a", "third_party/tool"]);
 
     const libA = root.children[0];
     expect(libA.current).toBe(true);
-    expect(libA.chain).toEqual(["/repo"]);
     expect(libA.children.map((c) => c.name)).toEqual(["sub/nested"]);
-    expect(libA.children[0].chain).toEqual(["/repo", "/repo/vendor/lib-a"]);
   });
 
   it("does not descend into a non-openable node", async () => {

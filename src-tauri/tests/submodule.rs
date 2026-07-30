@@ -58,8 +58,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use common::TempRepo;
 use gitcat_lib::submodule::{
-    submodule_add, submodule_deinit, submodule_init, submodule_remove, submodule_status, submodule_sync,
-    submodule_update,
+    submodule_add, submodule_deinit, submodule_init, submodule_remove, submodule_status,
+    submodule_superproject_chain, submodule_sync, submodule_update,
 };
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -2043,4 +2043,91 @@ fn submodule_status_on_cyclic_nested_submodule_terminates_cleanly_instead_of_cra
     assert_eq!(sub2_row.status, "clean", "an unrelated, freshly-added submodule must classify normally");
     assert_eq!(sub2_row.head_sha.as_deref(), Some(other_c0.as_str()));
     assert_eq!(sub2_row.workdir_sha.as_deref(), Some(other_c0.as_str()));
+}
+
+// ---------------------------------------------------------------------------
+// submodule_superproject_chain — the ancestor chain above a repo, so a
+// directly-opened submodule can still show its parent + siblings. Walks real
+// `git rev-parse --show-superproject-working-tree` against hand-built fixtures.
+// ---------------------------------------------------------------------------
+
+// git prints an absolute path that on macOS resolves the /var->/private/var and
+// /tmp->/private/tmp symlinks, so canonicalize BOTH sides before comparing —
+// a raw string compare against TempRepo's own (un-resolved) path would spuriously
+// fail even though they name the same directory.
+fn same_dir(a: &str, b: &str) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    }
+}
+
+#[test]
+fn superproject_chain_is_empty_for_a_standalone_repo() {
+    let repo = TempRepo::init("superchain_standalone");
+    let _c0 = repo.commit("f.txt", "hi\n", "c0");
+    let chain = tauri::async_runtime::block_on(submodule_superproject_chain(repo.path()))
+        .expect("superproject_chain failed");
+    assert!(chain.is_empty(), "a standalone repo has no superproject, got {chain:?}");
+}
+
+#[test]
+fn superproject_chain_from_a_submodule_is_just_its_parent() {
+    let child = TempRepo::init("superchain_child");
+    let _c0 = child.commit("f.txt", "hi\n", "c0");
+    let parent = TempRepo::init("superchain_parent");
+    let _p0 = parent.commit("root.txt", "root\n", "p0");
+    add_submodule(&parent, &child, "sub");
+
+    let chain = tauri::async_runtime::block_on(submodule_superproject_chain(format!("{}/sub", parent.path())))
+        .expect("superproject_chain failed");
+    assert_eq!(chain.len(), 1, "one level up, got {chain:?}");
+    assert!(same_dir(&chain[0], &parent.path()), "chain[0]={} should be the parent {}", chain[0], parent.path());
+}
+
+#[test]
+fn superproject_chain_walks_nested_submodules_root_first() {
+    let grand = TempRepo::init("superchain_grand");
+    let _g0 = grand.commit("g.txt", "g\n", "g0");
+    let mid = TempRepo::init("superchain_mid");
+    let _m0 = mid.commit("m.txt", "m\n", "m0");
+    add_submodule(&mid, &grand, "nested"); // mid itself has a submodule
+    let root = TempRepo::init("superchain_root");
+    let _r0 = root.commit("r.txt", "r\n", "r0");
+    add_submodule(&root, &mid, "sub"); // root -> sub(=mid) -> nested(=grand)
+    // `submodule add` is non-recursive, so check out the nested level explicitly.
+    root.must(&["-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive"]);
+
+    let chain = tauri::async_runtime::block_on(submodule_superproject_chain(format!("{}/sub/nested", root.path())))
+        .expect("superproject_chain failed");
+    assert_eq!(chain.len(), 2, "two levels up, got {chain:?}");
+    assert!(same_dir(&chain[0], &root.path()), "root-first: chain[0]={} should be root {}", chain[0], root.path());
+    assert!(same_dir(&chain[1], &format!("{}/sub", root.path())), "chain[1]={} should be root/sub", chain[1]);
+}
+
+#[test]
+fn same_submodule_at_two_paths_each_resolves_independently() {
+    // The same child registered at two paths is two DISTINCT instances: each
+    // detects the parent on its own, and submodule_status lists both by path
+    // (their tracked/checked-out refs are per-path, so they can differ).
+    let child = TempRepo::init("superchain_dup_child");
+    let _c0 = child.commit("f.txt", "hi\n", "c0");
+    let parent = TempRepo::init("superchain_dup_parent");
+    let _p0 = parent.commit("root.txt", "root\n", "p0");
+    add_submodule(&parent, &child, "libs/foo");
+    add_submodule(&parent, &child, "vendor/foo");
+
+    for sub in ["libs/foo", "vendor/foo"] {
+        let chain = tauri::async_runtime::block_on(submodule_superproject_chain(format!("{}/{}", parent.path(), sub)))
+            .expect("superproject_chain failed");
+        assert_eq!(chain.len(), 1, "{sub}: one level up, got {chain:?}");
+        assert!(same_dir(&chain[0], &parent.path()), "{sub}: chain[0]={} should be the parent", chain[0]);
+    }
+
+    let rows = tauri::async_runtime::block_on(submodule_status(parent.path())).expect("submodule_status failed");
+    let paths: std::collections::HashSet<_> = rows.iter().map(|r| r.path.as_str()).collect();
+    assert!(
+        paths.contains("libs/foo") && paths.contains("vendor/foo"),
+        "both instances listed distinctly, got {paths:?}"
+    );
 }
