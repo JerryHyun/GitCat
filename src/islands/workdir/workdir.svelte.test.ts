@@ -53,6 +53,7 @@ vi.mock("../resolver/resolver.svelte.ts", () => ({
 import * as bridge from "../../legacy/bridge";
 import { commands } from "../../ipc/bindings";
 import { resolver } from "../resolver/resolver.svelte.ts";
+import { tamaConfirmCtrl } from "../tamaconfirm/tamaconfirm.svelte.ts";
 import { workdirCtrl, canBlameWorkdirFile, blameTargetForWorkdirFile, buildWdTree } from "./workdir.svelte.ts";
 import type { FileChange, HunkSelection, StashEntry, WorkdirEntry, WorkdirResult, WorkdirStatus } from "../../ipc/bindings";
 
@@ -485,6 +486,74 @@ describe("discard", () => {
   it("a cancelled dialog never calls discardFile", () => {
     workdirCtrl.confirmDiscard("b.ts", true);
     expect(commands.discardFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("discard all (stash-backed)", () => {
+  it("hasChanges is false with no status or a clean tree, true once anything is staged/unstaged", () => {
+    workdirCtrl.status = null;
+    expect(workdirCtrl.hasChanges).toBe(false);
+    workdirCtrl.status = STATUS_CLEAN;
+    expect(workdirCtrl.hasChanges).toBe(false);
+    workdirCtrl.status = STATUS_DIRTY;
+    expect(workdirCtrl.hasChanges).toBe(true);
+  });
+
+  it("confirming the Tama prompt stashes everything (include-untracked) and refreshes status + stashes", async () => {
+    mockInTauri = true;
+    vi.mocked(commands.stashSave).mockResolvedValueOnce(wres({ ok: true, message: "Stashed." }));
+    vi.mocked(commands.workdirStatus).mockResolvedValueOnce(ok(STATUS_CLEAN));
+    vi.mocked(commands.stashList).mockResolvedValueOnce(ok([STASH_0]));
+
+    const p = workdirCtrl.discardAll("/repo");
+    // discardAll runs synchronously up to `await tamaConfirmCtrl.ask()`, so the
+    // dialog is already open here; approve it to let the stash go through.
+    expect(tamaConfirmCtrl.open).toBe(true);
+    tamaConfirmCtrl.confirm();
+    await p;
+
+    expect(commands.stashSave).toHaveBeenCalledWith("/repo", "gitcat: discarded all uncommitted changes", true);
+    expect(commands.workdirStatus).toHaveBeenCalledWith("/repo");
+    expect(commands.stashList).toHaveBeenCalledWith("/repo");
+    expect(workdirCtrl.busy).toBe(false);
+    expect(workdirCtrl.busyTarget).toBe(null);
+  });
+
+  it("cancelling the Tama prompt does nothing — no stash, no refresh, no busy", async () => {
+    mockInTauri = true;
+    const p = workdirCtrl.discardAll("/repo");
+    expect(tamaConfirmCtrl.open).toBe(true);
+    tamaConfirmCtrl.cancel();
+    await p;
+    expect(commands.stashSave).not.toHaveBeenCalled();
+    expect(commands.workdirStatus).not.toHaveBeenCalled();
+    expect(workdirCtrl.busy).toBe(false);
+  });
+
+  it("a clean tree (stash_save reports not-ok) warns and skips the celebrate refresh", async () => {
+    mockInTauri = true;
+    vi.mocked(commands.stashSave).mockResolvedValueOnce(wres({ ok: false, message: "Nothing to stash." }));
+    const p = workdirCtrl.discardAll("/repo");
+    tamaConfirmCtrl.confirm();
+    await p;
+    expect(bridge.tama.warn).toHaveBeenCalledWith("Nothing to stash.");
+    expect(commands.workdirStatus).not.toHaveBeenCalled();
+  });
+
+  it("in demo mode (not in Tauri) plays a celebrate and never asks or stashes", async () => {
+    mockInTauri = false;
+    await workdirCtrl.discardAll("/repo");
+    expect(tamaConfirmCtrl.open).toBe(false);
+    expect(commands.stashSave).not.toHaveBeenCalled();
+    expect(bridge.tama.set).toHaveBeenCalledWith("celebrate");
+  });
+
+  it("openRowMenu/closeRowMenu drive the per-file right-click menu state", () => {
+    expect(workdirCtrl.rowMenu).toBe(null);
+    workdirCtrl.openRowMenu("b.ts", false, 120, 240);
+    expect(workdirCtrl.rowMenu).toEqual({ file: "b.ts", untracked: false, x: 120, y: 240 });
+    workdirCtrl.closeRowMenu();
+    expect(workdirCtrl.rowMenu).toBe(null);
   });
 });
 

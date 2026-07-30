@@ -246,6 +246,16 @@
             {#if workdirCtrl.busy && workdirCtrl.busyTarget === "__all__"}<span class="spinner"></span>{:else}Stage all{/if}
           </button>
         {/if}
+        {#if workdirCtrl.hasChanges}
+          <button
+            class="wd-stage-all wd-discard-all"
+            disabled={workdirCtrl.busy}
+            title="Discard ALL uncommitted changes — staged, unstaged and untracked (saved to a stash you can restore)"
+            onclick={() => workdirCtrl.discardAll(repo())}
+          >
+            {#if workdirCtrl.busy && workdirCtrl.busyTarget === "__discard_all__"}<span class="spinner"></span>{:else}Discard all{/if}
+          </button>
+        {/if}
       </div>
     </div>
     {#if !workdirCtrl.status?.unstaged.length}
@@ -423,6 +433,32 @@
         <button class="btn ghost" onclick={() => (diffExpanded = false)}>Close</button>
       </div>
     </div>
+  </div>
+{/if}
+
+<!-- Per-file right-click menu (opened from an unstaged file row's contextmenu).
+     A transparent full-screen backdrop dismisses it on the next click/right-
+     click, like the app's other popovers. -->
+{#if workdirCtrl.rowMenu}
+  <div
+    class="wd-rowmenu-backdrop"
+    role="presentation"
+    onclick={() => workdirCtrl.closeRowMenu()}
+    oncontextmenu={(e) => {
+      e.preventDefault();
+      workdirCtrl.closeRowMenu();
+    }}
+  ></div>
+  <div class="wd-rowmenu" style="left:{workdirCtrl.rowMenu.x}px; top:{workdirCtrl.rowMenu.y}px">
+    <button
+      class="wd-rowmenu-item danger"
+      disabled={workdirCtrl.busy}
+      onclick={() => {
+        const m = workdirCtrl.rowMenu;
+        workdirCtrl.closeRowMenu();
+        if (m) workdirCtrl.confirmDiscard(m.file, m.untracked);
+      }}>Discard changes</button
+    >
   </div>
 {/if}
 
@@ -678,6 +714,10 @@
       tabindex="0"
       onclick={() => workdirCtrl.selectDiffFile(f.path, false)}
       onkeydown={(e) => (e.key === "Enter" || e.key === " ") && workdirCtrl.selectDiffFile(f.path, false)}
+      oncontextmenu={(e) => {
+        e.preventDefault();
+        workdirCtrl.openRowMenu(f.path, f.status === "?", e.clientX, e.clientY);
+      }}
     >
       <span class="st" data-status={f.status}>{STATUS_LABEL[f.status] ?? f.status}</span>
       <span class="wd-path" title={f.path}>{f.oldPath ? f.oldPath + " → " + f.path : f.name}</span>

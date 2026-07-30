@@ -61,6 +61,7 @@
 import { commands } from "../../ipc/bindings";
 import * as bridge from "../../legacy/bridge";
 import { resolver } from "../resolver/resolver.svelte.ts";
+import { tamaConfirmCtrl } from "../tamaconfirm/tamaconfirm.svelte.ts";
 import { IN_TAURI } from "../../ipc/env";
 import { ICON_BACKUP } from "../../legacy/icons";
 import type { DiffLineRow, FileChange, HunkSelection, SelectedLine, StashEntry, WorkdirEntry, WorkdirStatus } from "../../ipc/bindings";
@@ -749,6 +750,70 @@ class WorkdirState {
       this.busy = false;
       this.busyTarget = null;
     }
+  }
+
+  // Any uncommitted changes at all (staged, unstaged, or untracked all count) —
+  // gates the "Discard all" control.
+  get hasChanges(): boolean {
+    const s = this.status;
+    return !!s && (s.staged.length > 0 || s.unstaged.length > 0);
+  }
+
+  // Discard EVERYTHING uncommitted in one action — but RECOVERABLY: stash it
+  // (`git stash push --include-untracked`, the existing stash_save command) so
+  // the working tree ends up clean yet one click from restore in the stash list.
+  // That's why the confirm is a light Tama yes/no, not the per-file discard's
+  // heavy type-to-confirm gate — nothing here is actually lost.
+  async discardAll(repo: string) {
+    if (this.busy) return;
+    if (!IN_TAURI) {
+      bridge.tama.set("celebrate");
+      bridge.tama.say("Discarded all changes (demo).");
+      return;
+    }
+    const ok = await tamaConfirmCtrl.ask({
+      title: "Discard all uncommitted changes?",
+      message:
+        "Everything — staged, unstaged, and untracked — will be cleared from the working tree and saved to a stash you can restore if this was a mistake.",
+      confirmLabel: "Discard all",
+      cancelLabel: "Cancel",
+      kind: "danger",
+    });
+    if (!ok) return;
+    this.pendingStashUndo = false; // this controller has moved on — see doc comment above
+    this.busy = true;
+    this.busyTarget = "__discard_all__";
+    bridge.tama.set("thinking");
+    try {
+      const res = await commands.stashSave(repo, "gitcat: discarded all uncommitted changes", true);
+      if (res.ok) {
+        bridge.tama.set("celebrate");
+        bridge.tama.say("Discarded all changes — saved to a stash you can restore.", 3600);
+        await this.refreshStatus(repo);
+        await this.refreshStashes(repo);
+      } else {
+        // stash_save reports a clean tree as a non-ok "Nothing to stash…".
+        bridge.tama.warn(res.message || "Nothing to discard — the working tree is already clean.");
+      }
+    } catch (e) {
+      bridge.tama.warn("Discard all failed — " + e);
+      console.error(e);
+    } finally {
+      this.busy = false;
+      this.busyTarget = null;
+    }
+  }
+
+  // Per-file right-click menu (see Workdir.svelte's file rows). Position is the
+  // click point; `untracked` is the row's status === "?" so confirmDiscard picks
+  // the right git op. `closeRowMenu` is also wired to a window click/scroll so
+  // the menu dismisses like any popover.
+  rowMenu = $state<{ file: string; untracked: boolean; x: number; y: number } | null>(null);
+  openRowMenu(file: string, untracked: boolean, x: number, y: number): void {
+    this.rowMenu = { file, untracked, x, y };
+  }
+  closeRowMenu(): void {
+    this.rowMenu = null;
   }
 
   // ── discard (destructive — routes through the shared typed-confirm scrim
