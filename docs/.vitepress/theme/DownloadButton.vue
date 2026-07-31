@@ -41,13 +41,16 @@ const RELEASES_URL = `https://github.com/${REPO}/releases`;
 //   mainLabel — the big button copy ("Download beta for macOS (Apple Silicon)")
 //   menuLabel — the dropdown row ("Apple Silicon (macOS) · Beta" is
 //               menuLabel + the " · Beta" the template appends)
+// `os` is the bare platform name used by the SHORT label on phones (where the
+// full "Download beta for macOS (Apple Silicon)" would overflow a 390px
+// viewport) — see the .dl-label-short swap in custom.css.
 const RELEASE_TARGETS = [
-  { id: "mac-arm", mainLabel: "macOS (Apple Silicon)", menuLabel: "Apple Silicon (macOS)", icon: "apple", match: (n) => n.endsWith("_aarch64.dmg") },
-  { id: "mac-intel", mainLabel: "macOS (Intel)", menuLabel: "Intel (macOS)", icon: "apple", match: (n) => n.endsWith("_x64.dmg") },
-  { id: "win-x64", mainLabel: "Windows AMD64", menuLabel: "Windows AMD64", icon: "windows", match: (n) => n.endsWith("_x64-setup.exe") },
-  { id: "win-arm64", mainLabel: "Windows ARM64", menuLabel: "Windows ARM64", icon: "windows", match: (n) => n.endsWith("_arm64-setup.exe") },
-  { id: "linux-x64", mainLabel: "Linux 64", menuLabel: "Linux 64", icon: "linux", match: (n) => n.endsWith("_amd64.AppImage") },
-  { id: "linux-arm64", mainLabel: "Linux ARM64", menuLabel: "Linux ARM64", icon: "linux", match: (n) => n.endsWith("_aarch64.AppImage") },
+  { id: "mac-arm", os: "macOS", mainLabel: "macOS (Apple Silicon)", menuLabel: "Apple Silicon (macOS)", icon: "apple", match: (n) => n.endsWith("_aarch64.dmg") },
+  { id: "mac-intel", os: "macOS", mainLabel: "macOS (Intel)", menuLabel: "Intel (macOS)", icon: "apple", match: (n) => n.endsWith("_x64.dmg") },
+  { id: "win-x64", os: "Windows", mainLabel: "Windows AMD64", menuLabel: "Windows AMD64", icon: "windows", match: (n) => n.endsWith("_x64-setup.exe") },
+  { id: "win-arm64", os: "Windows", mainLabel: "Windows ARM64", menuLabel: "Windows ARM64", icon: "windows", match: (n) => n.endsWith("_arm64-setup.exe") },
+  { id: "linux-x64", os: "Linux", mainLabel: "Linux 64", menuLabel: "Linux 64", icon: "linux", match: (n) => n.endsWith("_amd64.AppImage") },
+  { id: "linux-arm64", os: "Linux", mainLabel: "Linux ARM64", menuLabel: "Linux ARM64", icon: "linux", match: (n) => n.endsWith("_aarch64.AppImage") },
 ];
 
 // Platform icons are the real BRAND marks the reference screenshot uses, not
@@ -105,6 +108,9 @@ const rootEl = ref(null);
 
 const primaryMainLabel = computed(
   () => RELEASE_TARGETS.find((t) => t.id === primaryTarget.value)?.mainLabel ?? "your platform"
+);
+const primaryOsLabel = computed(
+  () => RELEASE_TARGETS.find((t) => t.id === primaryTarget.value)?.os ?? "your platform"
 );
 const primaryIcon = computed(() => ICONS[RELEASE_TARGETS.find((t) => t.id === primaryTarget.value)?.icon] ?? "");
 
@@ -206,7 +212,10 @@ onBeforeUnmount(() => {
       <div class="dl-split" :class="{ open: dropdownOpen }" ref="rootEl">
         <a class="dl-main" :href="hrefFor(primaryTarget)">
           <span class="dl-icon" v-html="primaryIcon"></span>
-          <span>Download beta for {{ primaryMainLabel }}</span>
+          <span class="dl-label">
+            <span class="dl-label-full">Download beta for {{ primaryMainLabel }}</span>
+            <span class="dl-label-short">Download for {{ primaryOsLabel }}</span>
+          </span>
         </a>
         <button class="dl-chevron" type="button" aria-label="Other platforms" :aria-expanded="dropdownOpen" @click="toggleDropdown">
           <span class="dl-chevron-icon" :class="{ open: dropdownOpen }" v-html="CHEVRON"></span>

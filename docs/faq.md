@@ -22,7 +22,7 @@ Yes — GitCat is free software, licensed under the [GNU General Public License 
 
 ### Does it support submodules?
 
-Yes — init/update (including `--recursive`), add, deinit/remove, and you can "Open" a submodule to manage it exactly like a top-level repo, with a "← Back to \<parent repo\>" breadcrumb to return.
+Yes — init/update (including `--recursive`), add, deinit/remove, and you can "Open" a submodule to manage it exactly like a top-level repo. A submodule navigator strip under the topbar shows a breadcrumb of where you are (each ancestor a click away), the current level's siblings as one-click tabs, and a 🌳 button that opens the full submodule tree — so you can jump straight to a parent, a sibling, or any submodule at any depth. Opening a submodule folder directly picks up its parent and siblings automatically, and switching back to a repo you were just on is instant.
 
 ### Does it support `git bisect` / interactive rebase / stash?
 

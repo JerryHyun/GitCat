@@ -339,6 +339,43 @@
   width: 100%;
   height: 100%;
 }
+/* Never let the split button run past the viewport. At ~390px the long
+   "Download beta for macOS (Apple Silicon)" label (white-space:nowrap +
+   .action flex-shrink:0) used to force .dl-split wider than the page and clip
+   off-screen. Cap the width, let the chain shrink, ellipsize the label as a
+   backstop, and on phones swap in a shorter "Download for <OS>". */
+.dl-actions .action {
+  max-width: 100%;
+}
+.dl-split {
+  max-width: 100%;
+}
+.dl-main {
+  min-width: 0;
+}
+.dl-main > .dl-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dl-label-short {
+  display: none;
+}
+@media (max-width: 640px) {
+  .dl-actions .action {
+    min-width: 0;
+    flex-shrink: 1;
+  }
+  .dl-main {
+    padding: 0 14px;
+  }
+  .dl-label-full {
+    display: none;
+  }
+  .dl-label-short {
+    display: inline;
+  }
+}
 
 .dl-chevron {
   display: flex;
