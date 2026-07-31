@@ -9,12 +9,12 @@ const OG_IMAGE = `${SITE}/social-card.png`;
 const DESCRIPTION =
   "A cozy, safety-first desktop Git client: a fast commit graph, line-level staging, drag-and-drop cherry-pick and merge, rebase, bisect, and a Safety Manager that snapshots before every mutation so Undo is always one keystroke away.";
 // GA4 (chosen over Plausible because a measurement ID isolates GitCat despite the
-// shared zangjiucheng.github.io domain). Set GA_MEASUREMENT_ID=G-XXXXXXXXXX in the
-// docs build env (locally or in .github/workflows/docs.yml) to activate — until a
-// real ID is present nothing is emitted, so a placeholder can never send data.
-// Outbound-installer-click + UTM tracking come free from GA4 Enhanced Measurement
-// (on by default in the property); no extra page code needed.
-const GA_ID = /^G-[A-Z0-9]+$/i.test(process.env.GA_MEASUREMENT_ID ?? "") ? process.env.GA_MEASUREMENT_ID! : "";
+// shared zangjiucheng.github.io domain). The measurement id is NOT a secret — it's
+// exposed in the served page source regardless — so it's hardcoded here, with a
+// GA_MEASUREMENT_ID build-env override for a staging/fork property. Outbound-
+// installer-click + UTM tracking come free from GA4 Enhanced Measurement (on by
+// default in the property); no extra page code needed.
+const GA_ID = process.env.GA_MEASUREMENT_ID?.trim() || "G-W6VT14DVP0";
 
 // Served from https://zangjiucheng.github.io/GitCat/ (a project site, not a
 // user/org site) — `base` must match the repo name exactly or every asset
