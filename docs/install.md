@@ -10,11 +10,36 @@ Download the installer for your platform from the [Releases page](https://github
 
 ## Unsigned builds
 
-GitCat doesn't have a code-signing certificate configured yet, so your OS will flag the installer as coming from an unidentified developer. That's expected — here's how to get past it:
+GitCat isn't code-signed or notarized yet, so your OS will warn that it comes from an unidentified developer. That's expected for a pre-1.0 open-source build — the downloads point at the same [GitHub Releases](https://github.com/zangjiucheng/GitCat/releases) the source is built from. Here's how to get past each platform's gate.
 
-- **macOS** — right-click the app → **Open** the first time (only needed once). Double-clicking normally will refuse to launch it.
-- **Windows** — click **More info** → **Run anyway** on the SmartScreen prompt.
-- **Linux** — no OS-level gate, but make sure the `AppImage` is marked executable (`chmod +x`) before running it.
+### macOS
+
+Because the app is unsigned **and** arrived through a browser, macOS quarantines it.
+
+- **Try first:** right-click (or Control-click) GitCat in Applications → **Open**, then **Open** again in the dialog. You only need to do this once.
+- **macOS Sequoia (15) and newer**, where that right-click bypass was removed: launch it once (it'll be blocked), then open **System Settings → Privacy & Security**, scroll to the GitCat message, and click **Open Anyway**.
+- **If you see “GitCat is damaged and can’t be opened”** (common on Apple Silicon), clear the quarantine flag in Terminal, then launch normally:
+
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/GitCat.app
+  ```
+
+### Windows
+
+On the blue **“Windows protected your PC”** SmartScreen prompt, click **More info → Run anyway**. It may reappear after each new download.
+
+### Linux
+
+No OS-level gate. For the `AppImage`, mark it executable first (it needs FUSE, preinstalled on most desktops):
+
+```bash
+chmod +x GitCat_*.AppImage
+./GitCat_*.AppImage
+```
+
+The `.deb` / `.rpm` packages install normally — `sudo dpkg -i GitCat_*.deb` or `sudo rpm -i GitCat-*.rpm`.
+
+> Signed macOS/Windows builds are on the roadmap; until then these one-time steps are the trade-off for an unsigned open-source release.
 
 ## Building from source
 
