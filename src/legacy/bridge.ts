@@ -106,17 +106,14 @@ export {
   // shape). Hoisted `function`, no TDZ risk (same reasoning as
   // openRepo/pickRepo above).
   onGraphBatch,
-  // Submodule navigation stack: enterSubmodule(absolutePath) pushes the
-  // current repo then opens the submodule via openRepo above;
-  // goBackToParent() pops and reopens the popped path. NAV_STACK is the
-  // stack itself (a live binding, same rationale as CUR_REPO above — read it
-  // at call time, e.g. `bridge.NAV_STACK.length`, never destructure it into
-  // a local const). Sidebar.svelte's per-row "Open" action calls
-  // enterSubmodule directly; the topbar "← Back to <parent repo name>"
-  // affordance is legacy-owned chrome (see legacy/main.ts's own
-  // updateBackToParentBtn), so it doesn't need a bridge re-export of its own.
+  // Submodule navigation: enterSubmodule(absolutePath) opens the submodule via
+  // openRepo above; NAV_STACK is the derived ancestor stack (a live binding, same
+  // rationale as CUR_REPO above — read it at call time, e.g.
+  // `bridge.NAV_STACK.length`, never destructure it into a local const).
+  // Sidebar.svelte's per-row "Open" action calls enterSubmodule directly; the
+  // submodule-nav strip's breadcrumb handles going back up to any ancestor (the
+  // old topbar "← Back" button that used to is gone).
   enterSubmodule,
-  goBackToParent,
   // The jump entry point the submodule-nav strip (src/islands/submodulenav) uses
   // for sibling / breadcrumb / tree jumps: navigateToRepo(absolutePath) == open
   // that repo. openRepo re-derives NAV_STACK from git's superproject chain and

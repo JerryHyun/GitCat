@@ -33,7 +33,7 @@
 //
 // "Open" hands off to the EXISTING `bridge.openRepo()` (full teardown +
 // reload of CUR_REPO/BACKEND, the same call pickRepo/enterSubmodule/
-// goBackToParent already use) — this app has no multi-window/multi-repo-in-
+// navigateToRepo already use) — this app has no multi-window/multi-repo-in-
 // memory support, and building one just for this dashboard is explicitly out
 // of scope (see the design notes this feature shipped against). "Remove"
 // only ever mutates the TRACKED LIST (repo_registry.rs's own doc comment on

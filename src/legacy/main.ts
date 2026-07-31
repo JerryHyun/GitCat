@@ -2463,13 +2463,8 @@ async function openRepo(path){
   // bisectCtrl.cancelIfRunning's own documented TOCTOU note).
   await bisectCtrl.cancelIfRunning();
   const pickBtn=$(".repo-pick");
-  const backBtn=$("#backToParentBtn");
   let pickSpinner=null;
   if(pickBtn){ pickBtn.disabled=true; pickSpinner=document.createElement("span"); pickSpinner.className="spinner"; pickBtn.insertBefore(pickSpinner,pickBtn.firstChild); }
-  // Also disable the "← Back to …" affordance (if shown) for the same
-  // re-entrancy reason as pickBtn above — it triggers openRepo() too (via
-  // goBackToParent), just from a different button.
-  if(backBtn) backBtn.disabled=true;
   // The graph canvas keeps rendering whichever repo was open before (see
   // index.html's own comment on #graphLoading) — nothing else in the main
   // frame otherwise hints that it's showing stale data while load_graph is
@@ -2542,7 +2537,6 @@ async function openRepo(path){
       NAV_STACK.length=0;
       if(chainRes.status==="ok") for(const p of chainRes.data) NAV_STACK.push(p);
     }catch(e){ console.error("superproject chain", e); NAV_STACK.length=0; }
-    updateBackToParentBtn();
     await submoduleNavCtrl.refresh(CUR_REPO);
     // Cache HIT: the graph was restored from memory instantly. Reconcile any
     // change that landed while we were away — cheap (a single graphFastRefresh
@@ -2589,7 +2583,7 @@ async function openRepo(path){
     await repoSummaryCtrl.maybeAutoShow(path);
     return true;
   }catch(e){ setGraphLoadingPill(false); Tama.warn("Couldn't open that repo — "+e,5000); console.error(e); return false; }
-  finally{ openRepoBusy=false; if(pickBtn){ pickBtn.disabled=false; if(pickSpinner) pickSpinner.remove(); } if(backBtn) backBtn.disabled=false; if(graphLoading) graphLoading.style.display="none"; }
+  finally{ openRepoBusy=false; if(pickBtn){ pickBtn.disabled=false; if(pickSpinner) pickSpinner.remove(); } if(graphLoading) graphLoading.style.display="none"; }
 }
 /* ------------------------------------------------------------
    12a) SUBMODULE NAVIGATION STACK — "enter" a submodule (become its own
@@ -2624,29 +2618,9 @@ async function navigateToRepo(absolutePath){
 async function enterSubmodule(absolutePath){
   return openRepo(absolutePath);
 }
-// The topbar "← Back to …" button: open the immediate parent (top of the derived
-// stack). openRepo re-derives the rest of the chain from there.
-async function goBackToParent(){
-  if(!NAV_STACK.length) return false;
-  return openRepo(NAV_STACK[NAV_STACK.length-1]);
-}
-// Shows/hides the topbar "← Back to <parent repo name>" affordance and, when
-// shown, fills in the name — derived from NAV_STACK's top entry via
-// repoBasename() above, the EXACT same name-deriving logic ".repo-pick"'s
-// own span already uses for the CURRENT repo, reused rather than
-// reinvented. Called at every point NAV_STACK's length can change
-// (enterSubmodule/goBackToParent above, pickRepo below) — never on a timer
-// or a redraw, so it can never show a stale name.
-function updateBackToParentBtn(){
-  const btn=$("#backToParentBtn");
-  if(!btn) return;
-  if(NAV_STACK.length){
-    $("#backToParentName").textContent = repoBasename(NAV_STACK[NAV_STACK.length-1]);
-    btn.style.display = "";
-  } else {
-    btn.style.display = "none";
-  }
-}
+// (The old topbar "← Back to <parent>" button — goBackToParent() +
+// updateBackToParentBtn() — was removed once the submodule-nav strip's breadcrumb
+// made jumping to ANY ancestor a click away, superseding a one-level-back button.)
 // Called from ~10 different sites (every real mutation across every island)
 // with no shared lock of its own before this guard — two callers firing back
 // to back could overlap two load_graph calls and race on BACKEND/state.
@@ -2923,13 +2897,14 @@ function bootEmpty(){
 // empty/default state was quitting the app outright; bootEmpty() existed
 // but nothing after cold boot ever called it again. Cancels the same
 // long-running, repo-tied ops openRepo() cancels before switching away, and
-// clears NAV_STACK/hides "← Back to …" exactly like pickRepo() does when it
-// opens something unrelated to whatever submodule chain the user was in.
+// clears NAV_STACK exactly like pickRepo() does when it opens something
+// unrelated to whatever submodule chain the user was in (bootEmpty() already
+// reset the submodule-nav strip that renders the breadcrumb).
 async function closeRepo(){
   if(!IN_TAURI||!CUR_REPO) return;
   await bisectCtrl.cancelIfRunning();
   bootEmpty();
-  NAV_STACK.length=0; updateBackToParentBtn();
+  NAV_STACK.length=0;
 }
 // Opens the same Repositories dashboard modal as the empty-hero's/sidebar's
 // own "Open a repository…" button (see Detail.svelte/Sidebar.svelte) rather
@@ -2938,7 +2913,6 @@ async function closeRepo(){
 // whether or not a repo is currently open (the dashboard's own "+ Add
 // repository…" is where the native picker still lives).
 $(".repo-pick").addEventListener("click", ()=>dashboardCtrl.show());
-$("#backToParentBtn").addEventListener("click", goBackToParent);
 
 // Persisted settings (Settings modal, src/islands/settings) — defaults match
 // what this boot sequence used to hardcode, so an existing user with nothing
@@ -2985,9 +2959,9 @@ export { reloadGraph, cheer, highlight, Tama, TAMA_IMG, requestRedraw,
   fakeAgo, relTime, absTime, pickRepo, closeRepo, armDanger, updateBranchPill,
   openRepo, doFetch, doPull, doPush, bandH, applyThemeMode, setGraphShowAllTags, setGraphLabelPriority, setTamaEnabled, onGraphBatch,
   // submodule navigation (see the "12a) SUBMODULE NAVIGATION STACK" section
-  // above for the full design) — enterSubmodule/goBackToParent are hoisted
+  // above for the full design) — enterSubmodule/navigateToRepo are hoisted
   // `function` declarations, so no TDZ risk (same reasoning as
   // select/openRepo above). NAV_STACK itself is already exported directly at
   // its declaration above (`export let NAV_STACK`), same as CUR_REPO — not
   // re-listed here, that would be a duplicate export.
-  enterSubmodule, goBackToParent, navigateToRepo };
+  enterSubmodule, navigateToRepo };

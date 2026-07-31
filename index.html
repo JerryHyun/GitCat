@@ -1946,17 +1946,9 @@ button{font-family:inherit;font-size:inherit;color:inherit;cursor:pointer}
          would grab the spinner instead — see openRepo()'s own comment on
          that exact line for the bug this class fixes. -->
     <div class="tb-cluster">
-      <!-- "Back to <parent repo>" — only shown once the user has navigated
-           INTO a submodule (legacy/main.ts's NAV_STACK is non-empty); hidden
-           by default here, toggled by updateBackToParentBtn() alongside
-           every push/pop of that stack (enterSubmodule/goBackToParent/
-           pickRepo). The name comes from repoBasename(), the SAME
-           folder-name logic ".repo-pick"'s own span below uses for the
-           current repo. -->
-      <button class="tb-btn" id="backToParentBtn" style="display:none" title="Go back to the repository you navigated into this submodule from">
-        <svg class="tb-ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 3.5 5 8l6 4.5"/></svg>
-        Back to <span id="backToParentName"></span>
-      </button>
+      <!-- The old "← Back to <parent>" affordance lived here; removed once the
+           submodule-nav strip's breadcrumb (root › child › …) made going up to
+           any ancestor a click away, not just one level back. -->
       <button class="repo-pick">
         <span class="repo-name">gitcat</span>
         <!-- Mirrors the Dashboard's own per-row WSL chip (Dashboard.svelte) —
