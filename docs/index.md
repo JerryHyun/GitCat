@@ -55,5 +55,5 @@ features:
 <source src="/demo.mp4" type="video/mp4" />
 <img src="/demo-poster.jpg" alt="GitCat: commit graph, detail panel, and Tama the mascot" style="width: 100%;" />
 </video>
-<p style="text-align: center; color: var(--vp-c-text-2); font-size: 14px; margin-top: 10px;">Scroll the graph, inspect a signed commit, fuzzy-search with <kbd>⌘K</kbd>, and rewind with <kbd>⌘Z</kbd> — every mutation is snapshot-backed. &nbsp;<a href="/GitCat/demo-4k.mp4" download style="white-space: nowrap;">Download 4K ↓</a></p>
+<p style="text-align: center; color: var(--vp-c-text-2); font-size: 14px; margin-top: 10px;">A real session on CPython — scroll the graph, inspect a signed commit, fuzzy-search with <kbd>⌘K</kbd>, and rewind with <kbd>⌘Z</kbd>, every mutation snapshot-backed.</p>
 </div>
