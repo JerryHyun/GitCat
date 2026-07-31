@@ -1,0 +1,47 @@
+name: Feature request
+description: Suggest an idea or improvement for GitCat.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! GitCat's north star is being a **cozy, safety-first** Git client — and it never connects to any AI service. Please keep suggestions in that spirit.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The motivation — what are you trying to do, and where does GitCat get in the way today?
+      placeholder: "I'm always trying to … but I have to …"
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like GitCat to do? Sketches, mockups, or examples from other tools are welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Which platforms is this relevant to?
+      multiple: true
+      options:
+        - macOS
+        - Windows
+        - Linux
+        - WSL
+        - All / not platform-specific
+    validations:
+      required: false

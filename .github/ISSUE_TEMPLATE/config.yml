@@ -1,0 +1,9 @@
+# Force the two structured forms above; no blank free-form issues.
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/zangjiucheng/GitCat/security/policy
+    about: Please report security issues privately — do not open a public issue.
+  - name: 💬 Questions & discussion
+    url: https://github.com/zangjiucheng/GitCat/discussions
+    about: Ask questions, share setups, or discuss ideas before filing a feature request.

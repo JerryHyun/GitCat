@@ -1,0 +1,92 @@
+name: Bug report
+description: Something in GitCat isn't working as expected.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug! Please fill in the details below so it can be reproduced.
+
+        For **security vulnerabilities**, do NOT open a public issue — see [SECURITY.md](https://github.com/zangjiucheng/GitCat/security/policy).
+
+  - type: input
+    id: version
+    attributes:
+      label: GitCat version
+      description: "Find it in Help → About, or the app's window/title. Please confirm it's the latest release."
+      placeholder: "e.g. 0.9.8"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Windows (WSL repository)
+        - Linux
+    validations:
+      required: true
+
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Architecture
+      options:
+        - Apple Silicon (arm64)
+        - Intel / AMD (x64)
+        - ARM64 (Windows/Linux)
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      placeholder: "e.g. macOS 14.5, Windows 11 23H2, Ubuntu 24.04"
+    validations:
+      required: false
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Exactly what you did, step by step. Include the kind of repository if it matters (size, submodules, WSL path, etc.).
+      placeholder: |
+        1. Open repo '...'
+        2. Click '...'
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: Include any error text, and a screenshot or short screen recording if you can.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (optional)
+      description: |
+        Paste relevant log lines. Log file locations:
+        - macOS: `~/Library/Logs/com.jiucheng.gitcat/`
+        - Windows: `%LOCALAPPDATA%\com.jiucheng.gitcat\logs\`
+        - Linux: `~/.local/share/com.jiucheng.gitcat/logs/`
+      render: shell
+    validations:
+      required: false
