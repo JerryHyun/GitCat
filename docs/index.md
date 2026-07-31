@@ -49,8 +49,11 @@ features:
     details: A cat mascot with eight expressions who reacts to what's actually happening across the app — searching, thinking, celebrating, or genuinely alarmed.
 ---
 
-<div style="max-width: 960px; margin: 48px auto 0; padding: 0 24px;">
-
-![GitCat screenshot](./screenshot.png)
-
+<div style="max-width: 1040px; margin: 48px auto 0; padding: 0 24px;">
+<video controls loop playsinline preload="metadata" poster="/demo-poster.jpg" style="width: 100%; border-radius: 12px; box-shadow: 0 14px 44px rgba(0,0,0,0.30); border: 1px solid var(--vp-c-divider); cursor: pointer;" aria-label="A 20-second silent demo of GitCat: scrolling the commit graph, inspecting a signed commit, fuzzy-searching with the command palette, and rewinding with a one-keystroke Undo as Tama reacts.">
+<source src="/demo.webm" type="video/webm" />
+<source src="/demo.mp4" type="video/mp4" />
+<img src="/demo-poster.jpg" alt="GitCat: commit graph, detail panel, and Tama the mascot" style="width: 100%;" />
+</video>
+<p style="text-align: center; color: var(--vp-c-text-2); font-size: 14px; margin-top: 10px;">Scroll the graph, inspect a signed commit, fuzzy-search with <kbd>⌘K</kbd>, and rewind with <kbd>⌘Z</kbd> — every mutation is snapshot-backed.</p>
 </div>
