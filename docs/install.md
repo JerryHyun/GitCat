@@ -10,7 +10,7 @@ Download the installer for your platform from the [Releases page](https://github
 
 ## Unsigned builds
 
-GitCat isn't code-signed or notarized yet, so your OS will warn that it comes from an unidentified developer. That's expected for a pre-1.0 open-source build — the downloads point at the same [GitHub Releases](https://github.com/zangjiucheng/GitCat/releases) the source is built from. Here's how to get past each platform's gate.
+GitCat isn't code-signed or notarized yet, so your OS will warn that it comes from an unidentified developer. That's expected for an unsigned open-source build — the downloads point at the same [GitHub Releases](https://github.com/zangjiucheng/GitCat/releases) the source is built from. Here's how to get past each platform's gate.
 
 ### macOS
 

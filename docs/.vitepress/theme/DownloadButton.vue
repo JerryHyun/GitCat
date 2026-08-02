@@ -2,9 +2,9 @@
   Replaces index.md's old plain "Download" hero button (a static link to
   the bare /releases page) with an OS-auto-detecting split button, styled
   after the reference screenshot the request was built from: one big
-  "Download beta for <platform>" button plus a chevron opening a dropdown of
-  every other build, each with its own small platform icon, a "· Beta"
-  suffix, and a checkmark on whichever one is currently the default.
+  "Download for <platform>" button plus a chevron opening a dropdown of
+  every other build, each with its own small platform icon and a checkmark
+  on whichever one is currently the default.
 
   Renders the WHOLE hero actions row itself (this button + the two
   "Features"/"View on GitHub" links) rather than just the download button
@@ -38,11 +38,10 @@ const RELEASES_URL = `https://github.com/${REPO}/releases`;
 // detectPlatformFamily()'s own mac fallback below uses).
 //
 // Two labels per target, matching the reference screenshot's own split:
-//   mainLabel — the big button copy ("Download beta for macOS (Apple Silicon)")
-//   menuLabel — the dropdown row ("Apple Silicon (macOS) · Beta" is
-//               menuLabel + the " · Beta" the template appends)
+//   mainLabel — the big button copy ("Download for macOS (Apple Silicon)")
+//   menuLabel — the dropdown row ("Apple Silicon (macOS)")
 // `os` is the bare platform name used by the SHORT label on phones (where the
-// full "Download beta for macOS (Apple Silicon)" would overflow a 390px
+// full "Download for macOS (Apple Silicon)" would overflow a 390px
 // viewport) — see the .dl-label-short swap in custom.css.
 const RELEASE_TARGETS = [
   { id: "mac-arm", os: "macOS", mainLabel: "macOS (Apple Silicon)", menuLabel: "Apple Silicon (macOS)", icon: "apple", match: (n) => n.endsWith("_aarch64.dmg") },
@@ -213,7 +212,7 @@ onBeforeUnmount(() => {
         <a class="dl-main" :href="hrefFor(primaryTarget)">
           <span class="dl-icon" v-html="primaryIcon"></span>
           <span class="dl-label">
-            <span class="dl-label-full">Download beta for {{ primaryMainLabel }}</span>
+            <span class="dl-label-full">Download for {{ primaryMainLabel }}</span>
             <span class="dl-label-short">Download for {{ primaryOsLabel }}</span>
           </span>
         </a>
@@ -231,7 +230,7 @@ onBeforeUnmount(() => {
           >
             <span class="dl-menu-check" v-html="t.id === primaryTarget ? CHECK : ''"></span>
             <span class="dl-menu-icon" v-html="ICONS[t.icon]"></span>
-            <span class="dl-menu-label">{{ t.menuLabel }} · Beta</span>
+            <span class="dl-menu-label">{{ t.menuLabel }}</span>
           </a>
         </div>
       </div>
