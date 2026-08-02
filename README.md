@@ -107,7 +107,7 @@ Download the installer for your platform from the [Releases page](https://github
 
 ## Development
 
-Requires [Rust](https://www.rust-lang.org/tools/install), [Node](https://nodejs.org) 22+, and [pnpm](https://pnpm.io).
+Requires [Rust](https://www.rust-lang.org/tools/install), [Node](https://nodejs.org) 22+, and [pnpm](https://pnpm.io). On Linux, Tauri also needs WebKitGTK/GTK3 dev headers at build time — see `.github/workflows/*.yml` for the apt packages, or on NixOS run `nix develop` to drop into a shell with everything (Rust, Node, pnpm, WebKitGTK, and friends) already wired up via `flake.nix`.
 
 ```bash
 pnpm install
