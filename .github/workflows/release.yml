@@ -143,6 +143,43 @@ jobs:
             patchelf \
             xdg-utils
 
+      # WebKitGTK 2.46 shipped an upstream regression that aborts a Tauri app at
+      # launch with "Could not create default EGL display: EGL_BAD_PARAMETER"
+      # (and the WEBKIT_DISABLE_* env-var workarounds only trade the crash for a
+      # black content area — the regression also breaks the software path). The
+      # Tauri AppImage BUNDLES whatever libwebkit2gtk the build runner has, so a
+      # runner that pulled 2.46+ from jammy-updates ships a launch-crashing
+      # AppImage even though it compiled fine. Downgrade the runtime + dev libs to
+      # the newest available PRE-2.46 build and hold them, so the bundled lib is
+      # known-good. Same class of fix GitButler shipped (gitbutlerapp/gitbutler#5301).
+      # Picks the version dynamically (dpkg version compare) instead of hardcoding
+      # a patch that may have been superseded; hard-fails loudly rather than
+      # silently bundling a broken 2.46+. Revert once 22.04 ships a fixed WebKitGTK.
+      - name: Pin WebKitGTK below 2.46 (avoid EGL_BAD_PARAMETER launch crash)
+        if: runner.os == 'Linux'
+        run: |
+          set -uxo pipefail
+          sudo apt-get update
+          echo "== available libwebkit2gtk-4.1-0 versions =="
+          apt-cache madison libwebkit2gtk-4.1-0 || true
+          VER="$(apt-cache madison libwebkit2gtk-4.1-0 | awk '{print $3}' \
+                 | while read -r v; do dpkg --compare-versions "$v" lt 2.46 && echo "$v"; done \
+                 | sort -V | tail -1)"
+          echo "Selected pre-2.46 WebKitGTK version: ${VER:-<none>}"
+          if [ -z "${VER:-}" ]; then
+            echo "::error::No pre-2.46 WebKitGTK is available in this runner's apt archive. The AppImage would bundle a 2.46+ build that crashes at launch (EGL_BAD_PARAMETER). A Launchpad .deb fallback (or a fixed upstream WebKitGTK) is needed before releasing the Linux build."
+            exit 1
+          fi
+          sudo apt-get install -y --allow-downgrades \
+            "libwebkit2gtk-4.1-0=$VER" \
+            "libwebkit2gtk-4.1-dev=$VER" \
+            "libjavascriptcoregtk-4.1-0=$VER" \
+            "libjavascriptcoregtk-4.1-dev=$VER"
+          sudo apt-mark hold \
+            libwebkit2gtk-4.1-0 libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-0 libjavascriptcoregtk-4.1-dev
+          echo "Pinned + held WebKitGTK at $VER"
+
       # Must run before actions/setup-node's `cache: pnpm`, which shells out
       # to `pnpm store path` to locate what to cache (same as ci.yml).
       - name: Install pnpm
@@ -179,6 +216,25 @@ jobs:
       - name: Build (no release)
         if: github.event_name == 'workflow_dispatch'
         run: pnpm tauri build --target ${{ matrix.target }}
+
+      # Make a manual (workflow_dispatch) build downloadable so the bundles can be
+      # SMOKE-INSTALLED per-platform (launch + drive the app, watch for CSP/EGL
+      # issues) WITHOUT cutting a release tag. This is the pre-1.0 verification
+      # path: it does not touch Releases.
+      - name: Upload bundles (manual build only)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitcat-${{ matrix.target }}
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.rpm
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
+          if-no-files-found: ignore
+          retention-days: 7
 
       # Real release path (tag push): build AND upload every platform's
       # bundle into the ONE shared draft the create-release job made above,
