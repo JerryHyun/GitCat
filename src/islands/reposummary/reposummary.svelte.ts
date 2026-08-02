@@ -132,6 +132,17 @@ class RepoSummaryState {
     try {
       const claim = await commands.claimRepoSummaryFirstOpen(repo);
       if (claim.status !== "ok" || !claim.data) return; // not-first, or the claim call itself failed
+
+      // Large/busy repos: skip the auto-summary so opening stays snappy (user
+      // feedback: "太大的仓库不应该去做summary 等太久了"). This cheap probe counts
+      // commits in the window WITHOUT the per-commit --name-only tree diff that
+      // makes refresh() slow, so it can't itself stall the open. The claim is
+      // already consumed above — same one-shot, "consume-even-when-nothing-shows"
+      // contract as an empty/unborn repo — so we won't re-probe on every future
+      // open; the full summary stays reachable on demand via Tools/⌘K.
+      const auto = await commands.repoSummaryAutoRecommended(repo);
+      if (auto.status !== "ok" || !auto.data) return;
+
       await this.refresh(repo);
       // An empty/unborn repo's first open still consumes the claim (see
       // claim_repo_summary_first_open's own doc comment) but has nothing

@@ -14,6 +14,7 @@ vi.mock("../../ipc/bindings", () => ({
   commands: {
     repoSummary: vi.fn(),
     claimRepoSummaryFirstOpen: vi.fn(),
+    repoSummaryAutoRecommended: vi.fn(),
   },
 }));
 
@@ -178,6 +179,7 @@ describe("demo mode", () => {
 describe("maybeAutoShow — real mode (IN_TAURI)", () => {
   it("opens the modal when this is the first open and the repo has commits", async () => {
     vi.mocked(commands.claimRepoSummaryFirstOpen).mockResolvedValueOnce(ok(true));
+    vi.mocked(commands.repoSummaryAutoRecommended).mockResolvedValueOnce(ok(true));
     vi.mocked(commands.repoSummary).mockResolvedValueOnce(ok(summary()));
 
     await repoSummaryCtrl.maybeAutoShow("repo1");
@@ -187,8 +189,25 @@ describe("maybeAutoShow — real mode (IN_TAURI)", () => {
     expect(repoSummaryCtrl.open).toBe(true);
   });
 
-  it("does not call repoSummary or open when this is not the first open", async () => {
-    vi.mocked(commands.claimRepoSummaryFirstOpen).mockResolvedValueOnce(ok(false));
+  // User feedback: "太大的仓库不应该去做summary 等太久了" — a busy repo must not
+  // stall the open with the full --name-only walk. The claim is still consumed
+  // (one-shot, same as the empty-repo case) so we don't re-probe every open;
+  // the summary stays reachable on demand.
+  it("skips the auto-summary (no walk, stays closed) when the probe says the repo is too busy", async () => {
+    vi.mocked(commands.claimRepoSummaryFirstOpen).mockResolvedValueOnce(ok(true));
+    vi.mocked(commands.repoSummaryAutoRecommended).mockResolvedValueOnce(ok(false));
+
+    await repoSummaryCtrl.maybeAutoShow("repo1");
+
+    expect(commands.claimRepoSummaryFirstOpen).toHaveBeenCalledWith("repo1"); // claim consumed
+    expect(commands.repoSummaryAutoRecommended).toHaveBeenCalledWith("repo1");
+    expect(commands.repoSummary).not.toHaveBeenCalled(); // the expensive walk never runs
+    expect(repoSummaryCtrl.open).toBe(false);
+  });
+
+  it("does not run the walk or open when the size-probe call itself errors", async () => {
+    vi.mocked(commands.claimRepoSummaryFirstOpen).mockResolvedValueOnce(ok(true));
+    vi.mocked(commands.repoSummaryAutoRecommended).mockResolvedValueOnce(err("boom"));
 
     await repoSummaryCtrl.maybeAutoShow("repo1");
 
@@ -196,8 +215,21 @@ describe("maybeAutoShow — real mode (IN_TAURI)", () => {
     expect(repoSummaryCtrl.open).toBe(false);
   });
 
+  it("does not probe, walk, or open when this is not the first open", async () => {
+    vi.mocked(commands.claimRepoSummaryFirstOpen).mockResolvedValueOnce(ok(false));
+
+    await repoSummaryCtrl.maybeAutoShow("repo1");
+
+    expect(commands.repoSummaryAutoRecommended).not.toHaveBeenCalled();
+    expect(commands.repoSummary).not.toHaveBeenCalled();
+    expect(repoSummaryCtrl.open).toBe(false);
+  });
+
+  // Defense-in-depth: even if the probe green-lights and the walk comes back
+  // with zero commits, the totalCommits>0 guard still keeps the modal closed.
   it("populates the summary but does not open for an empty/unborn repo's first open", async () => {
     vi.mocked(commands.claimRepoSummaryFirstOpen).mockResolvedValueOnce(ok(true));
+    vi.mocked(commands.repoSummaryAutoRecommended).mockResolvedValueOnce(ok(true));
     vi.mocked(commands.repoSummary).mockResolvedValueOnce(ok(summary({ totalCommits: 0 })));
 
     await repoSummaryCtrl.maybeAutoShow("repo1");
@@ -206,11 +238,12 @@ describe("maybeAutoShow — real mode (IN_TAURI)", () => {
     expect(repoSummaryCtrl.open).toBe(false);
   });
 
-  it("does not open when the claim call itself errors", async () => {
+  it("does not probe or open when the claim call itself errors", async () => {
     vi.mocked(commands.claimRepoSummaryFirstOpen).mockResolvedValueOnce(err("boom"));
 
     await repoSummaryCtrl.maybeAutoShow("repo1");
 
+    expect(commands.repoSummaryAutoRecommended).not.toHaveBeenCalled();
     expect(commands.repoSummary).not.toHaveBeenCalled();
     expect(repoSummaryCtrl.open).toBe(false);
   });
@@ -236,6 +269,7 @@ describe("maybeAutoShow — real mode (IN_TAURI)", () => {
   // ("加载统计又会回到统计界面").
   it("does not force-open when the user has since selected a commit in Detail", async () => {
     vi.mocked(commands.claimRepoSummaryFirstOpen).mockResolvedValueOnce(ok(true));
+    vi.mocked(commands.repoSummaryAutoRecommended).mockResolvedValueOnce(ok(true));
     vi.mocked(commands.repoSummary).mockResolvedValueOnce(ok(summary()));
     detailCtrl.commit = { row: 0, subject: "picked mid-load", sha: "abc123" } as any;
 
@@ -248,6 +282,7 @@ describe("maybeAutoShow — real mode (IN_TAURI)", () => {
 
   it("still opens normally once Detail is empty again (no commit selected)", async () => {
     vi.mocked(commands.claimRepoSummaryFirstOpen).mockResolvedValueOnce(ok(true));
+    vi.mocked(commands.repoSummaryAutoRecommended).mockResolvedValueOnce(ok(true));
     vi.mocked(commands.repoSummary).mockResolvedValueOnce(ok(summary()));
     detailCtrl.commit = null;
 

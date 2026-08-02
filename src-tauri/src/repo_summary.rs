@@ -65,6 +65,13 @@ const CHURN_WINDOW_DAYS: i64 = 365;
 /// profiled against a genuinely huge repo the way `pickaxe.rs`'s own cap
 /// was — a reasonable starting point, worth tuning once profiled.
 const MAX_SUMMARY_COMMITS: usize = 20_000;
+/// Above this many commits in the window, a repo is "too busy" to auto-summarize
+/// on first open: the full walk's per-commit `--name-only` tree diff would stall
+/// the open by real seconds (user feedback: "太大的仓库不应该去做summary 等太久了").
+/// Only the ONE-TIME auto-show respects this (see [`repo_summary_auto_recommended`])
+/// — the summary stays fully reachable on demand via Tools/⌘K regardless. A
+/// reasonable, snappiness-leaning starting point, tunable like the caps above.
+const AUTO_SUMMARY_MAX_COMMITS: usize = 2_000;
 const TOP_CHURN_FILES: usize = 20;
 const TOP_CONTRIBUTORS: usize = 20;
 const TOP_PROBLEM_FILES: usize = 20;
@@ -182,13 +189,7 @@ fn repo_summary_inner(path: &str) -> Result<RepoSummary, String> {
         return Ok(empty_summary());
     }
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let since_secs = now - CHURN_WINDOW_DAYS * 86_400;
-    let (y, m, d) = civil_from_unix(since_secs);
-    let since_arg = format!("--since={y:04}-{m:02}-{d:02}");
+    let since_arg = window_since_arg();
     let max_count_arg = format!("--max-count={}", MAX_SUMMARY_COMMITS + 1);
 
     let out = run_git(
@@ -217,6 +218,62 @@ fn repo_summary_inner(path: &str) -> Result<RepoSummary, String> {
     }
 
     Ok(aggregate(records, truncated))
+}
+
+/// The `--since=YYYY-MM-DD` cutoff (UTC) shared by the full summary walk and
+/// the cheap first-open size probe below, so both look at the exact same
+/// [`CHURN_WINDOW_DAYS`] window.
+fn window_since_arg() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let (y, m, d) = civil_from_unix(now - CHURN_WINDOW_DAYS * 86_400);
+    format!("--since={y:04}-{m:02}-{d:02}")
+}
+
+/// Cheap first-open probe: should the ONE-TIME auto-summary fire for this repo,
+/// or is it too busy (and would stall the open)? Counts commits in the summary
+/// window WITHOUT `--name-only`, so there's no per-commit tree diff — this stays
+/// fast even on a genuinely huge repo, unlike [`repo_summary`] itself. The walk
+/// is additionally hard-capped at [`AUTO_SUMMARY_MAX_COMMITS`]`+1` via
+/// `--max-count`, so its cost is bounded regardless of repo size.
+///
+/// Returns `Ok(false)` for an unborn/empty repo (nothing to auto-show anyway)
+/// or a repo whose window exceeds [`AUTO_SUMMARY_MAX_COMMITS`]; `Ok(true)` only
+/// when the repo is small enough that auto-summarizing on open stays snappy.
+/// The full summary is unaffected and stays reachable on demand via Tools/⌘K.
+///
+/// Off the main thread (`run_blocking`), same as [`repo_summary`].
+///
+/// JS: `commands.repoSummaryAutoRecommended(path)`.
+#[tauri::command]
+#[specta::specta]
+pub async fn repo_summary_auto_recommended(path: String) -> Result<bool, String> {
+    crate::blocking::run_blocking(move || repo_summary_auto_recommended_inner(&path)).await
+}
+
+fn repo_summary_auto_recommended_inner(path: &str) -> Result<bool, String> {
+    let repo = crate::trust::open_repo(path).map_err(|e| format!("cannot open repository: {}", e.message()))?;
+    if repo.head().is_err() {
+        return Ok(false); // unborn/empty — the auto-show has nothing meaningful to display
+    }
+
+    let since_arg = window_since_arg();
+    let max_count_arg = format!("--max-count={}", AUTO_SUMMARY_MAX_COMMITS + 1);
+    let out = run_git(path, &["rev-list", "--count", &since_arg, &max_count_arg, "--end-of-options", "HEAD"])?;
+    if !out.ok {
+        return Err(git_msg(&out));
+    }
+    Ok(parse_rev_list_count(&out.stdout) <= AUTO_SUMMARY_MAX_COMMITS)
+}
+
+/// Parse `git rev-list --count`'s single-integer stdout. Any unparseable output
+/// (should never happen for a successful `rev-list --count`) is treated as
+/// "large" — [`usize::MAX`] — so the auto-summary conservatively skips rather
+/// than risking a stall on a repo we couldn't size.
+fn parse_rev_list_count(stdout: &str) -> usize {
+    stdout.trim().parse::<usize>().unwrap_or(usize::MAX)
 }
 
 // ---------------------------------------------------------------------------
@@ -462,6 +519,17 @@ mod tests {
         assert_eq!(records[0].files, vec!["src/a.rs", "src/b.rs"]);
         assert_eq!(records[1].author_name, "Bob");
         assert_eq!(records[1].files, vec!["src/a.rs"]);
+    }
+
+    #[test]
+    fn parse_rev_list_count_reads_the_integer_and_fails_safe_to_large() {
+        assert_eq!(parse_rev_list_count("0\n"), 0);
+        assert_eq!(parse_rev_list_count("  1999 \n"), 1999);
+        assert_eq!(parse_rev_list_count("2001"), 2001);
+        // Unparseable (never expected from a successful `rev-list --count`) →
+        // treated as "large" so the auto-summary skips rather than risks a stall.
+        assert_eq!(parse_rev_list_count(""), usize::MAX);
+        assert_eq!(parse_rev_list_count("not-a-number"), usize::MAX);
     }
 
     #[test]

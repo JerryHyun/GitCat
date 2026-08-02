@@ -2760,6 +2760,31 @@ async repoSummary(path: string) : Promise<Result<RepoSummary, string>> {
 }
 },
 /**
+ * Cheap first-open probe: should the ONE-TIME auto-summary fire for this repo,
+ * or is it too busy (and would stall the open)? Counts commits in the summary
+ * window WITHOUT `--name-only`, so there's no per-commit tree diff — this stays
+ * fast even on a genuinely huge repo, unlike [`repo_summary`] itself. The walk
+ * is additionally hard-capped at [`AUTO_SUMMARY_MAX_COMMITS`]`+1` via
+ * `--max-count`, so its cost is bounded regardless of repo size.
+ * 
+ * Returns `Ok(false)` for an unborn/empty repo (nothing to auto-show anyway)
+ * or a repo whose window exceeds [`AUTO_SUMMARY_MAX_COMMITS`]; `Ok(true)` only
+ * when the repo is small enough that auto-summarizing on open stays snappy.
+ * The full summary is unaffected and stays reachable on demand via Tools/⌘K.
+ * 
+ * Off the main thread (`run_blocking`), same as [`repo_summary`].
+ * 
+ * JS: `commands.repoSummaryAutoRecommended(path)`.
+ */
+async repoSummaryAutoRecommended(path: string) : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("repo_summary_auto_recommended", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * JS: `commands.getVisibleBranches(path)`.
  */
 async getVisibleBranches(path: string) : Promise<Result<VisibleBranches, string>> {

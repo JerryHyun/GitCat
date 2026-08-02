@@ -282,6 +282,10 @@ fn specta_builder() -> Builder<tauri::Wry> {
         // state) and reachable afterward via Tools/⌘K.
         repo_registry::claim_repo_summary_first_open,
         repo_summary::repo_summary,
+        // Cheap first-open size probe: skips the (expensive) auto-summary on a
+        // too-busy repo so opening it stays snappy — the full summary is still
+        // reachable on demand. See repo_summary.rs's AUTO_SUMMARY_MAX_COMMITS.
+        repo_summary::repo_summary_auto_recommended,
         // Branch visibility filter: which local/remote branches the commit
         // graph's revwalk is seeded from, persisted per repo (see
         // repo_registry.rs's own VisibleBranches doc comment). Read
