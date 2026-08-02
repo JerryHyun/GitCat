@@ -152,11 +152,13 @@ jobs:
       # AppImage even though it compiled fine. Same class of fix GitButler shipped
       # (gitbutlerapp/gitbutler#5301). jammy's apt archive has since jumped 2.36.0
       # (release) -> 2.50.x (updates), so the last pre-regression 2.44.x is no
-      # longer installable via apt (and a 2.36 downgrade breaks dependencies), so
-      # we pull the co-versioned 2.44.3 .debs straight from the Launchpad librarian
-      # (which keeps superseded versions) and install the whole set atomically.
-      # 2.44.3 is the last 2.44.x published for jammy, on both amd64 and arm64.
-      # Revert once 22.04 ships a fixed WebKitGTK.
+      # longer installable via apt (and a 2.36 downgrade breaks dependencies).
+      # We install the co-versioned 2.44.3 .deb set atomically. The debs come from
+      # THIS repo's "build-deps-webkit-2.44.3" prerelease (mirrored from Launchpad)
+      # because GitHub Actions runners can't reach launchpad.net (connection times
+      # out) — the Azure apt mirror only carries current versions. 2.44.3 is the
+      # last 2.44.x published for jammy, on both amd64 and arm64. Revert (and
+      # delete that prerelease) once 22.04 ships a fixed WebKitGTK.
       - name: Pin WebKitGTK to 2.44.3 (avoid 2.46+ EGL_BAD_PARAMETER launch crash)
         if: runner.os == 'Linux'
         run: |
@@ -166,7 +168,7 @@ jobs:
             aarch64-*) DEBARCH=arm64 ;;
             *)         DEBARCH=amd64 ;;
           esac
-          BASE=https://launchpad.net/ubuntu/+archive/primary/+files
+          BASE=https://github.com/${{ github.repository }}/releases/download/build-deps-webkit-2.44.3
           workdir="$(mktemp -d)"; cd "$workdir"
           # Full co-versioned set — the -dev packages pin "= runtime version", so a
           # partial downgrade would leave apt with held broken packages.
