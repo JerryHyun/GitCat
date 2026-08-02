@@ -223,6 +223,13 @@ jobs:
       # bump etc. without needing a throwaway tag.
       - name: Build (no release)
         if: github.event_name == 'workflow_dispatch'
+        # The updater pubkey in tauri.conf.json makes `tauri build` require the
+        # signing key even for a build-only run; supply it like the real release
+        # path (tauri-action) below, so the manual smoke-test build actually
+        # completes + signs the same artifacts a release would.
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target ${{ matrix.target }}
 
       # Make a manual (workflow_dispatch) build downloadable so the bundles can be
