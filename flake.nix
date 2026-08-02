@@ -39,47 +39,12 @@
         ];
       in
       {
-        packages.default = pkgs.rustPlatform.buildRustPackage (finalAttrs: {
-          pname = "gitcat";
-          version = "0.9.8";
-          src = ./.;
-
-          cargoRoot = "src-tauri";
-          buildAndTestSubdir = "src-tauri";
-          cargoLock.lockFile = ./src-tauri/Cargo.lock;
-
-          # createUpdaterArtifacts needs a signing key we don't have (and
-          # shouldn't bake into a Nix build) — a Nix-installed GitCat updates
-          # via the flake input / nixpkgs channel, not the built-in updater.
-          postPatch = ''
-            ${pkgs.jq}/bin/jq '.bundle.createUpdaterArtifacts = false' src-tauri/tauri.conf.json | ${pkgs.moreutils}/bin/sponge src-tauri/tauri.conf.json
-          '';
-
-          pnpmDeps = pkgs.fetchPnpmDeps {
-            inherit (finalAttrs) pname version src;
-            fetcherVersion = 2;
-            hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-          };
-
-          nativeBuildInputs = [
-            pkgs.cargo-tauri.hook
-            pkgs.cmake # libgit2-sys builds libgit2 from source
-            pkgs.nodejs_22
-            pkgs.pnpmConfigHook
-            pkgs.pkg-config
-          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.wrapGAppsHook4 ];
-
-          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux linuxDeps
-            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin darwinDeps;
-
-          meta = {
-            description = "A cozy, safety-first desktop Git client";
-            homepage = "https://github.com/zangjiucheng/GitCat";
-            license = pkgs.lib.licenses.gpl3Plus;
-            mainProgram = "gitcat";
-            platforms = pkgs.lib.platforms.linux ++ pkgs.lib.platforms.darwin;
-          };
-        });
+        # Only packaged for Linux for now — nix/package.nix links against
+        # WebKitGTK/GTK3, which have no macOS nixpkgs equivalent (Tauri uses
+        # the system WebKit there instead).
+        packages = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          default = pkgs.callPackage ./nix/package.nix { src = self; };
+        };
 
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
@@ -87,6 +52,7 @@
             cargo
             rustfmt
             clippy
+            cmake # libgit2-sys builds libgit2 from source (git2's vendored feature)
             nodejs_22
             pnpm
             cargo-tauri
