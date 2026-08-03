@@ -2938,6 +2938,75 @@ async resolveConflictWithExternalTool(path: string, file: string) : Promise<Reso
     return await TAURI_INVOKE("resolve_conflict_with_external_tool", { path, file });
 },
 /**
+ * JS: `commands.listPlugins()`.
+ */
+async listPlugins() : Promise<Result<Plugin[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_plugins") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Enable/disable an installed plugin. JS: `commands.setPluginEnabled(id, enabled)`.
+ */
+async setPluginEnabled(id: string, enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_plugin_enabled", { id, enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Install a plugin from a local `plugin.json` file OR a directory containing
+ * one: read + parse + validate, reject a duplicate id, then append + save.
+ * Returns the installed plugin. JS: `commands.installPluginFromPath(path)`.
+ */
+async installPluginFromPath(path: string) : Promise<Result<Plugin, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("install_plugin_from_path", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Uninstall a plugin (removes it from the registry only; never touches the
+ * original manifest file on disk). JS: `commands.removePlugin(id)`.
+ */
+async removePlugin(id: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("remove_plugin", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Run a plugin's command by id. Loads it from the registry (written in
+ * parallel — [`crate::plugin_registry::find_command`], which returns `None`
+ * for a command that is missing OR disabled), resolves the working directory
+ * from `ctx.repo`, and shells out via [`run_template`].
+ * 
+ * `async fn` + `run_blocking` keeps the (potentially long, up to
+ * [`PLUGIN_CMD_TIMEOUT`]) subprocess wait off Tauri's main thread, exactly
+ * like `tool_settings::generate_commit_message`. The cheap registry lookup
+ * runs inline first (same shape as that command loading its JSON settings
+ * before the `run_blocking`).
+ * 
+ * JS: `commands.runPluginCommand(pluginId, commandId, ctx)`.
+ */
+async runPluginCommand(pluginId: string, commandId: string, ctx: PlaceholderCtx) : Promise<Result<CommandOutput, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("run_plugin_command", { pluginId, commandId, ctx }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Read `file_name`'s current content (repo-root only). Missing file => `Ok("")`,
  * never an error — see module doc comment.
  * JS: `commands.readRepoFile(path, fileName)` -> `Result<string, string>`.
@@ -3155,6 +3224,24 @@ export type CodeSearchResults = { matches: CodeSearchMatch[]; truncated: boolean
  * instead of the raw typed "sha/ref" text `code_search` itself accepts.
  */
 resolvedSha: string | null }
+/**
+ * The captured result of running a plugin command. `camelCase` for bindings.
+ */
+export type CommandOutput = { 
+/**
+ * stdout, ANSI-stripped (CLIs stream spinner/cursor escapes even when
+ * piped — see [`strip_ansi`]). NOT trimmed: a plugin may care about exact
+ * bytes/trailing newlines, unlike the commit-message generator.
+ */
+stdout: string; 
+/**
+ * The process exit code, or `None` if it was killed by a signal.
+ */
+exitCode: number | null; 
+/**
+ * `true` iff the process exited 0.
+ */
+success: boolean }
 /**
  * Full payload for the M1 commit detail panel: message + real diff tree.
  */
@@ -3581,6 +3668,52 @@ blockedByLocalChanges: boolean }
 export type PickaxeMatch = { sha: string; shortSha: string; subject: string; an: Person }
 export type PickaxeResults = { entries: PickaxeMatch[]; truncated: boolean }
 /**
+ * Values substituted into a plugin command's `run` template. Every field is
+ * optional / possibly-empty: the frontend fills in only the placeholders a
+ * given command's declared `context` needs, and any placeholder whose value
+ * is absent expands to an empty string (see [`expand_placeholders`]).
+ * 
+ * `repo` does double duty: it is BOTH the `{repo}` placeholder value AND the
+ * working directory the command runs in (see [`run_plugin_command`]) — a
+ * plugin command with no repo has nowhere sensible to run.
+ * 
+ * `camelCase` for the TS bindings. `gitref` is renamed to `ref` on the wire
+ * so the JS field matches the `{ref}` token (the Rust field can't be named
+ * `ref`, a reserved keyword). Container-level `#[serde(default)]` (+ derived
+ * `Default`) lets the frontend send only the subset of fields it has.
+ */
+export type PlaceholderCtx = { 
+/**
+ * `{sha}` — a commit id (Commit context).
+ */
+sha: string | null; 
+/**
+ * `{file}` — a single file path (File context).
+ */
+file: string | null; 
+/**
+ * `{files}` — several file paths; expands to each path shell-quoted,
+ * space-joined (File context, multi-select).
+ */
+files: string[]; 
+/**
+ * `{diff}` — diff text. UNTRUSTED repo content; quoted like everything else.
+ */
+diff: string | null; 
+/**
+ * `{repo}` — the repository path. Also the command's working directory.
+ */
+repo: string | null; 
+/**
+ * `{branch}` — a branch name. UNTRUSTED (attacker can name a branch anything).
+ */
+branch: string | null; 
+/**
+ * `{ref}` — a full ref / tag / symbolic ref. UNTRUSTED. (Rust field
+ * `gitref`; wire/TS field `ref` — see the struct doc.)
+ */
+ref: string | null }
+/**
  * One row the interactive-rebase planner shows: a plannable (non-merge)
  * commit between `onto` and HEAD, oldest-first (this IS the replay/todo
  * order — see [`commit_range`]). `sha` is the full 40-hex id so a
@@ -3592,6 +3725,85 @@ export type PickaxeResults = { entries: PickaxeMatch[]; truncated: boolean }
  * Serializes camelCase: `shortSha`.
  */
 export type PlanCommit = { sha: string; shortSha: string; subject: string }
+/**
+ * A plugin manifest (`plugin.json`).
+ */
+export type Plugin = { 
+/**
+ * Stable identifier, `^[a-z0-9][a-z0-9-]*$` (enforced at install — see
+ * [`is_valid_id`]). Unique within the registry; used as the remove/enable
+ * key and half of a command's `(pluginId, commandId)` address.
+ */
+id: string; name: string; version: string; description: string | null; 
+/**
+ * Defaults to `true` when a manifest omits it — a freshly installed
+ * plugin is active unless the user disables it.
+ */
+enabled?: boolean; commands?: PluginCommand[]; hooks?: PluginHook[] }
+/**
+ * One user-invokable command a plugin contributes. `run` is an external
+ * command TEMPLATE (user-authored shell text — see the module doc's trust
+ * note); the executor expands its placeholders and runs it. `context`/
+ * `placement` both `#[serde(default)]` so a minimal manifest command needs
+ * only `id`/`label`/`run`.
+ */
+export type PluginCommand = { id: string; label: string; 
+/**
+ * External command TEMPLATE. Validated non-empty at install time (see
+ * [`validate_manifest`]); NOT otherwise sanitized — same trust boundary
+ * as `tool_settings.rs`'s diff/merge `cmd`.
+ */
+run: string; context?: PluginContext; placement?: PluginPlacement }
+/**
+ * What a command needs from the current UI selection to be applicable — the
+ * executor uses this to decide where a command is offered (e.g. a `commit`
+ * command only in a commit's context menu). Serialized lowercase so a
+ * manifest author writes `"context": "commit"`.
+ */
+export type PluginContext = 
+/**
+ * No selection needed — always applicable (the default when omitted).
+ */
+"none" | 
+/**
+ * Needs a selected commit.
+ */
+"commit" | 
+/**
+ * Needs a selected file.
+ */
+"file" | 
+/**
+ * Repo-scoped (needs only the open repository).
+ */
+"repo"
+/**
+ * A lifecycle event a hook can fire on. Serialized kebab-case
+ * (`"repo-opened"`, `"pre-mutation"`, …).
+ */
+export type PluginEvent = "repo-opened" | "repo-switched" | "pre-mutation" | "post-mutation" | "commit-created" | "undo"
+/**
+ * One lifecycle hook: run `run` (an external command TEMPLATE, same trust
+ * boundary as [`PluginCommand::run`]) when `event` fires.
+ */
+export type PluginHook = { event: PluginEvent; run: string }
+/**
+ * Where a command surfaces. Serialized lowercase (`"palette"`/`"menu"`/
+ * `"both"`); defaults to `Palette` when a manifest omits it.
+ */
+export type PluginPlacement = 
+/**
+ * Only in the ⌘K command palette (the default).
+ */
+"palette" | 
+/**
+ * Only in the relevant context menu.
+ */
+"menu" | 
+/**
+ * Both the palette and the context menu.
+ */
+"both"
 /**
  * Whatever `revparse_single` resolved `rev` to. Internally tagged on `kind`
  * (verified empirically against specta 2.0.0-rc.22 — this generates a clean

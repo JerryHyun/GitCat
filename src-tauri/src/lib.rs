@@ -37,6 +37,8 @@ pub mod rerere; // M5a: git-rerere status/toggle panel
 pub mod safety; // provided by the Safety-Manager component (exposes snapshot(&Repository))
 pub mod submodule; // M1 status (read-only) + M2 init/update + M3 add/sync + M4 deinit/remove
 pub mod terminal; // "Open Terminal": a real PTY-backed shell embedded in GitCat's own UI
+pub mod plugin_exec; // PER-40: plugin command executor + placeholder grammar (declarative, external-process plugins)
+pub mod plugin_registry; // PER-39: app-level plugin registry (plugins.json under app_config_dir) + install/enable/remove CRUD
 pub mod tool_settings; // backlog #12: external diff/merge tool settings + delegate entirely to `git difftool`/`git mergetool`
 pub mod trust; // auto-trust WSL/UNC-path repos libgit2 refuses as "dubious ownership"
 pub mod watch; // live refresh: watch the open repo's git-dir for externally-made changes
@@ -305,6 +307,13 @@ fn specta_builder() -> Builder<tauri::Wry> {
         tool_settings::suggest_commit_msg_command,
         tool_settings::open_diff_tool,
         tool_settings::resolve_conflict_with_external_tool,
+        // PER-39/40: plugin system foundation — local registry CRUD + the
+        // hardened external-process command executor (placeholder grammar).
+        plugin_registry::list_plugins,
+        plugin_registry::set_plugin_enabled,
+        plugin_registry::install_plugin_from_path,
+        plugin_registry::remove_plugin,
+        plugin_exec::run_plugin_command,
         // Repo-root file editors (backlog #14, final item): view/edit .gitignore
         // and .mailmap directly — allow-listed to exactly these two names, see
         // repo_files.rs's own module doc.
