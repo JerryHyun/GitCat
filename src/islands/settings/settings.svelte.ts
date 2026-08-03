@@ -180,6 +180,14 @@ export interface PersistedSettings {
   // personality trait of the app, not a bug users need to opt out of a
   // regression for.
   tamaEnabled: boolean;
+  // PER-47: id of the installed plugin whose Tama skin is currently active, or
+  // null for the built-in painted portraits. Persisted here (not a separate
+  // localStorage key) so it round-trips with every other client-only pref and
+  // is re-applied at boot (see applyPersistedTamaSkin). A skin only ever becomes
+  // the persisted value AFTER it loads successfully once, so a boot-apply of a
+  // stored id can still fail (plugin later removed/disabled) — that path falls
+  // back to the built-ins silently.
+  tamaSkinPluginId: string | null;
 }
 
 const STORAGE_KEY = "gitcat.settings";
@@ -215,6 +223,7 @@ const DEFAULTS: PersistedSettings = {
   snapshotRetentionCount: 25,
   snapshotRetentionDays: 14,
   tamaEnabled: true,
+  tamaSkinPluginId: null,
 };
 
 // Both loadSettings() (below) and setSoundEffectsVolume() need the same 0-1
@@ -272,6 +281,54 @@ export async function pruneSnapshotsPerPolicy(repo: string): Promise<void> {
   }
 }
 
+// ── Tama skin picker (PER-47) ───────────────────────────────────────────────
+// A plugin MAY ship an alternate look for Tama by declaring a `tama` field in
+// its manifest. loadPluginSkin(pluginId) returns a TamaSkin { poses, copy };
+// poses overlay the built-in portraits via bridge.applyTamaSkin. Everything the
+// picker needs sits here (plus the SettingsState methods below) so the sibling
+// plugincommands controller and legacy/main.ts stay untouched.
+
+// A plugin OFFERS a Tama skin when its manifest declares a (truthy) `tama`
+// field. Read defensively via a cast — the exact shape of `tama` is the
+// backend's business (a manifest-relative path or an inline block); the picker
+// only ever needs to know it EXISTS. Pure + exported for unit testing.
+export function hasTamaSkin(p: Plugin): boolean {
+  return !!(p as { tama?: unknown }).tama;
+}
+
+// A skin MAY ship optional copy/voice lines (TamaSkin.copy). The picker surfaces
+// ONE as a courtesy confirmation when a skin is applied interactively — this is
+// the only use of `copy`, and it never reaches a safety-critical pose (say() is
+// just the nook toast, same trust level as PER-46's plugin reactions). Prefers a
+// well-known key, else the first line; capped like every other plugin-sourced
+// string; null when the skin ships no copy. Pure + exported for unit testing.
+export function pickSkinCopyLine(copy: Record<string, string> | null | undefined): string | null {
+  if (!copy) return null;
+  const line = copy.applied ?? copy.greeting ?? copy.hero ?? Object.values(copy)[0];
+  return line ? line.slice(0, 160) : null;
+}
+
+// Re-apply the persisted Tama skin at boot — called ONCE from legacy/main.ts's
+// startup (see its own `void applyPersistedTamaSkin()`). Silent by contract: a
+// skin whose plugin was removed/disabled, or whose load fails for any reason,
+// falls back to the built-in poses with no error surfaced. Mirrors
+// pruneSnapshotsPerPolicy's own "read settings fresh, IN_TAURI-gated,
+// fire-and-forget" boot shape; never rejects.
+export async function applyPersistedTamaSkin(): Promise<void> {
+  const id = loadSettings().tamaSkinPluginId;
+  if (!id || !IN_TAURI) return;
+  try {
+    const res = await commands.loadPluginSkin(id);
+    if (res.status === "ok") {
+      bridge.applyTamaSkin(res.data.poses ?? {});
+    } else {
+      bridge.clearTamaSkin();
+    }
+  } catch {
+    bridge.clearTamaSkin(); // stays on the built-ins — silent per contract
+  }
+}
+
 // Canned identity for design-mode (!IN_TAURI), same spirit as setupwizard's
 // own DEMO_IDENTITY. local:false so the browser preview also demos the
 // "using your global identity" messaging (see Settings.svelte), not just
@@ -301,6 +358,22 @@ class SettingsState {
   snapshotRetentionCount = $state(DEFAULTS.snapshotRetentionCount);
   snapshotRetentionDays = $state(DEFAULTS.snapshotRetentionDays);
   tamaEnabled = $state(DEFAULTS.tamaEnabled);
+
+  // ── Tama skin picker (PER-47) — app-level, NOT repo-scoped ──────────────
+  // The active skin's plugin id (null = built-in). Seeded from localStorage in
+  // show(); the picker's <select> binds to it. tamaSkinBusy disables the
+  // control while a load is in flight; tamaSkinError surfaces an interactive
+  // load failure (the boot path stays silent — see applyPersistedTamaSkin).
+  tamaSkinPluginId = $state<string | null>(DEFAULTS.tamaSkinPluginId);
+  tamaSkinBusy = $state(false);
+  tamaSkinError = $state("");
+
+  // Enabled plugins that ship a Tama skin — the only entries the picker offers
+  // besides "Default (built-in)". Reads the SAME `plugins` list the Plugins tab
+  // already loads on every show(), so no extra fetch.
+  get skinnablePlugins(): Plugin[] {
+    return this.plugins.filter((p) => p.enabled !== false && hasTamaSkin(p));
+  }
 
   // ── git identity section (repo-scoped, explicit Save) ───────────────────
   // Unlike remotes.svelte.ts's own plain (non-$state) `repo` field — which
@@ -727,6 +800,8 @@ class SettingsState {
     this.snapshotRetentionCount = s.snapshotRetentionCount;
     this.snapshotRetentionDays = s.snapshotRetentionDays;
     this.tamaEnabled = s.tamaEnabled;
+    this.tamaSkinPluginId = s.tamaSkinPluginId;
+    this.tamaSkinError = "";
     this.repo = repo ?? "";
     this.identityError = "";
     this.configError = "";
@@ -837,6 +912,54 @@ class SettingsState {
     this.tamaEnabled = v;
     saveSettings({ tamaEnabled: v });
     bridge.setTamaEnabled(v); // applies the .tama-off class immediately — see legacy/main.ts
+  }
+
+  // The skin picker's onchange. `null`/"" -> Default (built-in): clear the
+  // overlay and forget the persisted choice. Otherwise load the plugin's skin
+  // and overlay Tama's poses via the bridge. The id is PERSISTED only AFTER a
+  // successful load, so a broken skin never becomes the boot-applied one; an
+  // interactive failure reverts the selection to Default and surfaces
+  // tamaSkinError (unlike the silent boot path). Design mode (!IN_TAURI) has no
+  // backend to load from — it persists + demos with a toast, no real overlay.
+  async setTamaSkin(id: string | null): Promise<void> {
+    const pluginId = id || null;
+    this.tamaSkinError = "";
+    if (!pluginId) {
+      this.tamaSkinPluginId = null;
+      saveSettings({ tamaSkinPluginId: null });
+      bridge.clearTamaSkin();
+      return;
+    }
+    // Reflect the choice in the control right away; only persist after the load
+    // resolves so a failed one doesn't linger as the stored value.
+    this.tamaSkinPluginId = pluginId;
+    if (!IN_TAURI) {
+      saveSettings({ tamaSkinPluginId: pluginId });
+      bridge.tama.say(`This is where the "${pluginId}" Tama skin would load (demo).`);
+      return;
+    }
+    this.tamaSkinBusy = true;
+    try {
+      const res = await commands.loadPluginSkin(pluginId);
+      if (res.status === "ok") {
+        bridge.applyTamaSkin(res.data.poses ?? {});
+        saveSettings({ tamaSkinPluginId: pluginId });
+        const line = pickSkinCopyLine(res.data.copy as Record<string, string>);
+        if (line) bridge.tama.say(line);
+      } else {
+        this.tamaSkinPluginId = null;
+        saveSettings({ tamaSkinPluginId: null });
+        bridge.clearTamaSkin();
+        this.tamaSkinError = String(res.error ?? "Could not load that Tama skin.");
+      }
+    } catch (e) {
+      this.tamaSkinPluginId = null;
+      saveSettings({ tamaSkinPluginId: null });
+      bridge.clearTamaSkin();
+      this.tamaSkinError = "Could not load that Tama skin — " + e;
+    } finally {
+      this.tamaSkinBusy = false;
+    }
   }
 
   async refreshIdentity(): Promise<void> {

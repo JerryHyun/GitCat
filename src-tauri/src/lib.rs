@@ -317,6 +317,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         plugin_registry::set_plugin_enabled,
         plugin_registry::install_plugin_from_path,
         plugin_registry::remove_plugin,
+        plugin_registry::load_plugin_skin, // PER-47: load a plugin's Tama skin (pose assets → data URIs)
         plugin_exec::run_plugin_command,
         plugin_exec::run_hooks, // PER-43: run enabled plugins' hooks for a lifecycle event
         // Repo-root file editors (backlog #14, final item): view/edit .gitignore

@@ -37,6 +37,8 @@ vi.mock("../../legacy/bridge", () => ({
   setGraphShowAllTags: vi.fn(),
   setGraphLabelPriority: vi.fn(),
   setTamaEnabled: vi.fn(),
+  applyTamaSkin: vi.fn(),
+  clearTamaSkin: vi.fn(),
   tama: { set: vi.fn(), say: vi.fn(), warn: vi.fn(), event: vi.fn() },
 }));
 
@@ -49,6 +51,7 @@ vi.mock("../../ipc/bindings", () => ({
     setPluginEnabled: vi.fn(),
     removePlugin: vi.fn(),
     installPluginFromPath: vi.fn(),
+    loadPluginSkin: vi.fn(),
   },
 }));
 
@@ -76,7 +79,15 @@ import { commands } from "../../ipc/bindings";
 import * as bridge from "../../legacy/bridge";
 import { pluginCommandsCtrl } from "../plugincommands/plugincommands.svelte.ts";
 import type { GitIdentity, Plugin } from "../../ipc/bindings";
-import { loadSettings, saveSettings, settingsCtrl, pruneSnapshotsPerPolicy } from "./settings.svelte.ts";
+import {
+  loadSettings,
+  saveSettings,
+  settingsCtrl,
+  pruneSnapshotsPerPolicy,
+  applyPersistedTamaSkin,
+  hasTamaSkin,
+  pickSkinCopyLine,
+} from "./settings.svelte.ts";
 
 function ok<T>(data: T): { status: "ok"; data: T } {
   return { status: "ok", data };
@@ -89,6 +100,16 @@ function identity(partial: Partial<GitIdentity> = {}): GitIdentity {
 }
 function plugin(partial: Partial<Plugin> = {}): Plugin {
   return { id: "demo", name: "Demo", version: "1.0.0", description: null, enabled: true, commands: [], hooks: [], ...partial };
+}
+// A plugin that declares a Tama skin. `tama`'s exact shape is the backend's
+// (see hasTamaSkin's own note) — cast through unknown so this stays correct
+// whatever the regenerated Plugin.tama type turns out to be; the picker only
+// reads it for truthiness.
+function skinnablePlugin(id: string, name = id): Plugin {
+  return { ...plugin({ id, name }), tama: {} } as unknown as Plugin;
+}
+function skin(poses: Record<string, string>, copy: Record<string, string> = {}): { poses: Record<string, string>; copy: Record<string, string> } {
+  return { poses, copy };
 }
 
 function resetCtrl() {
@@ -117,6 +138,9 @@ function resetCtrl() {
   settingsCtrl.pluginBusyId = null;
   settingsCtrl.pluginInstalling = false;
   settingsCtrl.removingPluginId = null;
+  settingsCtrl.tamaSkinPluginId = null;
+  settingsCtrl.tamaSkinBusy = false;
+  settingsCtrl.tamaSkinError = "";
   mockInTauri = true;
   vi.clearAllMocks();
   // Default: an empty registry, so the unconditional refreshPlugins() every
@@ -206,6 +230,7 @@ describe("loadSettings / saveSettings — localStorage persistence", () => {
       snapshotRetentionCount: 25,
       snapshotRetentionDays: 14,
       tamaEnabled: true,
+      tamaSkinPluginId: null,
     });
   });
 
@@ -229,6 +254,7 @@ describe("loadSettings / saveSettings — localStorage persistence", () => {
       snapshotRetentionCount: 25,
       snapshotRetentionDays: 14,
       tamaEnabled: true,
+      tamaSkinPluginId: null,
     });
   });
 
@@ -250,6 +276,7 @@ describe("loadSettings / saveSettings — localStorage persistence", () => {
       snapshotRetentionCount: 25,
       snapshotRetentionDays: 14,
       tamaEnabled: true,
+      tamaSkinPluginId: null,
     });
   });
 
@@ -280,6 +307,7 @@ describe("loadSettings / saveSettings — localStorage persistence", () => {
       snapshotRetentionCount: 25,
       snapshotRetentionDays: 14,
       tamaEnabled: true,
+      tamaSkinPluginId: null,
     });
   });
 
@@ -319,6 +347,7 @@ describe("show — seeds app-level fields and drives the identity section", () =
       autoFetchEnabled: true,
       autoFetchIntervalMinutes: 60,
       tamaEnabled: false,
+      tamaSkinPluginId: "acme-skin",
     });
 
     settingsCtrl.show(null);
@@ -333,6 +362,7 @@ describe("show — seeds app-level fields and drives the identity section", () =
     expect(settingsCtrl.autoFetchEnabled).toBe(true);
     expect(settingsCtrl.autoFetchIntervalMinutes).toBe(60);
     expect(settingsCtrl.tamaEnabled).toBe(false);
+    expect(settingsCtrl.tamaSkinPluginId).toBe("acme-skin");
   });
 
   it("with no repo open, clears identity and never calls getGitIdentity", () => {
@@ -859,5 +889,168 @@ describe("plugins — installPlugin", () => {
     expect(openMock).not.toHaveBeenCalled();
     expect(commands.installPluginFromPath).not.toHaveBeenCalled();
     expect(bridge.tama.say).toHaveBeenCalled();
+  });
+});
+
+describe("tama skin — hasTamaSkin / pickSkinCopyLine (pure helpers)", () => {
+  it("hasTamaSkin is true only when the plugin declares a (truthy) tama field", () => {
+    expect(hasTamaSkin(skinnablePlugin("a"))).toBe(true);
+    expect(hasTamaSkin(plugin({ id: "b" }))).toBe(false);
+  });
+
+  it("pickSkinCopyLine returns null when the skin ships no copy", () => {
+    expect(pickSkinCopyLine(null)).toBeNull();
+    expect(pickSkinCopyLine(undefined)).toBeNull();
+    expect(pickSkinCopyLine({})).toBeNull();
+  });
+
+  it("pickSkinCopyLine prefers applied > greeting > hero, else the first line", () => {
+    expect(pickSkinCopyLine({ applied: "A", greeting: "G", hero: "H" })).toBe("A");
+    expect(pickSkinCopyLine({ greeting: "G", hero: "H" })).toBe("G");
+    expect(pickSkinCopyLine({ hero: "H" })).toBe("H");
+    expect(pickSkinCopyLine({ other: "O", another: "N" })).toBe("O");
+  });
+
+  it("pickSkinCopyLine caps a long line at 160 chars", () => {
+    const long = "x".repeat(500);
+    expect(pickSkinCopyLine({ applied: long })).toHaveLength(160);
+  });
+});
+
+describe("tama skin — skinnablePlugins", () => {
+  it("lists only ENABLED plugins that declare a tama field", () => {
+    settingsCtrl.plugins = [
+      skinnablePlugin("skin-on", "Skin On"),
+      plugin({ id: "no-skin", name: "No Skin" }),
+      { ...skinnablePlugin("skin-off", "Skin Off"), enabled: false } as unknown as Plugin,
+    ];
+
+    expect(settingsCtrl.skinnablePlugins.map((p) => p.id)).toEqual(["skin-on"]);
+  });
+});
+
+describe("tama skin — setTamaSkin (interactive picker)", () => {
+  it("Default (null) clears the overlay, persists null, and never hits the backend", async () => {
+    saveSettings({ tamaSkinPluginId: "acme" });
+    settingsCtrl.tamaSkinPluginId = "acme";
+
+    await settingsCtrl.setTamaSkin(null);
+
+    expect(bridge.clearTamaSkin).toHaveBeenCalled();
+    expect(commands.loadPluginSkin).not.toHaveBeenCalled();
+    expect(settingsCtrl.tamaSkinPluginId).toBeNull();
+    expect(loadSettings().tamaSkinPluginId).toBeNull();
+  });
+
+  it("Default coerces an empty-string selection to null too", async () => {
+    await settingsCtrl.setTamaSkin("");
+
+    expect(bridge.clearTamaSkin).toHaveBeenCalled();
+    expect(settingsCtrl.tamaSkinPluginId).toBeNull();
+  });
+
+  it("loads the skin, overlays poses, persists the id, and says the skin's copy line", async () => {
+    vi.mocked(commands.loadPluginSkin).mockResolvedValueOnce(ok(skin({ hero: "data:hero" }, { applied: "New look, にゃ〜" })));
+
+    await settingsCtrl.setTamaSkin("acme");
+
+    expect(commands.loadPluginSkin).toHaveBeenCalledWith("acme");
+    expect(bridge.applyTamaSkin).toHaveBeenCalledWith({ hero: "data:hero" });
+    expect(settingsCtrl.tamaSkinPluginId).toBe("acme");
+    expect(loadSettings().tamaSkinPluginId).toBe("acme");
+    expect(bridge.tama.say).toHaveBeenCalledWith("New look, にゃ〜");
+    expect(settingsCtrl.tamaSkinError).toBe("");
+    expect(settingsCtrl.tamaSkinBusy).toBe(false);
+  });
+
+  it("applies a skin with no copy without saying anything", async () => {
+    vi.mocked(commands.loadPluginSkin).mockResolvedValueOnce(ok(skin({ hero: "data:hero" })));
+
+    await settingsCtrl.setTamaSkin("acme");
+
+    expect(bridge.applyTamaSkin).toHaveBeenCalledWith({ hero: "data:hero" });
+    expect(bridge.tama.say).not.toHaveBeenCalled();
+  });
+
+  it("a backend error reverts the selection to Default, clears the overlay, and surfaces tamaSkinError", async () => {
+    vi.mocked(commands.loadPluginSkin).mockResolvedValueOnce(err("no such skin"));
+
+    await settingsCtrl.setTamaSkin("acme");
+
+    expect(bridge.applyTamaSkin).not.toHaveBeenCalled();
+    expect(bridge.clearTamaSkin).toHaveBeenCalled();
+    expect(settingsCtrl.tamaSkinPluginId).toBeNull();
+    expect(loadSettings().tamaSkinPluginId).toBeNull(); // a broken skin never becomes the persisted (boot-applied) one
+    expect(settingsCtrl.tamaSkinError).toContain("no such skin");
+    expect(settingsCtrl.tamaSkinBusy).toBe(false);
+  });
+
+  it("a rejected round trip is caught, reverts to Default, and never leaves an unhandled rejection", async () => {
+    vi.mocked(commands.loadPluginSkin).mockRejectedValueOnce(new Error("invoke failed"));
+
+    await settingsCtrl.setTamaSkin("acme");
+
+    expect(bridge.clearTamaSkin).toHaveBeenCalled();
+    expect(settingsCtrl.tamaSkinPluginId).toBeNull();
+    expect(settingsCtrl.tamaSkinError).toContain("invoke failed");
+    expect(settingsCtrl.tamaSkinBusy).toBe(false);
+  });
+
+  it("design mode (!IN_TAURI): persists + demos with a toast, no backend and no overlay", async () => {
+    mockInTauri = false;
+
+    await settingsCtrl.setTamaSkin("acme");
+
+    expect(commands.loadPluginSkin).not.toHaveBeenCalled();
+    expect(bridge.applyTamaSkin).not.toHaveBeenCalled();
+    expect(settingsCtrl.tamaSkinPluginId).toBe("acme");
+    expect(loadSettings().tamaSkinPluginId).toBe("acme");
+    expect(bridge.tama.say).toHaveBeenCalled();
+  });
+});
+
+describe("tama skin — applyPersistedTamaSkin (boot)", () => {
+  it("no-ops with no persisted skin", async () => {
+    await applyPersistedTamaSkin();
+
+    expect(commands.loadPluginSkin).not.toHaveBeenCalled();
+    expect(bridge.applyTamaSkin).not.toHaveBeenCalled();
+  });
+
+  it("re-applies a persisted skin's poses on success", async () => {
+    saveSettings({ tamaSkinPluginId: "acme" });
+    vi.mocked(commands.loadPluginSkin).mockResolvedValueOnce(ok(skin({ hero: "data:hero", sleep: "data:sleep" })));
+
+    await applyPersistedTamaSkin();
+
+    expect(commands.loadPluginSkin).toHaveBeenCalledWith("acme");
+    expect(bridge.applyTamaSkin).toHaveBeenCalledWith({ hero: "data:hero", sleep: "data:sleep" });
+  });
+
+  it("falls back to the built-ins SILENTLY when the persisted skin fails to load (plugin removed/disabled)", async () => {
+    saveSettings({ tamaSkinPluginId: "gone" });
+    vi.mocked(commands.loadPluginSkin).mockResolvedValueOnce(err("unknown plugin"));
+
+    await applyPersistedTamaSkin();
+
+    expect(bridge.applyTamaSkin).not.toHaveBeenCalled();
+    expect(bridge.clearTamaSkin).toHaveBeenCalled();
+  });
+
+  it("never rejects even when the backend round trip throws", async () => {
+    saveSettings({ tamaSkinPluginId: "acme" });
+    vi.mocked(commands.loadPluginSkin).mockRejectedValueOnce(new Error("boom"));
+
+    await expect(applyPersistedTamaSkin()).resolves.toBeUndefined();
+    expect(bridge.clearTamaSkin).toHaveBeenCalled();
+  });
+
+  it("design mode (!IN_TAURI): never touches the backend, even with a persisted id", async () => {
+    mockInTauri = false;
+    saveSettings({ tamaSkinPluginId: "acme" });
+
+    await applyPersistedTamaSkin();
+
+    expect(commands.loadPluginSkin).not.toHaveBeenCalled();
   });
 });

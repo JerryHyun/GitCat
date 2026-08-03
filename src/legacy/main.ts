@@ -4,7 +4,7 @@ import { bisectCtrl } from "../islands/bisect/bisect.svelte.ts";
 import { cmdkCtrl } from "../islands/cmdk/cmdk.svelte.ts";
 import { detailCtrl } from "../islands/detail/detail.svelte.ts";
 import { bisectDrawerCtrl } from "../islands/bisectdrawer/bisectdrawer.svelte.ts";
-import { loadSettings, saveSettings, pruneSnapshotsPerPolicy } from "../islands/settings/settings.svelte.ts";
+import { loadSettings, saveSettings, pruneSnapshotsPerPolicy, applyPersistedTamaSkin } from "../islands/settings/settings.svelte.ts";
 import { sidebarCtrl } from "../islands/sidebar/sidebar.svelte.ts";
 import { workdirCtrl } from "../islands/workdir/workdir.svelte.ts";
 import { commitMenuCtrl } from "../islands/commitmenu/commitmenu.svelte.ts";
@@ -1229,6 +1229,35 @@ const Safety={ count:214, lastAt:performance.now()-2*60*1000, snaps:[], pad(n){r
 // and must stay observe-only (never re-enter Tama.event() from a subscriber).
 export const tamaBus = (() => { const subs = []; return { subscribe(fn){ subs.push(fn); return () => { const i = subs.indexOf(fn); if (i >= 0) subs.splice(i, 1); }; }, emit(name, payload){ for (const fn of subs.slice()) { try { fn(name, payload); } catch (e) { console.error("tamaBus subscriber failed", e); } } } }; })();
 
+// ── Tama skin overlay (PER-47) ──────────────────────────────────────────────
+// A plugin-provided skin (commands.loadPluginSkin, applied via the Settings
+// skin picker) can override SOME or ALL of the 8 built-in poses. `activeTamaSkin`
+// is a plain poseKey->dataUri map, EMPTY by default; every read of a pose image
+// goes through tamaPose(), so a skin overlays the built-ins while TAMA_IMG stays
+// the always-present fallback for any pose the skin doesn't provide. Additive:
+// TamaMascot / POSE / TAMA_IMG itself are untouched. Declared BEFORE
+// `const Tama = new TamaMascot(...)` below so the constructor's own set("idle")
+// already resolves through it (activeTamaSkin={} is initialised at eval time,
+// well before that construction).
+let activeTamaSkin = {};
+// Hoisted `function` (TDZ-safe, same as select/openRepo) so bridge.ts can
+// `export { tamaPose } from "./main"` and the Tama Gallery renders the ACTIVE
+// skin's poses too (see tamagallery.svelte.ts's poseImg). `activeSkin[key] ??
+// built-in` — a skin key present but nullish still falls back to the painted art.
+export function tamaPose(key){ return activeTamaSkin[key] ?? TAMA_IMG[key]; }
+// Overlay / clear the active skin. Mid-file `export const` (same live-binding
+// shape as tamaBus/CUR_REPO), so bridge.ts re-exports them cleanly. Each also
+// repaints the mascot's CURRENT pose immediately (through the accessor) so a
+// live skin swap from Settings is visible without waiting for the next FSM
+// state change — pure DOM, TamaMascot itself is never touched.
+export const applyTamaSkin = (poses) => { activeTamaSkin = (poses && typeof poses === "object") ? { ...poses } : {}; repaintTamaSkin(); };
+export const clearTamaSkin = () => { activeTamaSkin = {}; repaintTamaSkin(); };
+function repaintTamaSkin(){
+  const spr=$("#sprite"); if(spr && spr.dataset.pose) spr.src=tamaPose(spr.dataset.pose);
+  const d=$("#dangerTamaImg"); if(d) d.src=tamaPose("alarm");
+  const c=$("#tamaCheerImg"); if(c) c.src=tamaPose("happy");
+}
+
 class TamaMascot{
   static STATES={idle:{sticky:false},sleep:{sticky:false},hint:{sticky:false,dwell:3200},thinking:{sticky:true},warn:{sticky:true},danger:{sticky:true},celebrate:{sticky:false,dwell:3600},rescue:{sticky:true},
     // confused: a real operation FAILURE (see warn() below — distinct from
@@ -1263,11 +1292,11 @@ class TamaMascot{
     const pose=TamaMascot.POSE[s]||"curious";
     if(this.sprite.dataset.pose!==pose){
       this.sprite.dataset.pose=pose;
-      if(this.reduced){ this.sprite.src=TAMA_IMG[pose]; }
+      if(this.reduced){ this.sprite.src=tamaPose(pose); }
       else{
         this.sprite.classList.remove("swap-in"); this.sprite.classList.add("swap");
         setTimeout(()=>{
-          this.sprite.src=TAMA_IMG[pose];
+          this.sprite.src=tamaPose(pose);
           this.sprite.classList.remove("swap");
           void this.sprite.offsetWidth;
           this.sprite.classList.add("swap-in");
@@ -1729,12 +1758,12 @@ $("#themeBtn").addEventListener("click",()=>{
 });
 // painted-Tama celebration popover
 let cheerT=null;
-function cheer(msg,img: string|null=null){ $("#tamaCheerTxt").innerHTML=msg; $("#tamaCheerImg").src=img||TAMA_IMG.happy; const c=$("#tamaCheer"); c.classList.add("show");
+function cheer(msg,img: string|null=null){ $("#tamaCheerTxt").innerHTML=msg; $("#tamaCheerImg").src=img||tamaPose("happy"); const c=$("#tamaCheer"); c.classList.add("show");
   clearTimeout(cheerT); cheerT=setTimeout(()=>c.classList.remove("show"),3600); }
 // global undo (undo-is-itself-undoable)
 async function globalUndo(){
   if(!IN_TAURI){ Tama.event("undo.performed",{hash:hhex(1)}); pulseTick(0);
-    cheer('Rewound — <b>nothing lost</b>. <span class="jp">やったー♪</span>',TAMA_IMG.confident); return; }
+    cheer('Rewound — <b>nothing lost</b>. <span class="jp">やったー♪</span>',tamaPose("confident")); return; }
   if(!CUR_REPO){ Tama.warn("Open a repository first — there's nothing to undo yet."); return; }
   // Bug-B fix: right after a successful stash apply/pop, the working tree is
   // dirty in a way the generic undo_last can never rewind — nothing at the
@@ -1777,7 +1806,7 @@ async function globalUndo(){
       else await reloadGraph(true);
       const to=(res.restoredTo||"").slice(0,7);
       Tama.event("undo.performed",{hash:to||hhex(1)}); pulseTick(0);
-      cheer('Rewound — <b>nothing lost</b>. <span class="jp">やったー♪</span>',TAMA_IMG.confident);
+      cheer('Rewound — <b>nothing lost</b>. <span class="jp">やったー♪</span>',tamaPose("confident"));
     } else if(!useStashUndo && /uncommitted changes/i.test((res&&res.message)||"")){
       // Undo refused because the working tree is dirty (its reset --hard would
       // DISCARD those changes — see safety.rs's undo()). Offer to keep them:
@@ -1797,7 +1826,7 @@ async function globalUndo(){
           await workdirCtrl.refreshStatus(CUR_REPO); await workdirCtrl.refreshStashes(CUR_REPO);
           const to=(r2.restoredTo||"").slice(0,7);
           Tama.event("undo.performed",{hash:to||hhex(1)}); pulseTick(0);
-          cheer('Rewound — <b>kept your changes</b>. <span class="jp">やったー♪</span>',TAMA_IMG.confident);
+          cheer('Rewound — <b>kept your changes</b>. <span class="jp">やったー♪</span>',tamaPose("confident"));
           if(r2.message) Tama.say(r2.message,4600);
         } else { Tama.warn((r2&&r2.message)||"Undo (with stash) failed."); }
       } else { Tama.say("Undo cancelled — your uncommitted changes are untouched.",3200); }
@@ -1848,7 +1877,7 @@ async function doFetch(){
   finally{ syncBusy=false; clearSyncButtonsBusy(); }
 }
 async function doPull(){
-  if(!IN_TAURI){ Tama.set("celebrate"); Tama.say("Pulled (demo). にゃ〜",3200); cheer('Pulled (demo). <span class="jp">にゃ〜</span>',TAMA_IMG.happy); return; }
+  if(!IN_TAURI){ Tama.set("celebrate"); Tama.say("Pulled (demo). にゃ〜",3200); cheer('Pulled (demo). <span class="jp">にゃ〜</span>',tamaPose("happy")); return; }
   if(!CUR_REPO){ Tama.warn("Open a repository first."); return; }
   if(syncBusy) return; syncBusy=true;
   setSyncButtonsBusy("pullBtn","Pulling…");
@@ -1857,13 +1886,13 @@ async function doPull(){
   try{
     const res=await tinvoke("pull_stream",{path:CUR_REPO});
     syncProgressCtrl.settle(!!(res&&res.ok),(res&&res.message)||"");
-    if(res&&res.ok){ await reloadGraph(true); Tama.set("celebrate"); Tama.say(res.message||"Pulled.",3200); cheer(res.message||"Pulled.",TAMA_IMG.happy); }
+    if(res&&res.ok){ await reloadGraph(true); Tama.set("celebrate"); Tama.say(res.message||"Pulled.",3200); cheer(res.message||"Pulled.",tamaPose("happy")); }
     else Tama.warn((res&&res.message)||"Pull failed.");
   }catch(e){ syncProgressCtrl.settle(false,String(e)); Tama.warn("Pull failed — "+e); console.error(e); }
   finally{ syncBusy=false; clearSyncButtonsBusy(); }
 }
 async function doPush(){
-  if(!IN_TAURI){ Tama.set("celebrate"); Tama.say("Pushed (demo). にゃ〜",3200); cheer('Pushed (demo). <span class="jp">にゃ〜</span>',TAMA_IMG.happy); return; }
+  if(!IN_TAURI){ Tama.set("celebrate"); Tama.say("Pushed (demo). にゃ〜",3200); cheer('Pushed (demo). <span class="jp">にゃ〜</span>',tamaPose("happy")); return; }
   if(!CUR_REPO){ Tama.warn("Open a repository first."); return; }
   if(syncBusy) return; syncBusy=true;
   setSyncButtonsBusy("pushBtn","Pushing…");
@@ -1875,7 +1904,7 @@ async function doPush(){
     // moves the remote-tracking ref but not local HEAD, so nothing else picks
     // it up. reloadGraph's tail refreshes the sidebar too (and the incremental
     // path keeps this cheap — no commits changed).
-    if(res&&res.ok){ await reloadGraph(true); Tama.set("celebrate"); Tama.say(res.message||"Pushed.",3200); cheer(res.message||"Pushed.",TAMA_IMG.happy); }
+    if(res&&res.ok){ await reloadGraph(true); Tama.set("celebrate"); Tama.say(res.message||"Pushed.",3200); cheer(res.message||"Pushed.",tamaPose("happy")); }
     else Tama.warn((res&&res.message)||"Push failed.");
   }catch(e){ Tama.warn("Push failed — "+e); console.error(e); }
   finally{ syncBusy=false; clearSyncButtonsBusy(); }
@@ -2943,7 +2972,13 @@ applyThemeMode(loadSettings().themeMode);
 setGraphShowAllTags(loadSettings().showAllCommitTags);
 setGraphLabelPriority(loadSettings().graphLabelPriority);
 setTamaEnabled(loadSettings().tamaEnabled);
-$("#dangerTamaImg").src=TAMA_IMG.alarm; $("#tamaCheerImg").src=TAMA_IMG.happy;
+// PER-47: re-apply a persisted Tama skin at boot. Fire-and-forget + self-gates
+// on IN_TAURI internally; if the skin's plugin was removed/disabled or its load
+// fails, it stays silently on the built-in poses (a decorative skin is never
+// worth a startup toast). Async, so the two static images below paint the
+// built-ins first and repaintTamaSkin() swaps them once the skin resolves.
+void applyPersistedTamaSkin();
+$("#dangerTamaImg").src=tamaPose("alarm"); $("#tamaCheerImg").src=tamaPose("happy");
 // Window resize re-renders live (standard); the panel-divider drag is what
 // avoids a live reflow — it moves only a guide line and commits the width once
 // on release (see wireResizeHandle), so this observer fires just once per

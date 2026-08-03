@@ -32,6 +32,7 @@
 //! do. The `#[tauri::command]`s are thin `AppHandle`-taking wrappers.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager, Wry};
 
@@ -44,6 +45,19 @@ const SCHEMA_VERSION: u32 = 1;
 /// up front rather than reading arbitrarily large bytes into memory and
 /// handing them to the JSON parser.
 const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
+
+/// The eight built-in Tama pose keys — an EXACT mirror of the frontend's
+/// `TAMA_IMG` map (`src/legacy/main.ts`). A plugin skin may only OVERRIDE one
+/// of these poses; any other key is rejected at [`validate_manifest`] time
+/// (see [`PluginTama`]). Kept in sync by hand with the frontend map.
+const VALID_TAMA_POSE_KEYS: [&str; 8] =
+    ["hero", "curious", "confident", "thinking", "happy", "alarm", "shocked", "sleep"];
+
+/// Hard cap on a single Tama pose asset's size, enforced by [`load_plugin_skin`]
+/// before any bytes are read. A pose sprite is a small optimized WebP/PNG;
+/// anything past half a megabyte is not a legitimate pose image, so skip it
+/// rather than base64-inline a huge blob into a `data:` URI.
+const MAX_TAMA_ASSET_BYTES: u64 = 512 * 1024;
 
 // ---------------------------------------------------------------------------
 // Manifest types
@@ -142,6 +156,25 @@ pub struct PluginHook {
     pub mutates: bool,
 }
 
+/// A plugin-contributed Tama SKIN (PER-47): pose sprites that override the
+/// built-in cat art, plus optional copy/voice lines. `poses` maps a built-in
+/// pose KEY (one of [`VALID_TAMA_POSE_KEYS`]) to a RELATIVE asset path within
+/// the plugin's own directory (e.g. `"curious" -> "assets/curious.webp"`).
+/// Both the key set and the relative-path safety are enforced up front in
+/// [`validate_manifest`]; the actual bytes are loaded — with a second,
+/// canonicalizing containment guard — by [`load_plugin_skin`].
+#[derive(Serialize, Deserialize, Clone, Debug, Default, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginTama {
+    /// Pose key -> relative asset path within the plugin dir. Every key must be
+    /// one of [`VALID_TAMA_POSE_KEYS`]; every value must be a relative path with
+    /// no `..` and not absolute (validated at install time).
+    pub poses: HashMap<String, String>,
+    /// Optional voice/copy lines the skin contributes, passed through verbatim.
+    #[serde(default)]
+    pub copy: HashMap<String, String>,
+}
+
 /// A plugin manifest (`plugin.json`).
 #[derive(Serialize, Deserialize, Clone, Debug, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -161,6 +194,20 @@ pub struct Plugin {
     pub commands: Vec<PluginCommand>,
     #[serde(default)]
     pub hooks: Vec<PluginHook>,
+    /// Optional Tama SKIN (PER-47) — pose sprites + copy this plugin
+    /// contributes. `#[serde(default)]` + `Option` so every pre-skin manifest
+    /// still loads (absent => no skin). See [`PluginTama`].
+    #[serde(default)]
+    pub tama: Option<PluginTama>,
+    /// The plugin's on-disk SOURCE directory (the canonicalized PARENT of its
+    /// `plugin.json`), captured at install time so a later skin load knows
+    /// where to resolve relative asset paths. `#[serde(default)]` + `Option`:
+    /// pre-PER-47 registries have none, and a plugin whose source dir could not
+    /// be resolved at install (e.g. a non-canonicalizable path) simply has its
+    /// Tama assets UNAVAILABLE — the skin loads with an empty `poses` rather
+    /// than erroring. Persisted verbatim in `plugins.json`.
+    #[serde(default)]
+    pub dir: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -287,6 +334,24 @@ pub fn validate_manifest(plugin: &Plugin) -> Result<(), String> {
             return Err(format!("Plugin command {:?} has an empty run command.", cmd.id));
         }
     }
+    // Tama skin (PER-47): every pose key must be a built-in pose, and every
+    // asset path must be a SAFE relative path. This is the up-front, string-
+    // level gate; [`load_plugin_skin`] additionally canonicalizes + containment-
+    // checks each asset (catching symlink escape) before reading any bytes.
+    if let Some(tama) = &plugin.tama {
+        for (key, rel) in &tama.poses {
+            if !VALID_TAMA_POSE_KEYS.contains(&key.as_str()) {
+                return Err(format!(
+                    "Plugin tama pose key {key:?} is not a built-in pose — it must be one of {VALID_TAMA_POSE_KEYS:?}.",
+                ));
+            }
+            if Path::new(rel).is_absolute() || rel.contains("..") {
+                return Err(format!(
+                    "Plugin tama pose {key:?} has an unsafe asset path {rel:?} — it must be a relative path inside the plugin dir (no leading '/' and no '..').",
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -323,9 +388,21 @@ pub fn read_and_validate_manifest(source: &Path) -> Result<Plugin, String> {
     if text.len() as u64 > MAX_MANIFEST_BYTES {
         return Err(format!("Plugin manifest {} is too large (limit {MAX_MANIFEST_BYTES} bytes).", manifest.display()));
     }
-    let plugin: Plugin =
+    let mut plugin: Plugin =
         serde_json::from_str(&text).map_err(|e| format!("{} is not a valid plugin manifest: {e}", manifest.display()))?;
     validate_manifest(&plugin)?;
+    // Capture the plugin's SOURCE directory (PER-47): the CANONICALIZED parent
+    // of its manifest file, so a later skin load resolves relative asset paths
+    // against a stable, symlink-free root. This ALWAYS overwrites any `dir` the
+    // manifest JSON itself carried — `dir` is GitCat-authoritative and must
+    // NEVER be attacker-controlled (a manifest declaring `"dir":"/etc"` must not
+    // steer skin loads at some arbitrary directory). Best-effort: if the parent
+    // can't be canonicalized `dir` becomes None (the manifest is otherwise valid
+    // and installs fine; its Tama assets are simply unavailable).
+    plugin.dir = std::fs::canonicalize(&manifest)
+        .ok()
+        .and_then(|canon| canon.parent().map(|d| d.to_path_buf()))
+        .map(|d| d.to_string_lossy().into_owned());
     Ok(plugin)
 }
 
@@ -392,6 +469,128 @@ pub fn find_command(app: &AppHandle<Wry>, plugin_id: &str, command_id: &str) -> 
 }
 
 // ---------------------------------------------------------------------------
+// Tama skin loading (PER-47)
+// ---------------------------------------------------------------------------
+
+/// A loaded Tama SKIN, ready for the frontend: `poses` maps each built-in pose
+/// key to a `data:` URI (`data:image/webp;base64,...` or `image/png`) usable
+/// directly as an `<img>` src, and `copy` carries the skin's optional
+/// voice/copy lines. Only poses whose asset passed every safety check appear —
+/// a missing/oversize/wrong-extension/escaping asset is silently omitted, so a
+/// partial skin still loads.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TamaSkin {
+    pub poses: HashMap<String, String>,
+    pub copy: HashMap<String, String>,
+}
+
+/// Map an allow-listed asset extension to its `data:` URI MIME type. Returns
+/// `None` for anything but `.webp`/`.png` (case-insensitive), which is how the
+/// loader ENFORCES the extension allow-list — an unlisted extension yields no
+/// MIME and the asset is skipped.
+fn tama_asset_mime(path: &Path) -> Option<&'static str> {
+    match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+        Some("webp") => Some("image/webp"),
+        Some("png") => Some("image/png"),
+        _ => None,
+    }
+}
+
+/// SECURITY-CRITICAL containment guard. Given a CANONICALIZED plugin `dir` and a
+/// CANONICALIZED resolved `asset`, is the asset genuinely inside the dir? Both
+/// paths MUST already be canonicalized by the caller — that is what makes this
+/// single `starts_with` block BOTH `..` traversal AND symlink escape: a symlink
+/// under the plugin dir that points at `/etc/passwd` canonicalizes to
+/// `/etc/passwd`, which does not start with the canonical plugin dir, so it's
+/// rejected. `Path::starts_with` is component-wise, so `/plugins/foo` is NOT a
+/// prefix of a sibling `/plugins/foobar`. Pure + directly unit-tested.
+fn asset_is_within_dir(canonical_dir: &Path, canonical_asset: &Path) -> bool {
+    canonical_asset.starts_with(canonical_dir)
+}
+
+/// Build a [`TamaSkin`] from `plugin`'s declared Tama assets. PURE (no
+/// `AppHandle`) so it's driven directly by the unit tests. Does file IO —
+/// callers run it on the blocking pool (see [`load_plugin_skin`]).
+///
+/// `copy` passes straight through from the manifest. For each declared pose,
+/// the asset is admitted ONLY if it clears every gate: an allow-listed
+/// extension (`.webp`/`.png`); a relative, non-`..` declared path; its resolved
+/// path canonicalizes and, per [`asset_is_within_dir`], stays inside the
+/// canonical plugin dir (blocking traversal AND symlink escape); it is a
+/// regular file within [`MAX_TAMA_ASSET_BYTES`]. Any asset failing a gate is
+/// SKIPPED (logged), never fatal — nothing outside the plugin dir is ever read.
+/// A plugin with no [`Plugin::tama`] or no resolvable [`Plugin::dir`] yields an
+/// empty (or copy-only) skin.
+pub fn build_skin(plugin: &Plugin) -> TamaSkin {
+    let mut skin = TamaSkin::default();
+    let Some(tama) = plugin.tama.as_ref() else {
+        return skin; // no skin declared
+    };
+    skin.copy = tama.copy.clone();
+
+    let Some(dir) = plugin.dir.as_deref() else {
+        eprintln!("plugin {:?}: Tama assets unavailable — no resolvable source dir", plugin.id);
+        return skin; // copy-only; assets unavailable (documented)
+    };
+    let canonical_dir = match std::fs::canonicalize(dir) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("plugin {:?}: cannot canonicalize source dir {dir:?}: {e}", plugin.id);
+            return skin;
+        }
+    };
+
+    for (key, rel) in &tama.poses {
+        // Defense in depth: validate_manifest already enforced these, but the
+        // loader NEVER trusts that — re-check the key and the string-level path
+        // safety before touching the filesystem.
+        if !VALID_TAMA_POSE_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        let rel_path = Path::new(rel);
+        if rel_path.is_absolute() || rel.contains("..") {
+            continue;
+        }
+        let Some(mime) = tama_asset_mime(rel_path) else {
+            continue; // extension not in the allow-list
+        };
+
+        let resolved = canonical_dir.join(rel_path);
+        let canonical_asset = match std::fs::canonicalize(&resolved) {
+            Ok(a) => a,
+            Err(_) => continue, // missing / unreadable
+        };
+        // SECURITY-CRITICAL: reject anything that canonicalizes OUTSIDE the dir.
+        if !asset_is_within_dir(&canonical_dir, &canonical_asset) {
+            eprintln!("plugin {:?}: skipping pose {key:?} — asset escapes the plugin dir", plugin.id);
+            continue;
+        }
+
+        let meta = match std::fs::metadata(&canonical_asset) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !meta.is_file() || meta.len() > MAX_TAMA_ASSET_BYTES {
+            continue; // not a regular file, or over the per-asset cap
+        }
+        let bytes = match std::fs::read(&canonical_asset) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        // Belt-and-suspenders against a TOCTOU grow between metadata and read.
+        if bytes.len() as u64 > MAX_TAMA_ASSET_BYTES {
+            continue;
+        }
+
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        skin.poses.insert(key.clone(), format!("data:{mime};base64,{b64}"));
+    }
+    skin
+}
+
+// ---------------------------------------------------------------------------
 // Tauri commands (sync, like repo_registry.rs's)
 // ---------------------------------------------------------------------------
 
@@ -436,6 +635,29 @@ pub fn remove_plugin(app: AppHandle<Wry>, id: String) -> Result<(), String> {
     save_to(&store, &plugins)
 }
 
+/// Load an ENABLED plugin's Tama skin (PER-47). Resolves the plugin by id,
+/// requires it to be enabled, then [`build_skin`]s its declared pose assets
+/// into `data:`-URI sprites — reading ONLY files strictly inside the plugin's
+/// own canonicalized source dir (see [`build_skin`]/[`asset_is_within_dir`] for
+/// the traversal + symlink-escape guard). File IO, so the whole load runs on
+/// the blocking pool. JS: `commands.loadPluginSkin(pluginId)`.
+#[tauri::command]
+#[specta::specta]
+pub async fn load_plugin_skin(app: AppHandle<Wry>, plugin_id: String) -> Result<TamaSkin, String> {
+    let store = plugins_path(&app)?;
+    crate::blocking::run_blocking(move || {
+        let plugin = load_from(&store)?
+            .into_iter()
+            .find(|p| p.id == plugin_id)
+            .ok_or_else(|| format!("No plugin with id {plugin_id:?} is installed."))?;
+        if !plugin.enabled {
+            return Err(format!("Plugin {plugin_id:?} is disabled."));
+        }
+        Ok(build_skin(&plugin))
+    })
+    .await
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -468,6 +690,8 @@ mod tests {
                 mutates: false,
             }],
             hooks: vec![PluginHook { event: PluginEvent::PostMutation, run: "echo done".into(), mutates: false }],
+            tama: None,
+            dir: None,
         }
     }
 
@@ -772,6 +996,250 @@ mod tests {
             .and_then(|p| p.commands.iter().find(|c| c.id == "nope"));
         assert!(missing.is_none());
     }
+
+    // -- Tama skin (PER-47) --------------------------------------------------
+
+    #[test]
+    fn manifest_with_a_valid_tama_parses_validates_and_round_trips() {
+        // A manifest declaring a Tama skin (poses + copy) must deserialize, pass
+        // validation, and round-trip through save/load with its skin intact.
+        let dir = temp_dir("tama-valid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE_NAME);
+        std::fs::write(
+            &path,
+            r#"{"version":1,"plugins":[{"id":"skin","name":"Skin","version":"1.0.0",
+                "tama":{"poses":{"curious":"assets/curious.webp","happy":"assets/happy.png"},
+                        "copy":{"curious":"hmm?"}}}]}"#,
+        )
+        .unwrap();
+
+        let loaded = load_from(&path).expect("a manifest with a tama skin must deserialize");
+        assert_eq!(loaded.len(), 1);
+        let tama = loaded[0].tama.as_ref().expect("tama must be present");
+        assert_eq!(tama.poses.get("curious").map(String::as_str), Some("assets/curious.webp"));
+        assert_eq!(tama.poses.get("happy").map(String::as_str), Some("assets/happy.png"));
+        assert_eq!(tama.copy.get("curious").map(String::as_str), Some("hmm?"));
+        validate_manifest(&loaded[0]).expect("a valid tama must pass validation");
+
+        // Round-trip: save then reload preserves the skin.
+        save_to(&path, &loaded).unwrap();
+        let again = load_from(&path).expect("round-trip load");
+        assert_eq!(again[0].tama.as_ref().unwrap().poses.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_tama_manifest_omitting_copy_defaults_it_empty() {
+        let dir = temp_dir("tama-nocopy");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE_NAME);
+        std::fs::write(
+            &path,
+            r#"{"version":1,"plugins":[{"id":"skin","name":"Skin","version":"1.0.0",
+                "tama":{"poses":{"hero":"hero.webp"}}}]}"#,
+        )
+        .unwrap();
+        let loaded = load_from(&path).expect("tama without copy must still load");
+        assert!(loaded[0].tama.as_ref().unwrap().copy.is_empty(), "omitted copy defaults empty");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tama_with_an_unknown_pose_key_is_rejected() {
+        let mut p = sample_plugin("skin");
+        let mut poses = HashMap::new();
+        poses.insert("wiggle".to_string(), "assets/wiggle.webp".to_string());
+        p.tama = Some(PluginTama { poses, copy: HashMap::new() });
+        let err = validate_manifest(&p).unwrap_err();
+        assert!(err.contains("wiggle") && err.contains("built-in pose"), "got: {err}");
+    }
+
+    #[test]
+    fn every_built_in_pose_key_is_accepted() {
+        // All eight documented keys must validate (guards against a typo in the
+        // VALID_TAMA_POSE_KEYS list drifting from the contract).
+        for key in VALID_TAMA_POSE_KEYS {
+            let mut p = sample_plugin("skin");
+            let mut poses = HashMap::new();
+            poses.insert(key.to_string(), format!("assets/{key}.webp"));
+            p.tama = Some(PluginTama { poses, copy: HashMap::new() });
+            validate_manifest(&p).unwrap_or_else(|e| panic!("pose key {key:?} should be valid: {e}"));
+        }
+    }
+
+    #[test]
+    fn tama_pose_path_with_dotdot_or_absolute_is_rejected_at_validation() {
+        // Parent-escaping: contains "..".
+        let mut p = sample_plugin("skin");
+        let mut poses = HashMap::new();
+        poses.insert("curious".to_string(), "../../etc/passwd".to_string());
+        p.tama = Some(PluginTama { poses, copy: HashMap::new() });
+        let err = validate_manifest(&p).unwrap_err();
+        assert!(err.contains("unsafe asset path"), "dotdot path should be rejected, got: {err}");
+
+        // Absolute path.
+        let mut p = sample_plugin("skin");
+        let mut poses = HashMap::new();
+        #[cfg(unix)]
+        poses.insert("curious".to_string(), "/etc/passwd".to_string());
+        #[cfg(windows)]
+        poses.insert("curious".to_string(), r"C:\Windows\system32\x.webp".to_string());
+        p.tama = Some(PluginTama { poses, copy: HashMap::new() });
+        let err = validate_manifest(&p).unwrap_err();
+        assert!(err.contains("unsafe asset path"), "absolute path should be rejected, got: {err}");
+    }
+
+    #[test]
+    fn asset_containment_guard_accepts_inside_and_rejects_outside() {
+        // The pure, SECURITY-CRITICAL path-containment check the loader relies
+        // on (both args are treated as already-canonicalized).
+        let base = temp_dir("containment");
+        let plugin_dir = base.join("plugin");
+        std::fs::create_dir_all(plugin_dir.join("assets")).unwrap();
+        let canon_dir = std::fs::canonicalize(&plugin_dir).unwrap();
+
+        // Genuinely inside.
+        let inside = canon_dir.join("assets").join("curious.webp");
+        assert!(asset_is_within_dir(&canon_dir, &inside), "an asset under the dir is contained");
+
+        // A sibling directory sharing a prefix must NOT be treated as inside
+        // (component-wise starts_with, not raw string prefix).
+        let sibling = base.join("plugin-evil").join("x.webp");
+        assert!(
+            !asset_is_within_dir(&canon_dir, &sibling),
+            "a prefix-sharing sibling dir must not be considered inside"
+        );
+
+        // A wholly unrelated absolute path (what a symlink to /etc/passwd would
+        // canonicalize to) is outside.
+        let outside = Path::new("/etc/passwd");
+        assert!(!asset_is_within_dir(&canon_dir, outside), "an unrelated path is outside");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn build_skin_enforces_extension_and_size_and_encodes_a_data_uri() {
+        let base = temp_dir("build-skin");
+        let plugin_dir = base.join("plugin");
+        let assets = plugin_dir.join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+
+        // A small valid-extension webp and a png (contents need not be real
+        // images — build_skin just reads bytes and base64-encodes them).
+        std::fs::write(assets.join("curious.webp"), b"RIFF-fake-webp-bytes").unwrap();
+        std::fs::write(assets.join("happy.png"), b"\x89PNG-fake-png-bytes").unwrap();
+        // A disallowed extension (.gif) — must be skipped.
+        std::fs::write(assets.join("hero.gif"), b"GIF89a").unwrap();
+        // An oversize webp (> MAX_TAMA_ASSET_BYTES) — must be skipped.
+        std::fs::write(assets.join("thinking.webp"), vec![0u8; (MAX_TAMA_ASSET_BYTES as usize) + 1]).unwrap();
+        // A declared pose whose file does not exist — must be skipped.
+
+        let mut plugin = sample_plugin("skin");
+        plugin.dir = Some(std::fs::canonicalize(&plugin_dir).unwrap().to_string_lossy().into_owned());
+        let mut poses = HashMap::new();
+        poses.insert("curious".to_string(), "assets/curious.webp".to_string());
+        poses.insert("happy".to_string(), "assets/happy.png".to_string());
+        poses.insert("hero".to_string(), "assets/hero.gif".to_string()); // bad ext
+        poses.insert("thinking".to_string(), "assets/thinking.webp".to_string()); // oversize
+        poses.insert("sleep".to_string(), "assets/missing.webp".to_string()); // missing
+        let mut copy = HashMap::new();
+        copy.insert("curious".to_string(), "hmm?".to_string());
+        plugin.tama = Some(PluginTama { poses, copy });
+
+        let skin = build_skin(&plugin);
+
+        // Only the two valid, in-size, allow-listed assets survive.
+        assert_eq!(skin.poses.len(), 2, "only valid+in-size+allow-listed assets survive: {:?}", skin.poses.keys().collect::<Vec<_>>());
+        assert!(skin.poses.get("curious").unwrap().starts_with("data:image/webp;base64,"));
+        assert!(skin.poses.get("happy").unwrap().starts_with("data:image/png;base64,"));
+        assert!(!skin.poses.contains_key("hero"), "a disallowed extension must be skipped");
+        assert!(!skin.poses.contains_key("thinking"), "an oversize asset must be skipped");
+        assert!(!skin.poses.contains_key("sleep"), "a missing asset must be skipped");
+        // copy passes through verbatim.
+        assert_eq!(skin.copy.get("curious").map(String::as_str), Some("hmm?"));
+
+        // Verify a data URI actually decodes back to the original bytes.
+        use base64::Engine;
+        let uri = skin.poses.get("curious").unwrap();
+        let b64 = uri.strip_prefix("data:image/webp;base64,").unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+        assert_eq!(decoded, b"RIFF-fake-webp-bytes");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn build_skin_without_tama_or_dir_yields_empty_or_copy_only() {
+        // No tama at all => wholly empty skin.
+        let plain = sample_plugin("plain");
+        let skin = build_skin(&plain);
+        assert!(skin.poses.is_empty() && skin.copy.is_empty());
+
+        // tama present but no resolvable dir => copy passes through, poses empty
+        // (documented: assets unavailable without a source dir).
+        let mut p = sample_plugin("nodir");
+        let mut poses = HashMap::new();
+        poses.insert("curious".to_string(), "assets/curious.webp".to_string());
+        let mut copy = HashMap::new();
+        copy.insert("curious".to_string(), "hmm?".to_string());
+        p.tama = Some(PluginTama { poses, copy });
+        p.dir = None;
+        let skin = build_skin(&p);
+        assert!(skin.poses.is_empty(), "no dir => no assets");
+        assert_eq!(skin.copy.get("curious").map(String::as_str), Some("hmm?"), "copy still passes through");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_skin_rejects_a_symlink_escaping_the_plugin_dir() {
+        // The traversal-string check can't catch this: a symlink INSIDE the
+        // plugin dir pointing at a file OUTSIDE it. Only the canonicalizing
+        // containment guard rejects it — the load must read NOTHING.
+        let base = temp_dir("symlink-escape");
+        let plugin_dir = base.join("plugin");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        // A secret file OUTSIDE the plugin dir.
+        let secret = base.join("secret.webp");
+        std::fs::write(&secret, b"top-secret-bytes").unwrap();
+        // A symlink INSIDE the plugin dir pointing at the outside secret.
+        let link = plugin_dir.join("escape.webp");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+
+        let mut plugin = sample_plugin("evil");
+        plugin.dir = Some(std::fs::canonicalize(&plugin_dir).unwrap().to_string_lossy().into_owned());
+        let mut poses = HashMap::new();
+        poses.insert("curious".to_string(), "escape.webp".to_string());
+        plugin.tama = Some(PluginTama { poses, copy: HashMap::new() });
+
+        let skin = build_skin(&plugin);
+        assert!(skin.poses.is_empty(), "a symlink escaping the plugin dir must be skipped, got: {:?}", skin.poses);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn read_and_validate_manifest_captures_the_canonical_source_dir() {
+        // install must record the plugin's SOURCE dir (canonical parent of
+        // plugin.json) so a later skin load can resolve relative assets.
+        let dir = temp_dir("capture-dir");
+        let plugin_dir = dir.join("my-skin");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(
+            plugin_dir.join("plugin.json"),
+            r#"{"id":"skin","name":"Skin","version":"1.0.0","tama":{"poses":{"hero":"hero.webp"}}}"#,
+        )
+        .unwrap();
+
+        let plugin = read_and_validate_manifest(&plugin_dir).expect("must validate");
+        let recorded = plugin.dir.expect("dir must be captured");
+        let expected = std::fs::canonicalize(&plugin_dir).unwrap().to_string_lossy().into_owned();
+        assert_eq!(recorded, expected, "dir must be the canonicalized plugin directory");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -792,6 +1260,7 @@ mod tests {
 //        plugin_registry::set_plugin_enabled,
 //        plugin_registry::install_plugin_from_path,
 //        plugin_registry::remove_plugin,
+//        plugin_registry::load_plugin_skin, // PER-47: load a plugin's Tama skin (pose data: URIs + copy)
 //
 //    There is NO separate invoke_handler command list to update: the app's
 //    `.invoke_handler(builder.invoke_handler())` derives entirely from

@@ -3024,6 +3024,22 @@ async removePlugin(id: string) : Promise<Result<null, string>> {
 }
 },
 /**
+ * Load an ENABLED plugin's Tama skin (PER-47). Resolves the plugin by id,
+ * requires it to be enabled, then [`build_skin`]s its declared pose assets
+ * into `data:`-URI sprites — reading ONLY files strictly inside the plugin's
+ * own canonicalized source dir (see [`build_skin`]/[`asset_is_within_dir`] for
+ * the traversal + symlink-escape guard). File IO, so the whole load runs on
+ * the blocking pool. JS: `commands.loadPluginSkin(pluginId)`.
+ */
+async loadPluginSkin(pluginId: string) : Promise<Result<TamaSkin, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_plugin_skin", { pluginId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Run a plugin's command by id. Loads it from the registry (written in
  * parallel — [`crate::plugin_registry::find_command`], which returns `None`
  * for a command that is missing OR disabled), resolves the working directory
@@ -3849,7 +3865,23 @@ id: string; name: string; version: string; description: string | null;
  * Defaults to `true` when a manifest omits it — a freshly installed
  * plugin is active unless the user disables it.
  */
-enabled?: boolean; commands?: PluginCommand[]; hooks?: PluginHook[] }
+enabled?: boolean; commands?: PluginCommand[]; hooks?: PluginHook[]; 
+/**
+ * Optional Tama SKIN (PER-47) — pose sprites + copy this plugin
+ * contributes. `#[serde(default)]` + `Option` so every pre-skin manifest
+ * still loads (absent => no skin). See [`PluginTama`].
+ */
+tama?: PluginTama | null; 
+/**
+ * The plugin's on-disk SOURCE directory (the canonicalized PARENT of its
+ * `plugin.json`), captured at install time so a later skin load knows
+ * where to resolve relative asset paths. `#[serde(default)]` + `Option`:
+ * pre-PER-47 registries have none, and a plugin whose source dir could not
+ * be resolved at install (e.g. a non-canonicalizable path) simply has its
+ * Tama assets UNAVAILABLE — the skin loads with an empty `poses` rather
+ * than erroring. Persisted verbatim in `plugins.json`.
+ */
+dir?: string | null }
 /**
  * One user-invokable command a plugin contributes. `run` is an external
  * command TEMPLATE (user-authored shell text — see the module doc's trust
@@ -3935,6 +3967,26 @@ export type PluginPlacement =
  * Both the palette and the context menu.
  */
 "both"
+/**
+ * A plugin-contributed Tama SKIN (PER-47): pose sprites that override the
+ * built-in cat art, plus optional copy/voice lines. `poses` maps a built-in
+ * pose KEY (one of [`VALID_TAMA_POSE_KEYS`]) to a RELATIVE asset path within
+ * the plugin's own directory (e.g. `"curious" -> "assets/curious.webp"`).
+ * Both the key set and the relative-path safety are enforced up front in
+ * [`validate_manifest`]; the actual bytes are loaded — with a second,
+ * canonicalizing containment guard — by [`load_plugin_skin`].
+ */
+export type PluginTama = { 
+/**
+ * Pose key -> relative asset path within the plugin dir. Every key must be
+ * one of [`VALID_TAMA_POSE_KEYS`]; every value must be a relative path with
+ * no `..` and not absolute (validated at install time).
+ */
+poses: Partial<{ [key in string]: string }>; 
+/**
+ * Optional voice/copy lines the skin contributes, passed through verbatim.
+ */
+copy?: Partial<{ [key in string]: string }> }
 /**
  * Whatever `revparse_single` resolved `rev` to. Internally tagged on `kind`
  * (verified empirically against specta 2.0.0-rc.22 — this generates a clean
@@ -4241,6 +4293,15 @@ phase: string;
  */
 line: string }
 export type TagObject = { sha: string; name: string; tagger: PlumbingPerson | null; message: string; targetOid: string; targetKind: string }
+/**
+ * A loaded Tama SKIN, ready for the frontend: `poses` maps each built-in pose
+ * key to a `data:` URI (`data:image/webp;base64,...` or `image/png`) usable
+ * directly as an `<img>` src, and `copy` carries the skin's optional
+ * voice/copy lines. Only poses whose asset passed every safety check appear —
+ * a missing/oversize/wrong-extension/escaping asset is silently omitted, so a
+ * partial skin still loads.
+ */
+export type TamaSkin = { poses: Partial<{ [key in string]: string }>; copy: Partial<{ [key in string]: string }> }
 /**
  * One planner row's chosen action, as sent back to [`rebase_interactive_start`].
  * `sha` is validated against a FRESHLY recomputed commit range before

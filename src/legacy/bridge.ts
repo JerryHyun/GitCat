@@ -19,6 +19,15 @@ export {
   // `bridge.tama.event(...)` call sites are untouched.
   tamaBus,
   TAMA_IMG,
+  // Tama skin registry (PER-47): a plugin skin overlays some/all of the 8
+  // built-in poses. `applyTamaSkin(poses)` / `clearTamaSkin()` are mid-file
+  // `export const`s and `tamaPose(key)` a mid-file `export function` in
+  // legacy/main.ts — same live-re-export TDZ-safety as tamaBus/CUR_REPO above.
+  // The settings skin picker calls apply/clear; tamagallery reads tamaPose so
+  // the gallery shows the ACTIVE skin's poses (built-ins are the fallback).
+  applyTamaSkin,
+  clearTamaSkin,
+  tamaPose,
   requestRedraw,
   // the open repo's absolute path (or null when none is open) — a live
   // binding (see the file header): read it as `bridge.CUR_REPO` at call time,

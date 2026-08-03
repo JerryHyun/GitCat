@@ -249,6 +249,31 @@
           onclick={() => playTamaSound("celebrate", { bypassCooldown: true })}>Test</button
         >
       </div>
+
+      <h4 class="d-lab">Skin</h4>
+      <p class="mut" style="font-size:11.5px;margin:0 0 8px">
+        Some plugins ship an alternate look for Tama. Choose one here, or keep her built-in painted portraits.
+      </p>
+      {#if settingsCtrl.skinnablePlugins.length === 0}
+        <p class="mut" style="font-size:11.5px;margin:0 0 14px">No installed plugin provides a Tama skin &#8212; her built-in portraits are in use.</p>
+      {:else}
+        <div class="rm-form" style="margin-bottom:6px;max-width:260px">
+          <select
+            value={settingsCtrl.tamaSkinPluginId ?? ""}
+            disabled={settingsCtrl.tamaSkinBusy}
+            onchange={(e) => settingsCtrl.setTamaSkin((e.target as HTMLSelectElement).value || null)}
+          >
+            <option value="">Default (built-in)</option>
+            {#each settingsCtrl.skinnablePlugins as p (p.id)}
+              <option value={p.id}>{p.name}</option>
+            {/each}
+          </select>
+        </div>
+        {#if settingsCtrl.tamaSkinError}
+          <div class="pl-err" style="margin-bottom:8px">{settingsCtrl.tamaSkinError}</div>
+        {/if}
+        <div style="margin-bottom:8px"></div>
+      {/if}
       {/if}
 
       {#if settingsCtrl.activeTab === "identity"}
