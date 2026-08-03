@@ -40,6 +40,7 @@ import { filterRepoCtrl } from "../filterrepo/filterrepo.svelte.ts";
 import { multimergeCtrl } from "../multimerge/multimerge.svelte.ts";
 import { aboutCtrl } from "../about/about.svelte.ts";
 import { updaterCtrl } from "../updater/updater.svelte.ts";
+import { pluginCommandsCtrl } from "../plugincommands/plugincommands.svelte.ts";
 import { IN_TAURI } from "../../ipc/env";
 
 export const CMD_CAP = 50;
@@ -51,7 +52,10 @@ type CmdItem = { type: "commit"; row: number; subject: string; sha: string; auth
 // graph (unchecked in the sidebar's branch-visibility). It has no row; picking it
 // makes it visible instead of jumping (see jump()).
 type RefItem = { type: "ref"; name: string; kind: string; row: number; sha: string; hidden?: boolean };
-type ActionItem = { type: "action"; id: string; label: string; hint: string; run: () => void };
+// Exported so the plugin-commands controller can build entries of this exact
+// shape (plugincommands.svelte.ts imports it type-only, to avoid a runtime
+// import cycle with this module).
+export type ActionItem = { type: "action"; id: string; label: string; hint: string; run: () => void };
 export type CmdkResult = CmdItem | RefItem | ActionItem;
 
 // Small and fixed — every entry always shown when the query is empty, or
@@ -427,6 +431,12 @@ class CmdkState {
     for (const a of ACTIONS) {
       if (!toks.length || matchToks((a.label + " " + a.hint).toLowerCase(), toks)) res.push(a);
     }
+    // Plugin-contributed commands (PER-42) are matched by label+hint exactly
+    // like the static ACTIONS above; they're lazily loaded on palette open
+    // (see show()), so this is empty until listPlugins() resolves.
+    for (const a of pluginCommandsCtrl.actions) {
+      if (!toks.length || matchToks((a.label + " " + a.hint).toLowerCase(), toks)) res.push(a);
+    }
     if (!toks.length) {
       for (let i = 0; i < this.refs.length && res.length < REF_DEFAULT; i++) res.push(this.refs[i]);
     } else {
@@ -510,6 +520,11 @@ class CmdkState {
     }
     this.open = true;
     this.filter("");
+    // Lazily pull in plugin-contributed palette commands, then re-run the
+    // current filter so they appear (cached after the first open).
+    void pluginCommandsCtrl.ensureLoaded().then(() => {
+      if (this.open) this.filter(this.query);
+    });
   }
 
   close() {
@@ -522,3 +537,11 @@ class CmdkState {
 }
 
 export const cmdkCtrl = new CmdkState();
+
+// Review nit: when the plugin registry is force-reloaded (install/enable/
+// disable), refresh an already-open palette in place so the change shows up
+// without reopening ⌘K. Wired here (not via a cmdkCtrl import inside
+// plugincommands) to keep that module free of a runtime cycle back into this one.
+pluginCommandsCtrl.onActionsChanged = () => {
+  if (cmdkCtrl.open) cmdkCtrl.filter(cmdkCtrl.query);
+};
