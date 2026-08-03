@@ -615,6 +615,40 @@ mod tests {
     }
 
     #[test]
+    fn shipped_example_plugins_are_valid_and_uniquely_ided() {
+        // The reference plugins under examples/plugins/ (PER-49) must stay valid
+        // as the manifest schema evolves. This smoke test walks every
+        // examples/plugins/<dir>/plugin.json, reads + validates it through the
+        // module's OWN read_and_validate_manifest (so it exercises the real
+        // schema, size cap, and validation path), and asserts their ids are
+        // unique across the examples. CARGO_MANIFEST_DIR is `src-tauri/`, so the
+        // examples live one level up at `../examples/plugins`.
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/plugins");
+        let entries = std::fs::read_dir(&examples)
+            .unwrap_or_else(|e| panic!("could not read examples dir {}: {e}", examples.display()));
+
+        let mut ids: Vec<String> = Vec::new();
+        for entry in entries {
+            let entry = entry.expect("read_dir entry");
+            let dir = entry.path();
+            if !dir.is_dir() {
+                continue; // skip the top-level README.md and any stray file
+            }
+            let manifest = dir.join("plugin.json");
+            if !manifest.is_file() {
+                continue; // a subdir without a manifest isn't an example to validate
+            }
+            let plugin = read_and_validate_manifest(&manifest)
+                .unwrap_or_else(|e| panic!("example manifest {} failed to validate: {e}", manifest.display()));
+            ids.push(plugin.id);
+        }
+
+        assert!(ids.len() >= 2, "expected the shipped example plugins, found {}: {ids:?}", ids.len());
+        let unique: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "example plugin ids must be unique across examples: {ids:?}");
+    }
+
+    #[test]
     fn enable_toggle() {
         let mut plugins = vec![sample_plugin("alpha"), sample_plugin("beta")];
         set_enabled_in(&mut plugins, "beta", false).expect("toggling an existing plugin should succeed");

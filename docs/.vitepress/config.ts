@@ -75,6 +75,7 @@ export default defineConfig({
       { text: "Home", link: "/" },
       { text: "Install", link: "/install" },
       { text: "Features", link: "/features" },
+      { text: "Plugins", link: "/plugins" },
       { text: "FAQ", link: "/faq" },
     ],
 
