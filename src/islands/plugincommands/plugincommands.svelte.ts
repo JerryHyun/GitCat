@@ -25,6 +25,93 @@ import { IN_TAURI } from "../../ipc/env";
 import type { Plugin, PluginContext, PlaceholderCtx } from "../../ipc/bindings";
 import type { ActionItem } from "../cmdk/cmdk.svelte.ts";
 
+// ─── Plugin → Tama reaction protocol (PER-46) ────────────────────────────────
+//
+// A plugin command can nudge Tama's mood straight from its OWN stdout, WITHOUT
+// a backend command and WITHOUT ever reaching GitCat's safety-critical poses.
+//
+// A command MAY print a directive line anywhere in stdout:
+//
+//     ::gitcat.tama <reaction> <message...>
+//
+// where <reaction> is ONLY one of a fixed SAFE allowlist. The mapping is a
+// closed table — GitCat, not the plugin, decides which FSM state each reaction
+// resolves to, and every target is a benign/informational pose:
+//
+//     info    → set("hint")       "here's something to know"
+//     busy    → set("thinking")   "I'm working on it"
+//     ok      → set("celebrate")  "that went well"
+//     problem → set("confused")   "that didn't go well" (same pose warn() uses
+//                                  for a real op FAILURE — NOT a caution)
+//
+// then `bridge.tama.say(<message>)` (trimmed + capped ~160 chars).
+//
+// GUARD RAILS — a plugin must NOT be able to impersonate a GitCat safety
+// warning. The safety-critical states (`warn`/`danger`/`rescue`, every
+// `mutation.*`, `undo.performed`) mean GitCat ITSELF flagged a destructive,
+// rewrite, or undo situation. NONE of them are reachable here: only the four
+// allowlisted tokens above map to a state. ANY other <reaction> token —
+// `danger`, `warn`, `rescue`, `undo`, or arbitrary garbage — is IGNORED: no
+// state change and no say from the directive. "Last matching line wins" counts
+// only VALID (allowlisted) directives, so a plugin can't chase a real `ok` with
+// a spoofed `danger` to flip the pose.
+//
+// The directive line(s) are stripped from the text Tama shows: a valid directive
+// shows its own <message> instead of raw stdout; otherwise stray directive-shaped
+// lines are removed before the default say/warn. No directive at all → behavior
+// is exactly as before.
+
+// SAFE allowlist: plugin reaction token → Tama FSM state. This closed table is
+// the ONLY path from plugin stdout to a Tama state; anything not a key is
+// rejected.
+const TAMA_REACTIONS: Record<string, string> = {
+  info: "hint",
+  busy: "thinking",
+  ok: "celebrate",
+  problem: "confused",
+};
+const TAMA_DIRECTIVE_MAX = 160;
+// Captures a syntactically-valid directive: <reaction token> then the message.
+const TAMA_DIRECTIVE_RE = /^\s*::gitcat\.tama\s+(\S+)\s*(.*)$/;
+// Any line that even LOOKS like a directive (valid reaction or not) — used only
+// to keep such lines out of the normally-shown text.
+const TAMA_DIRECTIVE_LINE = /^\s*::gitcat\.tama\b.*$/;
+
+// PURE + exported for unit testing: scan stdout for the LAST directive line
+// whose <reaction> is on the SAFE allowlist and return its mapped {state,
+// message}, or null when no valid directive is present. Directive lines with an
+// unrecognized reaction are ignored (they can neither win nor change state), so
+// no plugin output can reach a safety-critical pose through this function.
+export function parseTamaReaction(stdout: string): { state: string; message: string } | null {
+  let result: { state: string; message: string } | null = null;
+  for (const line of (stdout || "").split(/\r?\n/)) {
+    const m = line.match(TAMA_DIRECTIVE_RE);
+    if (!m) continue;
+    const key = m[1].toLowerCase();
+    // OWN-property check, NOT a truthiness test: a plain-object lookup resolves
+    // inherited keys like "constructor"/"toString"/"hasOwnProperty" to truthy
+    // prototype functions, which would let a bogus reaction slip past the safe
+    // allowlist. hasOwnProperty.call gates on the four real keys only.
+    if (!Object.prototype.hasOwnProperty.call(TAMA_REACTIONS, key)) continue;
+    result = { state: TAMA_REACTIONS[key], message: capTamaMessage(m[2].trim()) };
+  }
+  return result;
+}
+
+// Trim to a one-liner Tama can actually show.
+function capTamaMessage(s: string): string {
+  return s.length > TAMA_DIRECTIVE_MAX ? s.slice(0, TAMA_DIRECTIVE_MAX - 1) + "…" : s;
+}
+
+// Remove every directive-shaped line (valid or not) from stdout so the default
+// say/warn never echoes the raw `::gitcat.tama …` control line back to the user.
+function stripTamaDirectives(stdout: string): string {
+  return (stdout || "")
+    .split(/\r?\n/)
+    .filter((l) => !TAMA_DIRECTIVE_LINE.test(l))
+    .join("\n");
+}
+
 class PluginCommandsState {
   // The palette-ready actions cmdk's filter() reads alongside its static
   // ACTIONS. Rebuilt whole on every (re)load — never mutated in place.
@@ -145,7 +232,21 @@ class PluginCommandsState {
         return;
       }
       const out = res.data;
-      const text = this.truncate((out.stdout || "").trim());
+      // A valid plugin reaction directive (PER-46) drives Tama through the
+      // fixed SAFE table instead of the default surfacing — no safety-critical
+      // pose is reachable this way (see parseTamaReaction). Applies on either
+      // exit code: the plugin's declared mood wins, but only within the
+      // allowlist.
+      const reaction = parseTamaReaction(out.stdout || "");
+      if (reaction) {
+        bridge.tama.set(reaction.state);
+        bridge.tama.say(reaction.message);
+        return;
+      }
+      // No valid directive → current behavior, with any stray directive-shaped
+      // lines stripped so a rejected/garbage `::gitcat.tama …` line is never
+      // shown verbatim.
+      const text = this.truncate(stripTamaDirectives(out.stdout || "").trim());
       if (out.success) {
         bridge.tama.say(text || "Plugin command finished.");
       } else {

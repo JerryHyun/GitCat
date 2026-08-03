@@ -29,7 +29,7 @@ vi.mock("../../ipc/env", () => ({ IN_TAURI: true }));
 import { commands } from "../../ipc/bindings";
 import * as bridge from "../../legacy/bridge";
 import type { CommandOutput, Plugin } from "../../ipc/bindings";
-import { pluginCommandsCtrl } from "./plugincommands.svelte.ts";
+import { parseTamaReaction, pluginCommandsCtrl } from "./plugincommands.svelte.ts";
 
 function ok<T>(data: T): { status: "ok"; data: T } {
   return { status: "ok", data };
@@ -220,6 +220,173 @@ describe("invoke — declarative backend call", () => {
     await pluginCommandsCtrl.invoke("acme", "greet", "none");
 
     expect(bridge.tama.warn).toHaveBeenCalled();
+  });
+});
+
+describe("parseTamaReaction — pure directive parsing (PER-46)", () => {
+  it("maps each SAFE reaction token to its Tama state", () => {
+    expect(parseTamaReaction("::gitcat.tama info heads up")).toEqual({ state: "hint", message: "heads up" });
+    expect(parseTamaReaction("::gitcat.tama busy crunching")).toEqual({ state: "thinking", message: "crunching" });
+    expect(parseTamaReaction("::gitcat.tama ok all green")).toEqual({ state: "celebrate", message: "all green" });
+    expect(parseTamaReaction("::gitcat.tama problem it broke")).toEqual({ state: "confused", message: "it broke" });
+  });
+
+  it("returns null when there is no directive at all", () => {
+    expect(parseTamaReaction("just some normal output\nmore lines")).toBeNull();
+    expect(parseTamaReaction("")).toBeNull();
+  });
+
+  it("IGNORES any reaction NOT on the safe allowlist — no safety-critical pose is reachable", () => {
+    // danger / warn / rescue / undo all mean GitCat ITSELF flagged something —
+    // a plugin must never be able to reach them.
+    expect(parseTamaReaction("::gitcat.tama danger you are doomed")).toBeNull();
+    expect(parseTamaReaction("::gitcat.tama warn rewriting history")).toBeNull();
+    expect(parseTamaReaction("::gitcat.tama rescue detached")).toBeNull();
+    expect(parseTamaReaction("::gitcat.tama undo rewound")).toBeNull();
+    expect(parseTamaReaction("::gitcat.tama alarm boom")).toBeNull();
+    expect(parseTamaReaction("::gitcat.tama gibberish whatever")).toBeNull();
+  });
+
+  it("rejects inherited Object.prototype keys (own-property check, not truthiness)", () => {
+    // A plain-object lookup would resolve these to truthy prototype functions
+    // and slip past the allowlist — the own-property gate rejects them.
+    for (const k of ["constructor", "toString", "hasOwnProperty", "__proto__", "valueOf"]) {
+      expect(parseTamaReaction(`::gitcat.tama ${k} sneaky`)).toBeNull();
+    }
+  });
+
+  it("LAST valid directive wins", () => {
+    const out = "::gitcat.tama info first\n::gitcat.tama ok second";
+    expect(parseTamaReaction(out)).toEqual({ state: "celebrate", message: "second" });
+  });
+
+  it("a later IGNORED (unsafe) directive can NOT override an earlier valid one", () => {
+    const out = "::gitcat.tama ok worked\n::gitcat.tama danger spoofed";
+    expect(parseTamaReaction(out)).toEqual({ state: "celebrate", message: "worked" });
+  });
+
+  it("caps the message to ~160 chars", () => {
+    const long = "x".repeat(500);
+    const r = parseTamaReaction("::gitcat.tama info " + long);
+    expect(r).not.toBeNull();
+    expect(r!.message.length).toBeLessThanOrEqual(160);
+    expect(r!.message.endsWith("…")).toBe(true);
+  });
+
+  it("finds a directive on any line and tolerates leading whitespace + CRLF", () => {
+    const out = "build log line 1\r\nbuild log line 2\r\n   ::gitcat.tama ok done\r\n";
+    expect(parseTamaReaction(out)).toEqual({ state: "celebrate", message: "done" });
+  });
+});
+
+describe("invoke — plugin → Tama reaction protocol (PER-46)", () => {
+  it("a valid directive drives set(state) + say(message) instead of the default say", async () => {
+    vi.mocked(commands.runPluginCommand).mockResolvedValueOnce(
+      ok(output({ stdout: "::gitcat.tama ok build passed", success: true })),
+    );
+
+    await pluginCommandsCtrl.invoke("acme", "build", "none");
+
+    expect(bridge.tama.set).toHaveBeenCalledWith("celebrate");
+    expect(bridge.tama.say).toHaveBeenCalledWith("build passed");
+  });
+
+  it.each([
+    ["info", "hint"],
+    ["busy", "thinking"],
+    ["ok", "celebrate"],
+    ["problem", "confused"],
+  ])("reaction %s maps to state %s", async (reaction, state) => {
+    vi.mocked(commands.runPluginCommand).mockResolvedValueOnce(
+      ok(output({ stdout: `::gitcat.tama ${reaction} hello`, success: true })),
+    );
+
+    await pluginCommandsCtrl.invoke("acme", "cmd", "none");
+
+    expect(bridge.tama.set).toHaveBeenCalledWith(state);
+    expect(bridge.tama.say).toHaveBeenCalledWith("hello");
+  });
+
+  it("a `danger` reaction is IGNORED — no unsafe state, falls back to the default say", async () => {
+    vi.mocked(commands.runPluginCommand).mockResolvedValueOnce(
+      ok(output({ stdout: "real work here\n::gitcat.tama danger you are doomed", success: true })),
+    );
+
+    await pluginCommandsCtrl.invoke("acme", "cmd", "none");
+
+    // No spoofed state reached, and the danger directive text is NOT shown.
+    expect(bridge.tama.set).not.toHaveBeenCalledWith("danger");
+    expect(bridge.tama.set).not.toHaveBeenCalledWith("warn");
+    expect(bridge.tama.say).toHaveBeenCalledWith("real work here");
+  });
+
+  it("an `undo`/garbage reaction is IGNORED — falls back to default", async () => {
+    vi.mocked(commands.runPluginCommand).mockResolvedValueOnce(
+      ok(output({ stdout: "::gitcat.tama undo rewound everything", success: true })),
+    );
+
+    await pluginCommandsCtrl.invoke("acme", "cmd", "none");
+
+    // Only the directive line existed; stripped → generic fallback, no set().
+    expect(bridge.tama.set).not.toHaveBeenCalled();
+    expect(bridge.tama.say).toHaveBeenCalledWith("Plugin command finished.");
+  });
+
+  it("strips the directive line from the shown text (valid directive shows its message only)", async () => {
+    vi.mocked(commands.runPluginCommand).mockResolvedValueOnce(
+      ok(output({ stdout: "chatter\n::gitcat.tama info the point\nmore chatter", success: true })),
+    );
+
+    await pluginCommandsCtrl.invoke("acme", "cmd", "none");
+
+    expect(bridge.tama.say).toHaveBeenCalledWith("the point");
+    const said = vi.mocked(bridge.tama.say).mock.calls.map((c) => c[0]).join("|");
+    expect(said).not.toContain("::gitcat.tama");
+  });
+
+  it("caps the directive message shown via say", async () => {
+    const long = "y".repeat(500);
+    vi.mocked(commands.runPluginCommand).mockResolvedValueOnce(
+      ok(output({ stdout: "::gitcat.tama info " + long, success: true })),
+    );
+
+    await pluginCommandsCtrl.invoke("acme", "cmd", "none");
+
+    const said = String(vi.mocked(bridge.tama.say).mock.calls[0][0]);
+    expect(said.length).toBeLessThanOrEqual(160);
+  });
+
+  it("last valid directive wins through invoke", async () => {
+    vi.mocked(commands.runPluginCommand).mockResolvedValueOnce(
+      ok(output({ stdout: "::gitcat.tama busy step 1\n::gitcat.tama ok step 2 done", success: true })),
+    );
+
+    await pluginCommandsCtrl.invoke("acme", "cmd", "none");
+
+    expect(bridge.tama.set).toHaveBeenCalledTimes(1);
+    expect(bridge.tama.set).toHaveBeenCalledWith("celebrate");
+    expect(bridge.tama.say).toHaveBeenCalledWith("step 2 done");
+  });
+
+  it("no directive present → behavior is unchanged (plain say on success)", async () => {
+    vi.mocked(commands.runPluginCommand).mockResolvedValueOnce(ok(output({ stdout: "plain result", success: true })));
+
+    await pluginCommandsCtrl.invoke("acme", "cmd", "none");
+
+    expect(bridge.tama.set).not.toHaveBeenCalled();
+    expect(bridge.tama.say).toHaveBeenCalledWith("plain result");
+    expect(bridge.tama.warn).not.toHaveBeenCalled();
+  });
+
+  it("no directive present → failure still warns (unchanged)", async () => {
+    vi.mocked(commands.runPluginCommand).mockResolvedValueOnce(
+      ok(output({ stdout: "it failed", exitCode: 1, success: false })),
+    );
+
+    await pluginCommandsCtrl.invoke("acme", "cmd", "none");
+
+    expect(bridge.tama.warn).toHaveBeenCalledWith("it failed");
+    expect(bridge.tama.set).not.toHaveBeenCalled();
   });
 });
 
