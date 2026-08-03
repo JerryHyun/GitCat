@@ -39,7 +39,7 @@ vi.mock("../sidebar/sidebar.svelte.ts", () => ({
 }));
 
 import { commands } from "../../ipc/bindings";
-import { submoduleNavCtrl } from "./submodulenav.svelte.ts";
+import { submoduleNavCtrl, horizontalWheelDelta } from "./submodulenav.svelte.ts";
 import type { SubmoduleInfo } from "../../ipc/bindings";
 
 function ok<T>(data: T): { status: "ok"; data: T } {
@@ -234,5 +234,29 @@ describe("reset", () => {
     expect(submoduleNavCtrl.visible).toBe(false);
     expect(submoduleNavCtrl.path).toEqual([]);
     expect(submoduleNavCtrl.siblings).toEqual([]);
+  });
+});
+
+describe("horizontalWheelDelta — wheel-to-scroll on the overflowing strip", () => {
+  const overflow = { scrollWidth: 800, clientWidth: 400 };
+  const noOverflow = { scrollWidth: 300, clientWidth: 400 };
+
+  it("returns 0 when the strip doesn't overflow (nothing to scroll)", () => {
+    expect(horizontalWheelDelta({ deltaX: 0, deltaY: 120, deltaMode: 0, ...noOverflow })).toBe(0);
+  });
+
+  it("translates a vertical mouse wheel into horizontal px when overflowing", () => {
+    expect(horizontalWheelDelta({ deltaX: 0, deltaY: 120, deltaMode: 0, ...overflow })).toBe(120);
+    expect(horizontalWheelDelta({ deltaX: 0, deltaY: -80, deltaMode: 0, ...overflow })).toBe(-80);
+  });
+
+  it("leaves a horizontal-dominant trackpad gesture alone (native deltaX scroll)", () => {
+    expect(horizontalWheelDelta({ deltaX: 90, deltaY: 30, deltaMode: 0, ...overflow })).toBe(0);
+    // Equal magnitudes count as horizontal-dominant → not hijacked.
+    expect(horizontalWheelDelta({ deltaX: 50, deltaY: 50, deltaMode: 0, ...overflow })).toBe(0);
+  });
+
+  it("scales line-based deltas (deltaMode 1, typical mouse wheel) by ~16px/line", () => {
+    expect(horizontalWheelDelta({ deltaX: 0, deltaY: 3, deltaMode: 1, ...overflow })).toBe(48);
   });
 });

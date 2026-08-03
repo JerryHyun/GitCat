@@ -36,6 +36,26 @@ function samePath(a: string, b: string): boolean {
   return norm(a) === norm(b);
 }
 
+// Translate a vertical mouse-wheel tick into a horizontal scroll amount (px to
+// add to the strip's scrollLeft) for the overflowing submodule nav strip.
+// Returns 0 — i.e. "leave the wheel alone" — when the strip doesn't overflow,
+// or when the gesture is horizontal-dominant (a trackpad already scrolls a
+// horizontal container natively via deltaX; only a plain vertical mouse wheel
+// needs the translation). `deltaMode === 1` is line-based scrolling (typical of
+// a real mouse wheel); approximate a line as 16px. Pure + testable; the .svelte
+// component wires it to the real element and calls preventDefault when nonzero.
+export function horizontalWheelDelta(e: {
+  deltaX: number;
+  deltaY: number;
+  deltaMode: number;
+  scrollWidth: number;
+  clientWidth: number;
+}): number {
+  if (e.scrollWidth <= e.clientWidth) return 0; // nothing to scroll
+  if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return 0; // horizontal-dominant → native
+  return e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+}
+
 // One clickable step in the "root › vendor/lib-a › nested" path.
 export interface RepoCrumb {
   name: string;
