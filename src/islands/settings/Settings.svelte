@@ -410,6 +410,62 @@
         {/if}
       {/if}
       {/if}
+
+      {#if settingsCtrl.activeTab === "plugins"}
+      <h4 class="d-lab">Plugins</h4>
+      <p class="mut" style="font-size:11.5px;margin:0 0 10px">
+        Plugins add commands to the &#8984;K palette and can run on repository events. A plugin is a <code>plugin.json</code> manifest; GitCat only ever runs the external commands it declares — it never connects to anything itself.
+      </p>
+      {#if settingsCtrl.pluginsError}
+        <div class="pl-err" style="margin-bottom:8px">{settingsCtrl.pluginsError}</div>
+      {/if}
+      {#if settingsCtrl.pluginsLoading}
+        <div class="log-row"><span class="spinner"></span><span class="msg mut">Loading plugins&#8230;</span></div>
+      {:else}
+        {#if settingsCtrl.plugins.length === 0}
+          <p class="mut">No plugins installed yet.</p>
+        {:else}
+          <div class="rm-list">
+            {#each settingsCtrl.plugins as p (p.id)}
+              {#if settingsCtrl.removingPluginId === p.id}
+                <div class="rm-item rm-confirm">
+                  <span class="msg">Remove <b>{p.name}</b>? This unregisters it from GitCat; its <code>plugin.json</code> on disk is left untouched.</span>
+                  {#if settingsCtrl.pluginBusyId === p.id}<span class="spinner"></span>{/if}
+                  <div class="rm-act">
+                    <button class="danger" disabled={settingsCtrl.pluginBusyId === p.id} onclick={() => settingsCtrl.confirmRemovePlugin(p.id)}>Remove</button>
+                    <button disabled={settingsCtrl.pluginBusyId === p.id} onclick={() => settingsCtrl.cancelRemovePlugin()}>Cancel</button>
+                  </div>
+                </div>
+              {:else}
+                <div class="rm-item">
+                  <div class="rm-main">
+                    <span class="rm-name">{p.name} <span class="mut" style="font-weight:400">v{p.version}</span></span>
+                    {#if p.description}<span class="rm-url mut" title={p.description}>{p.description}</span>{/if}
+                    <span class="mut" style="font-size:11px">{p.commands?.length ?? 0} commands &#183; {p.hooks?.length ?? 0} hooks</span>
+                  </div>
+                  {#if settingsCtrl.pluginBusyId === p.id}<span class="spinner"></span>{/if}
+                  <div class="rm-act" style="align-items:center">
+                    <label class="set-toggle" style="margin:0" title="Enable or disable this plugin">
+                      <input
+                        type="checkbox"
+                        checked={p.enabled !== false}
+                        disabled={settingsCtrl.pluginBusyId === p.id}
+                        onchange={(e) => settingsCtrl.setPluginEnabled(p.id, (e.target as HTMLInputElement).checked)}
+                      />
+                      Enabled
+                    </label>
+                    <button disabled={settingsCtrl.pluginBusyId === p.id} onclick={() => settingsCtrl.startRemovePlugin(p.id)}>Remove</button>
+                  </div>
+                </div>
+              {/if}
+            {/each}
+          </div>
+        {/if}
+        <button class="btn" style="margin-top:10px" disabled={settingsCtrl.pluginInstalling} onclick={() => settingsCtrl.installPlugin()}>
+          {#if settingsCtrl.pluginInstalling}<span class="spinner"></span> Installing&#8230;{:else}&#65291; Install plugin&#8230;{/if}
+        </button>
+      {/if}
+      {/if}
     </div>
     <div class="modal-foot">
       <button class="btn ghost" disabled={settingsCtrl.identitySaving} onclick={() => settingsCtrl.close()}>Close</button>

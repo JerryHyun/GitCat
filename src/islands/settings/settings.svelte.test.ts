@@ -45,7 +45,24 @@ vi.mock("../../ipc/bindings", () => ({
     getGitIdentity: vi.fn(),
     setGitIdentity: vi.fn(),
     pruneSnapshots: vi.fn(),
+    listPlugins: vi.fn(),
+    setPluginEnabled: vi.fn(),
+    removePlugin: vi.fn(),
+    installPluginFromPath: vi.fn(),
   },
+}));
+
+// The plugin picker (@tauri-apps/plugin-dialog's open) and the ⌘K registry
+// force-reload seam (pluginCommandsCtrl.reload) are both mocked so this
+// controller test never touches a real dialog or the sibling island. `open`
+// goes through an `openMock` indirection (same shape as applypatch/dashboard's
+// own tests) to sidestep its overloaded type signature.
+const openMock = vi.fn();
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: (...args: unknown[]) => openMock(...args),
+}));
+vi.mock("../plugincommands/plugincommands.svelte.ts", () => ({
+  pluginCommandsCtrl: { reload: vi.fn() },
 }));
 
 let mockInTauri = true;
@@ -57,7 +74,8 @@ vi.mock("../../ipc/env", () => ({
 
 import { commands } from "../../ipc/bindings";
 import * as bridge from "../../legacy/bridge";
-import type { GitIdentity } from "../../ipc/bindings";
+import { pluginCommandsCtrl } from "../plugincommands/plugincommands.svelte.ts";
+import type { GitIdentity, Plugin } from "../../ipc/bindings";
 import { loadSettings, saveSettings, settingsCtrl, pruneSnapshotsPerPolicy } from "./settings.svelte.ts";
 
 function ok<T>(data: T): { status: "ok"; data: T } {
@@ -68,6 +86,9 @@ function err(error: string): { status: "error"; error: string } {
 }
 function identity(partial: Partial<GitIdentity> = {}): GitIdentity {
   return { name: null, email: null, configured: false, local: false, ...partial };
+}
+function plugin(partial: Partial<Plugin> = {}): Plugin {
+  return { id: "demo", name: "Demo", version: "1.0.0", description: null, enabled: true, commands: [], hooks: [], ...partial };
 }
 
 function resetCtrl() {
@@ -90,8 +111,18 @@ function resetCtrl() {
   settingsCtrl.identityLoading = false;
   settingsCtrl.identitySaving = false;
   settingsCtrl.identityError = "";
+  settingsCtrl.plugins = [];
+  settingsCtrl.pluginsLoading = false;
+  settingsCtrl.pluginsError = "";
+  settingsCtrl.pluginBusyId = null;
+  settingsCtrl.pluginInstalling = false;
+  settingsCtrl.removingPluginId = null;
   mockInTauri = true;
   vi.clearAllMocks();
+  // Default: an empty registry, so the unconditional refreshPlugins() every
+  // show() now fires resolves cleanly in the pre-existing show()/identity
+  // tests. Individual plugin tests override this with mockResolvedValueOnce.
+  vi.mocked(commands.listPlugins).mockResolvedValue(ok([]));
 }
 
 beforeEach(() => {
@@ -635,6 +666,198 @@ describe("saveIdentity", () => {
     await settingsCtrl.saveIdentity();
 
     expect(commands.setGitIdentity).not.toHaveBeenCalled();
+    expect(bridge.tama.say).toHaveBeenCalled();
+  });
+});
+
+describe("plugins — refreshPlugins", () => {
+  it("populates the list from list_plugins on success", async () => {
+    vi.mocked(commands.listPlugins).mockResolvedValueOnce(ok([plugin({ id: "a", name: "Alpha" }), plugin({ id: "b", name: "Beta" })]));
+
+    await settingsCtrl.refreshPlugins();
+
+    expect(settingsCtrl.plugins.map((p) => p.id)).toEqual(["a", "b"]);
+    expect(settingsCtrl.pluginsError).toBe("");
+    expect(settingsCtrl.pluginsLoading).toBe(false);
+  });
+
+  it("surfaces a backend error without crashing", async () => {
+    vi.mocked(commands.listPlugins).mockResolvedValueOnce(err("registry unreadable"));
+
+    await settingsCtrl.refreshPlugins();
+
+    expect(settingsCtrl.plugins).toEqual([]);
+    expect(settingsCtrl.pluginsError).toContain("registry unreadable");
+  });
+
+  it("a rejected round trip is caught and surfaced, not left as an unhandled rejection", async () => {
+    vi.mocked(commands.listPlugins).mockRejectedValueOnce(new Error("invoke failed"));
+
+    await settingsCtrl.refreshPlugins();
+
+    expect(settingsCtrl.pluginsError).toContain("invoke failed");
+    expect(settingsCtrl.pluginsLoading).toBe(false);
+  });
+
+  it("design mode (!IN_TAURI): empty list, no backend call", async () => {
+    mockInTauri = false;
+    settingsCtrl.plugins = [plugin()];
+
+    await settingsCtrl.refreshPlugins();
+
+    expect(commands.listPlugins).not.toHaveBeenCalled();
+    expect(settingsCtrl.plugins).toEqual([]);
+  });
+
+  it("show() refreshes the plugin registry when the modal opens", async () => {
+    vi.mocked(commands.listPlugins).mockResolvedValueOnce(ok([plugin({ id: "x" })]));
+
+    settingsCtrl.show(null);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(commands.listPlugins).toHaveBeenCalled();
+    expect(settingsCtrl.plugins.map((p) => p.id)).toEqual(["x"]);
+  });
+});
+
+describe("plugins — setPluginEnabled", () => {
+  it("flips the local copy and reloads the ⌘K registry on success", async () => {
+    settingsCtrl.plugins = [plugin({ id: "a", enabled: true })];
+    vi.mocked(commands.setPluginEnabled).mockResolvedValueOnce(ok(null));
+
+    await settingsCtrl.setPluginEnabled("a", false);
+
+    expect(commands.setPluginEnabled).toHaveBeenCalledWith("a", false);
+    expect(settingsCtrl.plugins[0].enabled).toBe(false);
+    expect(pluginCommandsCtrl.reload).toHaveBeenCalled();
+    expect(settingsCtrl.pluginBusyId).toBeNull();
+  });
+
+  it("surfaces a backend failure and does NOT reload or flip the local copy", async () => {
+    settingsCtrl.plugins = [plugin({ id: "a", enabled: true })];
+    vi.mocked(commands.setPluginEnabled).mockResolvedValueOnce(err("write failed"));
+
+    await settingsCtrl.setPluginEnabled("a", false);
+
+    expect(settingsCtrl.plugins[0].enabled).toBe(true);
+    expect(settingsCtrl.pluginsError).toContain("write failed");
+    expect(pluginCommandsCtrl.reload).not.toHaveBeenCalled();
+  });
+
+  it("design mode (!IN_TAURI): flips locally with a Tama toast, no IPC and no reload", async () => {
+    mockInTauri = false;
+    settingsCtrl.plugins = [plugin({ id: "a", enabled: true })];
+
+    await settingsCtrl.setPluginEnabled("a", false);
+
+    expect(commands.setPluginEnabled).not.toHaveBeenCalled();
+    expect(pluginCommandsCtrl.reload).not.toHaveBeenCalled();
+    expect(settingsCtrl.plugins[0].enabled).toBe(false);
+    expect(bridge.tama.say).toHaveBeenCalled();
+  });
+});
+
+describe("plugins — remove (inline confirm)", () => {
+  it("start/cancel just toggle removingPluginId, no backend call", () => {
+    settingsCtrl.startRemovePlugin("a");
+    expect(settingsCtrl.removingPluginId).toBe("a");
+
+    settingsCtrl.cancelRemovePlugin();
+    expect(settingsCtrl.removingPluginId).toBeNull();
+    expect(commands.removePlugin).not.toHaveBeenCalled();
+  });
+
+  it("confirmRemovePlugin drops the row, clears the confirm, and reloads ⌘K on success", async () => {
+    settingsCtrl.plugins = [plugin({ id: "a" }), plugin({ id: "b" })];
+    settingsCtrl.removingPluginId = "a";
+    vi.mocked(commands.removePlugin).mockResolvedValueOnce(ok(null));
+
+    await settingsCtrl.confirmRemovePlugin("a");
+
+    expect(commands.removePlugin).toHaveBeenCalledWith("a");
+    expect(settingsCtrl.plugins.map((p) => p.id)).toEqual(["b"]);
+    expect(settingsCtrl.removingPluginId).toBeNull();
+    expect(pluginCommandsCtrl.reload).toHaveBeenCalled();
+  });
+
+  it("keeps the row and surfaces the error on a backend failure", async () => {
+    settingsCtrl.plugins = [plugin({ id: "a" })];
+    settingsCtrl.removingPluginId = "a";
+    vi.mocked(commands.removePlugin).mockResolvedValueOnce(err("could not remove"));
+
+    await settingsCtrl.confirmRemovePlugin("a");
+
+    expect(settingsCtrl.plugins.map((p) => p.id)).toEqual(["a"]);
+    expect(settingsCtrl.pluginsError).toContain("could not remove");
+    expect(pluginCommandsCtrl.reload).not.toHaveBeenCalled();
+  });
+
+  it("design mode (!IN_TAURI): drops locally with a Tama toast, no IPC", async () => {
+    mockInTauri = false;
+    settingsCtrl.plugins = [plugin({ id: "a" })];
+    settingsCtrl.removingPluginId = "a";
+
+    await settingsCtrl.confirmRemovePlugin("a");
+
+    expect(commands.removePlugin).not.toHaveBeenCalled();
+    expect(settingsCtrl.plugins).toEqual([]);
+    expect(settingsCtrl.removingPluginId).toBeNull();
+    expect(bridge.tama.say).toHaveBeenCalled();
+  });
+});
+
+describe("plugins — installPlugin", () => {
+  it("picks a path, installs it, re-lists, reloads ⌘K, and toasts on success", async () => {
+    openMock.mockResolvedValueOnce("/plugins/foo/plugin.json");
+    vi.mocked(commands.installPluginFromPath).mockResolvedValueOnce(ok(plugin({ id: "foo", name: "Foo" })));
+    vi.mocked(commands.listPlugins).mockResolvedValueOnce(ok([plugin({ id: "foo", name: "Foo" })]));
+
+    await settingsCtrl.installPlugin();
+
+    expect(commands.installPluginFromPath).toHaveBeenCalledWith("/plugins/foo/plugin.json");
+    expect(commands.listPlugins).toHaveBeenCalled();
+    expect(settingsCtrl.plugins.map((p) => p.id)).toEqual(["foo"]);
+    expect(pluginCommandsCtrl.reload).toHaveBeenCalled();
+    expect(bridge.tama.say).toHaveBeenCalled();
+    expect(settingsCtrl.pluginInstalling).toBe(false);
+  });
+
+  it("does nothing when the picker is cancelled (null)", async () => {
+    openMock.mockResolvedValueOnce(null);
+
+    await settingsCtrl.installPlugin();
+
+    expect(commands.installPluginFromPath).not.toHaveBeenCalled();
+    expect(pluginCommandsCtrl.reload).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a backend install failure and does NOT reload ⌘K", async () => {
+    openMock.mockResolvedValueOnce("/plugins/bad/plugin.json");
+    vi.mocked(commands.installPluginFromPath).mockResolvedValueOnce(err("duplicate id"));
+
+    await settingsCtrl.installPlugin();
+
+    expect(settingsCtrl.pluginsError).toContain("duplicate id");
+    expect(pluginCommandsCtrl.reload).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a dialog failure without calling the backend", async () => {
+    openMock.mockRejectedValueOnce(new Error("no dialog"));
+
+    await settingsCtrl.installPlugin();
+
+    expect(settingsCtrl.pluginsError).toContain("no dialog");
+    expect(commands.installPluginFromPath).not.toHaveBeenCalled();
+  });
+
+  it("design mode (!IN_TAURI): no picker, no IPC, just a Tama toast", async () => {
+    mockInTauri = false;
+
+    await settingsCtrl.installPlugin();
+
+    expect(openMock).not.toHaveBeenCalled();
+    expect(commands.installPluginFromPath).not.toHaveBeenCalled();
     expect(bridge.tama.say).toHaveBeenCalled();
   });
 });
