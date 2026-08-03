@@ -65,17 +65,23 @@
 //! bundled POSIX shell, or a `cmd`/PowerShell-correct quoter) is deferred — see
 //! "Deferred hardening" below.
 //!
-//! ## Deferred hardening (tracked in PER-48, the plugin security model)
+//! ## Security model (PER-48) + remaining deferred hardening
 //!
-//! Conscious gaps in THIS foundation, closed when the security model lands,
-//! documented here so they are visible decisions rather than silent holes:
-//!   * **No snapshot before mutation.** [`run_plugin_command`] shells out to an
-//!     arbitrary command that can freely mutate the repo (`git reset --hard`,
-//!     `checkout`, even `rm -rf` the worktree) WITHOUT first taking a
-//!     `crate::safety::snapshot`. GitCat's snapshot-before-mutation guarantee
-//!     (global Undo) therefore does NOT yet cover plugin-invoked mutations. The
-//!     registry declares `PreMutation`/`PostMutation` hook events but the
-//!     executor does not snapshot; wiring that is deferred.
+//! One gap below is now CLOSED; the rest are conscious, documented decisions so
+//! they are visible rather than silent holes:
+//!   * **Snapshot before mutation — CLOSED for `mutates: true` (PER-48).** A
+//!     command/hook now DECLARES whether it changes the repo
+//!     (`PluginCommand::mutates` / `PluginHook::mutates`, default `false`). When
+//!     `true`, the executor takes a `crate::safety::snapshot` BEFORE `run`
+//!     (see [`snapshot_before_mutation`]), so a plugin-invoked mutation (`git
+//!     reset --hard`, `checkout`, etc.) enters global Undo just like GitCat's own
+//!     mutations. [`run_plugin_command`] FAILS CLOSED if that snapshot can't be
+//!     taken (never mutate what we couldn't back up); [`run_hooks`] logs + skips
+//!     the one hook (an observer must not stall the event). A `mutates: false`
+//!     invocation is TRUSTED read-only and takes no snapshot (no Undo clutter) —
+//!     so a mutating action that does NOT declare `mutates` runs OUTSIDE Undo.
+//!     Plugin authors MUST set `mutates` on anything that changes the repo (see
+//!     SECURITY.md); GitCat cannot infer it from an opaque `run` string.
 //!   * **Flag/argument injection.** [`shell_quote`] stops shell-metacharacter
 //!     injection but does NOT change argument boundaries: an untrusted value
 //!     beginning with `-` (a branch named `--upload-pack=…`, a ref `-n`) is
@@ -167,6 +173,15 @@ pub struct CommandOutput {
 /// legitimately takes a while — but still bounded, so a hung plugin becomes a
 /// visible failure rather than a forever-spinning action.
 pub const PLUGIN_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Shorter bound for the HOOK path ([`run_hooks`]). Hooks are OBSERVERS that
+/// fire on lifecycle events (repo opened, post-mutation, …); they should be
+/// quick side-effects, not long-running tools, so they get a tighter leash than
+/// a user-invoked command — a slow/hung hook must not sit on the blocking pool
+/// for the full [`PLUGIN_CMD_TIMEOUT`]. A user's explicit command
+/// ([`run_plugin_command`]) may legitimately be a linter/test run and keeps the
+/// longer 120s bound.
+pub const HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
 // STAR: the pure placeholder grammar (no I/O, exhaustively tested below)
@@ -332,18 +347,59 @@ fn ctx_values(ctx: &PlaceholderCtx) -> Vec<(&'static str, &str)> {
 // Executor
 // ---------------------------------------------------------------------------
 
+/// Take a `crate::safety::snapshot` of the repo at `cwd` BEFORE a mutating
+/// plugin invocation runs, so the change it makes is covered by global Undo.
+/// Opens the repo (via [`crate::trust::open_repo`], the codebase's single
+/// repo-open choke point) and pins HEAD; returns the backup ref name.
+///
+/// Only ever called for a `mutates: true` command/hook (see [`PluginCommand`]).
+/// The two callers handle a failure differently, on purpose:
+///   * [`run_plugin_command`] (a foreground, user-invoked action) FAILS CLOSED —
+///     it propagates the error and does NOT run the command. We cannot inspect
+///     what an arbitrary plugin command will do, so — unlike a `git branch` we
+///     KNOW is safe — we must never let a declared-mutating command run when we
+///     could not back the repo up first ("never mutate without a backup"). The
+///     one expected failure is an empty/unborn-HEAD repo (nothing to pin), which
+///     is refused just like GitCat's own mutations (cherry-pick/merge/revert)
+///     already refuse to run there.
+///   * [`run_hooks`] (a background OBSERVER path that must never stall the event
+///     or its sibling hooks) treats a failure best-effort: it LOGS and SKIPS the
+///     one mutating hook, leaving the event and every other hook unaffected.
+///
+/// [`PluginCommand`]: crate::plugin_registry::PluginCommand
+fn snapshot_before_mutation(cwd: &str) -> Result<String, String> {
+    let repo = crate::trust::open_repo(cwd).map_err(|e| {
+        format!("could not open the repository to snapshot before a mutating plugin action: {}", e.message())
+    })?;
+    crate::safety::snapshot(&repo)
+}
+
 /// Expand `template` against `ctx`, then run it through the platform shell in
 /// `cwd` with the standard hardening — stdin nulled + stdout/stderr piped +
-/// bounded [`PLUGIN_CMD_TIMEOUT`] (all via `procutil::output_with_timeout`,
+/// bounded by [`PLUGIN_CMD_TIMEOUT`] (all via `procutil::output_with_timeout`,
 /// the same helper `tool_settings.rs` uses) and no flashed console window on
-/// Windows. stdout is ANSI-stripped; the exit code / success flag are returned
-/// as-is (a non-zero exit is a normal, reportable outcome, NOT an `Err` — an
-/// `Err` here means the command could not be launched or timed out).
+/// Windows. Thin wrapper over [`run_template_with_timeout`] pinning the
+/// user-command timeout; the hook path calls the `_with_timeout` form with the
+/// shorter [`HOOK_TIMEOUT`].
+pub fn run_template(template: &str, cwd: &str, ctx: &PlaceholderCtx) -> Result<CommandOutput, String> {
+    run_template_with_timeout(template, cwd, ctx, PLUGIN_CMD_TIMEOUT)
+}
+
+/// [`run_template`] with an explicit `timeout` (so the command path can keep the
+/// long [`PLUGIN_CMD_TIMEOUT`] while the hook path uses the tighter
+/// [`HOOK_TIMEOUT`]). stdout is ANSI-stripped; the exit code / success flag are
+/// returned as-is (a non-zero exit is a normal, reportable outcome, NOT an
+/// `Err` — an `Err` here means the command could not be launched or timed out).
 ///
 /// Routed through `sh -c` (unix) / `cmd /C` (Windows) so a plugin `run` string
 /// can be a full command line with args/pipes, exactly like a difftool `cmd`.
 /// See the module doc for the Windows single-quoting caveat.
-pub fn run_template(template: &str, cwd: &str, ctx: &PlaceholderCtx) -> Result<CommandOutput, String> {
+pub fn run_template_with_timeout(
+    template: &str,
+    cwd: &str,
+    ctx: &PlaceholderCtx,
+    timeout: std::time::Duration,
+) -> Result<CommandOutput, String> {
     use std::process::Command;
     // Windows fail-closed guard (see the module doc's Windows caveat): our POSIX
     // single-quoting does not bind cmd.exe, so refuse rather than risk injection
@@ -370,7 +426,7 @@ pub fn run_template(template: &str, cwd: &str, ctx: &PlaceholderCtx) -> Result<C
         c
     };
     command.current_dir(cwd).no_console_window();
-    let out = crate::procutil::output_with_timeout(command, PLUGIN_CMD_TIMEOUT)
+    let out = crate::procutil::output_with_timeout(command, timeout)
         .map_err(|e| format!("Could not run the plugin command: {e}"))?;
     Ok(CommandOutput {
         // Strip ANSI: CLIs (ollama, many linters, progress bars) stream cursor/
@@ -409,8 +465,20 @@ pub async fn run_plugin_command(
         .clone()
         .filter(|p| !p.trim().is_empty())
         .ok_or_else(|| "No repository path was provided for the plugin command.".to_string())?;
+    let mutates = command.mutates;
     let run = command.run;
-    crate::blocking::run_blocking(move || run_template(&run, &cwd, &ctx)).await
+    crate::blocking::run_blocking(move || {
+        // A command the plugin DECLARED as mutating gets a safety snapshot first,
+        // so its change is covered by global Undo. We FAIL CLOSED: if the
+        // snapshot can't be taken, the command does not run (never mutate what we
+        // couldn't back up). A `mutates: false` command is trusted read-only and
+        // takes no snapshot. See [`snapshot_before_mutation`].
+        if mutates {
+            snapshot_before_mutation(&cwd)?;
+        }
+        run_template(&run, &cwd, &ctx)
+    })
+    .await
 }
 
 /// The captured result of ONE plugin hook firing on a lifecycle event.
@@ -429,13 +497,18 @@ pub struct HookRun {
 /// fails to LAUNCH is skipped (a broken hook must not stall the event or the
 /// other hooks); a non-zero exit comes back as a normal [`CommandOutput`]. The
 /// registry is loaded inline (cheap), then the matched templates run on the
-/// blocking pool, same shape as [`run_plugin_command`].
+/// blocking pool (each bounded by the shorter [`HOOK_TIMEOUT`], not the
+/// user-command [`PLUGIN_CMD_TIMEOUT`]), same shape as [`run_plugin_command`].
 ///
-/// DEFERRED (PER-48): a hook command can mutate the repo and is NOT wrapped in a
-/// `crate::safety::snapshot` — the same deferral [`run_plugin_command`] and the
-/// module doc already document. Reentrancy is not a concern via GitCat: a hook's
-/// `git commit`/etc. is an external shell call that does not re-fire GitCat's own
-/// Tama lifecycle events, so a commit-created hook that commits cannot loop.
+/// A hook the plugin DECLARED as mutating (`mutates: true`) is snapshotted
+/// before it runs (via [`snapshot_before_mutation`]) so its change enters global
+/// Undo. Because a hook must never stall the event or its sibling hooks, this
+/// path is best-effort: if the snapshot fails, the one mutating hook is LOGGED
+/// and SKIPPED (rather than run unprotected or aborting the whole event). A
+/// `mutates: false` hook is a pure observer and takes no snapshot. Reentrancy is
+/// not a concern via GitCat: a hook's `git commit`/etc. is an external shell call
+/// that does not re-fire GitCat's own Tama lifecycle events, so a commit-created
+/// hook that commits cannot loop.
 ///
 /// JS: `commands.runHooks(event, ctx)`.
 #[tauri::command]
@@ -451,13 +524,14 @@ pub async fn run_hooks(
         .filter(|p| !p.trim().is_empty())
         .ok_or_else(|| "No repository path was provided for plugin hooks.".to_string())?;
     let plugins = crate::plugin_registry::load_plugins(&app)?;
-    // (plugin_id, run-template) for every enabled plugin's hook matching `event`.
-    let jobs: Vec<(String, String)> = plugins
+    // (plugin_id, run-template, mutates) for every enabled plugin's hook matching
+    // `event`.
+    let jobs: Vec<(String, String, bool)> = plugins
         .into_iter()
         .filter(|p| p.enabled)
         .flat_map(|p| {
             let pid = p.id;
-            p.hooks.into_iter().filter(|h| h.event == event).map(move |h| (pid.clone(), h.run))
+            p.hooks.into_iter().filter(|h| h.event == event).map(move |h| (pid.clone(), h.run, h.mutates))
         })
         .collect();
     if jobs.is_empty() {
@@ -465,10 +539,21 @@ pub async fn run_hooks(
     }
     crate::blocking::run_blocking(move || {
         let mut out = Vec::with_capacity(jobs.len());
-        for (plugin_id, run) in jobs {
+        for (plugin_id, run, mutates) in jobs {
+            // A declared-mutating hook is snapshotted first so its change enters
+            // global Undo. Best-effort (an observer must never stall the event or
+            // its siblings): if the snapshot fails, log and SKIP this one hook.
+            if mutates {
+                if let Err(e) = snapshot_before_mutation(&cwd) {
+                    eprintln!(
+                        "run_hooks: skipping mutating hook from plugin {plugin_id:?} on {event:?} — safety snapshot failed: {e}"
+                    );
+                    continue;
+                }
+            }
             // Skip a hook that can't even launch — it must never stall the event
             // or the sibling hooks. A non-zero exit is a normal, returned result.
-            if let Ok(output) = run_template(&run, &cwd, &ctx) {
+            if let Ok(output) = run_template_with_timeout(&run, &cwd, &ctx, HOOK_TIMEOUT) {
                 out.push(HookRun { plugin_id, event, output });
             }
         }
@@ -816,6 +901,91 @@ mod tests {
         let out = run_template("printf %s {branch}", dir.to_str().unwrap(), &ctx).expect("should run");
         assert_eq!(out.stdout, "a'; touch pwned; echo 'b");
         assert!(!dir.join("pwned").exists(), "breakout attempt must NOT have executed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- timeouts: the hook path is on a tighter leash than a user command ---
+
+    #[test]
+    fn timeout_constants_are_the_expected_values_and_hooks_are_tighter() {
+        // The hook path must use a SHORTER bound than a user-invoked command.
+        assert_eq!(PLUGIN_CMD_TIMEOUT, std::time::Duration::from_secs(120));
+        assert_eq!(HOOK_TIMEOUT, std::time::Duration::from_secs(30));
+        assert!(HOOK_TIMEOUT < PLUGIN_CMD_TIMEOUT, "an observer hook must not get the full command timeout");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_template_with_timeout_kills_a_command_past_its_deadline() {
+        // A command that outlives the passed timeout is killed and reported as an
+        // Err (launch/timeout failure), NOT a normal CommandOutput. This proves
+        // the timeout parameter is actually honored — the mechanism run_hooks
+        // relies on to enforce the shorter HOOK_TIMEOUT.
+        let dir = tmp_cwd("timeout");
+        let ctx = PlaceholderCtx::default();
+        let res = run_template_with_timeout("sleep 5", dir.to_str().unwrap(), &ctx, std::time::Duration::from_millis(200));
+        assert!(res.is_err(), "a command exceeding its timeout must Err, got: {res:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_template_delegates_with_the_long_command_timeout() {
+        // The thin run_template wrapper delegates to run_template_with_timeout
+        // pinning PLUGIN_CMD_TIMEOUT: a quick command still completes through it.
+        let dir = tmp_cwd("delegate");
+        let ctx = PlaceholderCtx::default();
+        let out = run_template("printf ok", dir.to_str().unwrap(), &ctx).expect("a quick command should complete");
+        assert_eq!(out.stdout, "ok");
+        assert!(out.success);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- the mutates -> snapshot plumbing (PER-48) --------------------------
+
+    #[test]
+    fn snapshot_before_mutation_errors_on_a_non_repo_path() {
+        // A `mutates: true` invocation whose cwd is not a git repo cannot be
+        // backed up -> Err. run_plugin_command turns this into a fail-closed abort
+        // (never mutate what we couldn't snapshot); run_hooks logs + skips.
+        let dir = std::env::temp_dir().join(format!(
+            "gitcat-plugin-exec-nonrepo-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let res = snapshot_before_mutation(dir.to_str().unwrap());
+        assert!(res.is_err(), "snapshotting a non-repo dir must fail, got: {res:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_before_mutation_pins_a_backup_ref_in_a_real_repo() {
+        // The mutates decision -> snapshot plumbing, end to end: in a real repo
+        // with a commit, snapshot_before_mutation returns a backup ref and that
+        // ref is actually pinned under refs/gitgui/backup/*, so a mutating plugin
+        // action taken right after is covered by global Undo. git2 builds the repo
+        // in-process (no shelling to `git`).
+        let dir = tmp_cwd("snap-repo");
+        let repo = git2::Repository::init(&dir).expect("init repo");
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = {
+            let mut index = repo.index().unwrap();
+            index.write_tree().unwrap()
+        };
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).expect("initial commit");
+        drop(tree); // `tree` borrows `repo`; release it before moving `repo` into drop()
+        drop(repo);
+
+        let backup = snapshot_before_mutation(dir.to_str().unwrap()).expect("snapshot should succeed in a repo");
+        assert!(backup.starts_with("refs/gitgui/backup/"), "unexpected backup ref name: {backup}");
+
+        let check = git2::Repository::open(&dir).unwrap();
+        let count = check.references_glob("refs/gitgui/backup/*").unwrap().count();
+        assert_eq!(count, 1, "exactly one backup ref must have been pinned before the mutation");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

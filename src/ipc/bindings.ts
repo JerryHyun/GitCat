@@ -2820,9 +2820,12 @@ async getToolSettings() : Promise<Result<ToolSettings, string>> {
 }
 },
 /**
- * Whole-form overwrite (the settings modal always submits both slots at
- * once) — no read-modify-write needed, unlike `repo_registry`'s list
- * mutations, but still lock-guarded for the same cheap-insurance reason.
+ * Overwrite the three legacy SINGLETON slots (the settings modal always
+ * submits all of them at once). Now a READ-modify-write (it was a whole-value
+ * overwrite before PER-44): it loads the current settings first so it only
+ * touches the singleton fields and PRESERVES the named-tools list + active
+ * selections — otherwise saving the singleton form would silently wipe every
+ * named tool the user had configured. Still lock-guarded, same as before.
  * JS: `commands.setToolSettings(diffTool, mergeTool, commitMsgCommand)`.
  */
 async setToolSettings(diffTool: ExternalTool | null, mergeTool: ExternalTool | null, commitMsgCommand: string | null) : Promise<Result<ToolSettings, string>> {
@@ -2938,6 +2941,42 @@ async resolveConflictWithExternalTool(path: string, file: string) : Promise<Reso
     return await TAURI_INVOKE("resolve_conflict_with_external_tool", { path, file });
 },
 /**
+ * Add a new named tool, or update an existing one with the same `id` (upsert).
+ * JS: `commands.saveNamedTool(tool)`.
+ */
+async saveNamedTool(tool: NamedTool) : Promise<Result<ToolSettings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_named_tool", { tool }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Remove the named tool with `id` (and clear it as any kind's active
+ * selection). JS: `commands.removeNamedTool(id)`.
+ */
+async removeNamedTool(id: string) : Promise<Result<ToolSettings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("remove_named_tool", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Select (or, with `id: None`, clear) the active tool for a kind.
+ * JS: `commands.setActiveTool(kind, id)`.
+ */
+async setActiveTool(kind: ToolKind, id: string | null) : Promise<Result<ToolSettings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_active_tool", { kind, id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * JS: `commands.listPlugins()`.
  */
 async listPlugins() : Promise<Result<Plugin[], string>> {
@@ -3014,13 +3053,18 @@ async runPluginCommand(pluginId: string, commandId: string, ctx: PlaceholderCtx)
  * fails to LAUNCH is skipped (a broken hook must not stall the event or the
  * other hooks); a non-zero exit comes back as a normal [`CommandOutput`]. The
  * registry is loaded inline (cheap), then the matched templates run on the
- * blocking pool, same shape as [`run_plugin_command`].
+ * blocking pool (each bounded by the shorter [`HOOK_TIMEOUT`], not the
+ * user-command [`PLUGIN_CMD_TIMEOUT`]), same shape as [`run_plugin_command`].
  * 
- * DEFERRED (PER-48): a hook command can mutate the repo and is NOT wrapped in a
- * `crate::safety::snapshot` — the same deferral [`run_plugin_command`] and the
- * module doc already document. Reentrancy is not a concern via GitCat: a hook's
- * `git commit`/etc. is an external shell call that does not re-fire GitCat's own
- * Tama lifecycle events, so a commit-created hook that commits cannot loop.
+ * A hook the plugin DECLARED as mutating (`mutates: true`) is snapshotted
+ * before it runs (via [`snapshot_before_mutation`]) so its change enters global
+ * Undo. Because a hook must never stall the event or its sibling hooks, this
+ * path is best-effort: if the snapshot fails, the one mutating hook is LOGGED
+ * and SKIPPED (rather than run unprotected or aborting the whole event). A
+ * `mutates: false` hook is a pure observer and takes no snapshot. Reentrancy is
+ * not a concern via GitCat: a hook's `git commit`/etc. is an external shell call
+ * that does not re-fire GitCat's own Tama lifecycle events, so a commit-created
+ * hook that commits cannot loop.
  * 
  * JS: `commands.runHooks(event, ctx)`.
  */
@@ -3654,6 +3698,42 @@ state: string; conflictedFiles: string[]; message: string; backupRef: string | n
 suggestedMessage: string | null }
 export type MonthlyActivity = { month: string; commits: number }
 /**
+ * One of possibly-many NAMED external tools the user has configured (PER-44).
+ * Generalizes the three legacy SINGLETONS (`diff_tool`/`merge_tool`/
+ * `commit_msg_command`) into a managed list keyed by a stable, unique [`id`].
+ */
+export type NamedTool = { 
+/**
+ * Stable, UNIQUE identifier matching `^[a-z0-9][a-z0-9-]*$` (validated by
+ * [`normalize_named_tool`]). Two jobs: it's the list's primary key for
+ * upsert/remove/active-selection, AND — for a diff/merge tool — it is
+ * reused VERBATIM as the git `difftool.<id>.cmd=`/`mergetool.<id>.cmd=`
+ * config SUBSECTION name at invocation time. That charset is a deliberate
+ * subset of [`ExternalTool::name`]'s (lowercase, no `_`, no leading `-`,
+ * crucially NO `.`) so it is unambiguous in git's dotted `-c` shorthand —
+ * see that field's doc for why a literal `.` there is unescapable.
+ */
+id: string; 
+/**
+ * A free-form human label shown in the UI. Unlike [`id`] it carries NO git
+ * charset constraint (it never reaches a git config key), only a
+ * non-blank check.
+ */
+name: string; 
+/**
+ * Which slot this tool feeds — see [`ToolKind`].
+ */
+kind: ToolKind; 
+/**
+ * The command. For a diff/merge tool this is the `difftool`/`mergetool`
+ * `cmd` override (git's `$LOCAL`/`$REMOTE`/`$BASE`/`$MERGED` placeholders);
+ * for a commit tool it's the print-only shell command (see
+ * [`ToolSettings::commit_msg_command`]). Required (a named tool with no
+ * command is meaningless) — same user-authored trust boundary as every
+ * other `cmd` in this module.
+ */
+cmd: string }
+/**
  * One author/committer identity. `t` is a unix timestamp; the frontend formats it.
  */
 export type Person = { n: string; e: string; t: number }
@@ -3783,7 +3863,21 @@ export type PluginCommand = { id: string; label: string;
  * [`validate_manifest`]); NOT otherwise sanitized — same trust boundary
  * as `tool_settings.rs`'s diff/merge `cmd`.
  */
-run: string; context?: PluginContext; placement?: PluginPlacement }
+run: string; context?: PluginContext; placement?: PluginPlacement; 
+/**
+ * Does this command CHANGE the repository? A plugin DECLARES `true` for a
+ * command that mutates (checks out, resets, commits, deletes files, …).
+ * `#[serde(default)]` => `false` when omitted, so a v1 manifest with no
+ * `mutates` still loads and is treated as read-only.
+ * 
+ * The executor honors it: for a `mutates: true` invocation it takes a
+ * `crate::safety::snapshot` BEFORE running `run`, so the change enters
+ * global Undo; a `mutates: false` invocation takes NO snapshot (no Undo
+ * clutter for read-only tools). A mutating command that does NOT set this
+ * runs OUTSIDE Undo — authors must set it (see SECURITY.md and
+ * `plugin_exec::run_plugin_command`).
+ */
+mutates?: boolean }
 /**
  * What a command needs from the current UI selection to be applicable — the
  * executor uses this to decide where a command is offered (e.g. a `commit`
@@ -3816,7 +3910,14 @@ export type PluginEvent = "repo-opened" | "repo-switched" | "pre-mutation" | "po
  * One lifecycle hook: run `run` (an external command TEMPLATE, same trust
  * boundary as [`PluginCommand::run`]) when `event` fires.
  */
-export type PluginHook = { event: PluginEvent; run: string }
+export type PluginHook = { event: PluginEvent; run: string; 
+/**
+ * Does this hook CHANGE the repository? Same semantics as
+ * [`PluginCommand::mutates`] (default `false` => pure observer, no
+ * snapshot). A `mutates: true` hook is snapshotted before it runs so its
+ * change is covered by global Undo; see `plugin_exec::run_hooks`.
+ */
+mutates?: boolean }
 /**
  * Where a command surfaces. Serialized lowercase (`"palette"`/`"menu"`/
  * `"both"`); defaults to `Palette` when a manifest omits it.
@@ -4148,6 +4249,24 @@ export type TagObject = { sha: string; name: string; tagger: PlumbingPerson | nu
  */
 export type TodoItem = { sha: string; action: string }
 /**
+ * Which invocation slot a [`NamedTool`] plugs into. Serialized lowercase
+ * (`"diff"`/`"merge"`/`"commit"`) so it reads naturally both on disk and as a
+ * TS string-union over the IPC boundary.
+ */
+export type ToolKind = 
+/**
+ * An external diff tool (drives `git difftool`, like [`ToolSettings::diff_tool`]).
+ */
+"diff" | 
+/**
+ * An external merge tool (drives `git mergetool`, like [`ToolSettings::merge_tool`]).
+ */
+"merge" | 
+/**
+ * A print-only commit-message command (like [`ToolSettings::commit_msg_command`]).
+ */
+"commit"
+/**
  * App-level (NOT per-repo) tool preferences — a personal cross-repo setting
  * exactly like a real git client's tool prefs, persisted as one small JSON
  * file under `app_config_dir()`.
@@ -4164,7 +4283,20 @@ export type ToolSettings = { diffTool: ExternalTool | null; mergeTool: ExternalT
  * Unlike a tool `name`, this has no git-subsection charset constraint, so
  * it's a plain trimmed string (blank => `None` => the feature is unset).
  */
-commitMsgCommand: string | null }
+commitMsgCommand: string | null; 
+/**
+ * PER-44: the managed list of NAMED tools, generalizing the three
+ * singletons above. Empty on a v1 file / first run (see [`load_from`]'s
+ * migration note) — in which case resolution behaves EXACTLY as before.
+ */
+tools?: NamedTool[]; 
+/**
+ * The [`NamedTool::id`] of the currently-ACTIVE diff/merge/commit tool,
+ * or `None` to fall through to the matching singleton (then git config).
+ * See [`configured_diff_tool`]/[`configured_merge_tool`]/
+ * [`resolve_commit_command`] for the precedence.
+ */
+activeDiffToolId?: string | null; activeMergeToolId?: string | null; activeCommitToolId?: string | null }
 export type TrackedRepo = { path: string; 
 /**
  * Unix seconds this repo was last OPENED through this app (via

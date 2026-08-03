@@ -74,6 +74,7 @@ Each entry in `commands[]` contributes one invocable action.
 | `run` | ✅ | The external command [template](#placeholders). Must be non-empty. |
 | `context` | — | What selection the command needs. Default `"none"`. |
 | `placement` | — | Where the command surfaces. Default `"palette"`. |
+| `mutates` | — | Set `true` if the command changes the repository. Default `false`. See [Mutating actions & Undo](#mutating-actions-undo). |
 
 ### `context`
 
@@ -167,6 +168,8 @@ Key facts about hooks:
 - **Hooks are fire-and-forget observers.** GitCat does not wait for a hook before proceeding, and a hook **cannot veto or block** an operation. Even a slow `pre-mutation` hook can't gate the mutation it observes.
 - **Only enabled plugins' hooks run.** A hook whose command fails to even launch is skipped so it can't stall the event or the other hooks.
 - Hooks receive **only `{repo}`** in their context today.
+- A hook can set `"mutates": true` (same as a command) if it changes the repo — see [Mutating actions & Undo](#mutating-actions-undo).
+- Hooks run on a shorter **30-second timeout** than commands (they're background observers).
 - No infinite loops: a hook that itself runs `git commit` is an external shell call and does **not** re-fire GitCat's own lifecycle events.
 
 ## Tama reactions
@@ -221,7 +224,7 @@ A plugin's `run` string is a **user-authored external command that runs on your 
 
 A few limits worth knowing while the plugin security model is still being built out:
 
-- **Plugin mutations are outside global Undo (for now).** GitCat snapshots before its *own* mutations so Undo can always restore them. A plugin/hook command that mutates the repo (`git reset --hard`, `git checkout`, etc.) is **not** wrapped in that snapshot yet, so those changes are not covered by global Undo. Treat a mutating plugin command with the same care as running the command by hand.
+- <a id="mutating-actions-undo"></a>**Mutating actions & Undo.** GitCat snapshots before its *own* mutations so global Undo can always restore them. A plugin command or hook that changes the repo (`git reset --hard`, `git checkout`, etc.) gets the same protection **when it declares `"mutates": true`**: GitCat takes a snapshot before running it, so the change is covered by Undo. A command declared this way that can't be snapshotted is **refused** rather than run unprotected. A mutating action that does **not** set `mutates` runs **outside** Undo (and takes no snapshot) — so **always set `"mutates": true` on anything that changes the repo.** GitCat can't infer it from your opaque `run` string.
 - **Argument injection is your responsibility.** Quoting stops shell injection but not flag injection — use `--` before untrusted placeholders (see [above](#placeholders)).
 - **The subprocess inherits GitCat's environment.** A plugin command can read GitCat's environment variables.
 

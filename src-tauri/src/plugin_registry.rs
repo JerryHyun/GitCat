@@ -112,6 +112,19 @@ pub struct PluginCommand {
     pub context: PluginContext,
     #[serde(default)]
     pub placement: PluginPlacement,
+    /// Does this command CHANGE the repository? A plugin DECLARES `true` for a
+    /// command that mutates (checks out, resets, commits, deletes files, …).
+    /// `#[serde(default)]` => `false` when omitted, so a v1 manifest with no
+    /// `mutates` still loads and is treated as read-only.
+    ///
+    /// The executor honors it: for a `mutates: true` invocation it takes a
+    /// `crate::safety::snapshot` BEFORE running `run`, so the change enters
+    /// global Undo; a `mutates: false` invocation takes NO snapshot (no Undo
+    /// clutter for read-only tools). A mutating command that does NOT set this
+    /// runs OUTSIDE Undo — authors must set it (see SECURITY.md and
+    /// `plugin_exec::run_plugin_command`).
+    #[serde(default)]
+    pub mutates: bool,
 }
 
 /// One lifecycle hook: run `run` (an external command TEMPLATE, same trust
@@ -121,6 +134,12 @@ pub struct PluginCommand {
 pub struct PluginHook {
     pub event: PluginEvent,
     pub run: String,
+    /// Does this hook CHANGE the repository? Same semantics as
+    /// [`PluginCommand::mutates`] (default `false` => pure observer, no
+    /// snapshot). A `mutates: true` hook is snapshotted before it runs so its
+    /// change is covered by global Undo; see `plugin_exec::run_hooks`.
+    #[serde(default)]
+    pub mutates: bool,
 }
 
 /// A plugin manifest (`plugin.json`).
@@ -446,8 +465,9 @@ mod tests {
                 run: "echo hi".into(),
                 context: PluginContext::Commit,
                 placement: PluginPlacement::Both,
+                mutates: false,
             }],
-            hooks: vec![PluginHook { event: PluginEvent::PostMutation, run: "echo done".into() }],
+            hooks: vec![PluginHook { event: PluginEvent::PostMutation, run: "echo done".into(), mutates: false }],
         }
     }
 
@@ -518,6 +538,40 @@ mod tests {
         assert!(loaded[0].hooks.is_empty(), "omitted `hooks` must default to empty");
         assert_eq!(loaded[0].commands[0].context, PluginContext::None, "omitted context => None");
         assert_eq!(loaded[0].commands[0].placement, PluginPlacement::Palette, "omitted placement => Palette");
+        assert!(!loaded[0].commands[0].mutates, "omitted `mutates` must default to false (read-only)");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mutates_defaults_false_and_v1_manifest_without_it_still_loads() {
+        // A pre-`mutates` (v1) manifest — a command AND a hook, neither declaring
+        // `mutates` — must still deserialize, with both defaulting to false
+        // (backward compatibility: the field is `#[serde(default)]`). A manifest
+        // that DOES declare `mutates: true` must round-trip that flag.
+        let dir = temp_dir("mutates");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE_NAME);
+        std::fs::write(
+            &path,
+            r#"{"version":1,"plugins":[
+                {"id":"v1","name":"V1","version":"1.0.0",
+                 "commands":[{"id":"read","label":"Read","run":"git status"},
+                             {"id":"reset","label":"Reset","run":"git reset --hard","mutates":true}],
+                 "hooks":[{"event":"post-mutation","run":"echo obs"},
+                          {"event":"pre-mutation","run":"git stash","mutates":true}]}
+            ]}"#,
+        )
+        .unwrap();
+
+        let loaded = load_from(&path).expect("a v1 manifest with no `mutates` must still load");
+        assert_eq!(loaded.len(), 1);
+        // Command: omitted => false; declared => true (round-trips).
+        assert!(!loaded[0].commands[0].mutates, "a command omitting `mutates` defaults to false");
+        assert!(loaded[0].commands[1].mutates, "`mutates: true` must round-trip on a command");
+        // Hook: omitted => false; declared => true (round-trips).
+        assert!(!loaded[0].hooks[0].mutates, "a hook omitting `mutates` defaults to false");
+        assert!(loaded[0].hooks[1].mutates, "`mutates: true` must round-trip on a hook");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

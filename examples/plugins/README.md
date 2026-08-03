@@ -63,9 +63,9 @@ Honest caveats worth knowing:
   `repo-opened`, `repo-switched`, `pre-mutation`, `commit-created`, `undo`.
 - Hooks are **fire-and-forget observers** — they cannot veto or block a GitCat
   operation.
-- A plugin/hook command that **mutates** the repo is **not** wrapped in GitCat's
-  snapshot-before-mutation, so such changes are outside global **Undo** for now
-  (deferred hardening).
+- A plugin/hook command that changes the repo should declare **`"mutates": true`**:
+  GitCat then snapshots before running it, so the change is covered by global
+  **Undo** (a mutating action that omits `mutates` runs outside Undo).
 - **Windows**: `run` lines are POSIX-shell one-liners; the Windows executor uses
   `cmd.exe`, and a value containing a `cmd` metacharacter (`& | < > ^ % ! "`,
   CR/LF) is refused fail-closed (so `{diff}` is usually refused on Windows).

@@ -307,6 +307,10 @@ fn specta_builder() -> Builder<tauri::Wry> {
         tool_settings::suggest_commit_msg_command,
         tool_settings::open_diff_tool,
         tool_settings::resolve_conflict_with_external_tool,
+        // PER-44: multiple named diff/merge/commit tools (list + active selection)
+        tool_settings::save_named_tool,
+        tool_settings::remove_named_tool,
+        tool_settings::set_active_tool,
         // PER-39/40: plugin system foundation — local registry CRUD + the
         // hardened external-process command executor (placeholder grammar).
         plugin_registry::list_plugins,
