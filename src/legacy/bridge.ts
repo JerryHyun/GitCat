@@ -12,6 +12,12 @@ export {
   cheer,
   highlight,
   Tama as tama,
+  // Additive, subscribable Tama event bus (legacy/main.ts) — islands call
+  // `bridge.tamaBus.subscribe(fn)` to observe the SAME event stream the mascot
+  // reacts to. A mid-file `export const` in legacy/main.ts, so this live
+  // re-export is TDZ-safe (same reasoning as CUR_REPO above); the ~28 existing
+  // `bridge.tama.event(...)` call sites are untouched.
+  tamaBus,
   TAMA_IMG,
   requestRedraw,
   // the open repo's absolute path (or null when none is open) — a live

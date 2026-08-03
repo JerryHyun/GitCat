@@ -1213,6 +1213,21 @@ const Safety={ count:214, lastAt:performance.now()-2*60*1000, snaps:[], pad(n){r
   teleAgo(){ if(IN_TAURI){ return this.snaps.length ? relTime(this.snaps[0].ts).replace(" ago","") : "—"; }
     const m=Math.max(0,Math.round((performance.now()-this.lastAt)/60000)); return m<1?"just now":m+"m"; } };
 
+// Additive, subscribable event bus for every Tama event. TamaMascot.event()
+// emit()s here at the TOP of its switch (see below), so islands can observe the
+// exact same stream the mascot reacts to WITHOUT touching the ~28 existing
+// `bridge.tama.event(...)` call sites. Declared as a MID-FILE `export const`
+// (same live-binding shape as CUR_REPO/NAV_STACK) so bridge.ts's
+// `export { tamaBus } from "./main"` re-exports it cleanly. A subscriber that
+// throws is isolated (logged, iteration over a snapshot) — it can never break
+// emit() or the app, and never blocks the mascot's own reaction or Safety.seal.
+// NOTE ordering: emit() fires at the TOP of event(), BEFORE the switch runs
+// Safety.seal()/the pose change — so a subscriber observes PRE-reaction state.
+// Future consumers (PER-43 hooks / PER-46 reactions) should read what they need
+// from `payload`, not from Safety/DOM globals (not yet updated at emit time),
+// and must stay observe-only (never re-enter Tama.event() from a subscriber).
+export const tamaBus = (() => { const subs = []; return { subscribe(fn){ subs.push(fn); return () => { const i = subs.indexOf(fn); if (i >= 0) subs.splice(i, 1); }; }, emit(name, payload){ for (const fn of subs.slice()) { try { fn(name, payload); } catch (e) { console.error("tamaBus subscriber failed", e); } } } }; })();
+
 class TamaMascot{
   static STATES={idle:{sticky:false},sleep:{sticky:false},hint:{sticky:false,dwell:3200},thinking:{sticky:true},warn:{sticky:true},danger:{sticky:true},celebrate:{sticky:false,dwell:3600},rescue:{sticky:true},
     // confused: a real operation FAILURE (see warn() below — distinct from
@@ -1302,6 +1317,7 @@ class TamaMascot{
   nod(){if(this.reduced)return;this.sprite.classList.remove("nod");void this.sprite.offsetWidth;this.sprite.classList.add("nod");}
   setInteracting(on){this.nook.classList.toggle("is-interacting",on);}
   event(name,p={}){
+    tamaBus.emit(name,p);
     switch(name){
       case "fetch.upToDate": case "checkout.clean": this.nod(); return null;
       case "commit.created": Safety.seal(); this._tele(); return null;
