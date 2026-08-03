@@ -413,6 +413,70 @@ pub async fn run_plugin_command(
     crate::blocking::run_blocking(move || run_template(&run, &cwd, &ctx)).await
 }
 
+/// The captured result of ONE plugin hook firing on a lifecycle event.
+#[derive(Serialize, Deserialize, Clone, Debug, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HookRun {
+    pub plugin_id: String,
+    pub event: crate::plugin_registry::PluginEvent,
+    pub output: CommandOutput,
+}
+
+/// Run every ENABLED plugin's hook(s) registered for `event`, in the repo at
+/// `ctx.repo`. A hook is an OBSERVER: it cannot veto or block GitCat's own
+/// operation — the frontend fires this without awaiting it before proceeding, so
+/// even a slow/pre-mutation hook never gates the mutation. A hook whose command
+/// fails to LAUNCH is skipped (a broken hook must not stall the event or the
+/// other hooks); a non-zero exit comes back as a normal [`CommandOutput`]. The
+/// registry is loaded inline (cheap), then the matched templates run on the
+/// blocking pool, same shape as [`run_plugin_command`].
+///
+/// DEFERRED (PER-48): a hook command can mutate the repo and is NOT wrapped in a
+/// `crate::safety::snapshot` — the same deferral [`run_plugin_command`] and the
+/// module doc already document. Reentrancy is not a concern via GitCat: a hook's
+/// `git commit`/etc. is an external shell call that does not re-fire GitCat's own
+/// Tama lifecycle events, so a commit-created hook that commits cannot loop.
+///
+/// JS: `commands.runHooks(event, ctx)`.
+#[tauri::command]
+#[specta::specta]
+pub async fn run_hooks(
+    app: AppHandle<Wry>,
+    event: crate::plugin_registry::PluginEvent,
+    ctx: PlaceholderCtx,
+) -> Result<Vec<HookRun>, String> {
+    let cwd = ctx
+        .repo
+        .clone()
+        .filter(|p| !p.trim().is_empty())
+        .ok_or_else(|| "No repository path was provided for plugin hooks.".to_string())?;
+    let plugins = crate::plugin_registry::load_plugins(&app)?;
+    // (plugin_id, run-template) for every enabled plugin's hook matching `event`.
+    let jobs: Vec<(String, String)> = plugins
+        .into_iter()
+        .filter(|p| p.enabled)
+        .flat_map(|p| {
+            let pid = p.id;
+            p.hooks.into_iter().filter(|h| h.event == event).map(move |h| (pid.clone(), h.run))
+        })
+        .collect();
+    if jobs.is_empty() {
+        return Ok(Vec::new());
+    }
+    crate::blocking::run_blocking(move || {
+        let mut out = Vec::with_capacity(jobs.len());
+        for (plugin_id, run) in jobs {
+            // Skip a hook that can't even launch — it must never stall the event
+            // or the sibling hooks. A non-zero exit is a normal, returned result.
+            if let Ok(output) = run_template(&run, &cwd, &ctx) {
+                out.push(HookRun { plugin_id, event, output });
+            }
+        }
+        Ok(out)
+    })
+    .await
+}
+
 // ---------------------------------------------------------------------------
 // Duplicated small helper (see module doc): ANSI stripping, copied from
 // tool_settings.rs (private there). Char-based so multibyte UTF-8 survives.

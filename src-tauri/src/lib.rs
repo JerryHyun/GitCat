@@ -314,6 +314,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         plugin_registry::install_plugin_from_path,
         plugin_registry::remove_plugin,
         plugin_exec::run_plugin_command,
+        plugin_exec::run_hooks, // PER-43: run enabled plugins' hooks for a lifecycle event
         // Repo-root file editors (backlog #14, final item): view/edit .gitignore
         // and .mailmap directly — allow-listed to exactly these two names, see
         // repo_files.rs's own module doc.

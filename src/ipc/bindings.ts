@@ -3007,6 +3007,32 @@ async runPluginCommand(pluginId: string, commandId: string, ctx: PlaceholderCtx)
 }
 },
 /**
+ * Run every ENABLED plugin's hook(s) registered for `event`, in the repo at
+ * `ctx.repo`. A hook is an OBSERVER: it cannot veto or block GitCat's own
+ * operation — the frontend fires this without awaiting it before proceeding, so
+ * even a slow/pre-mutation hook never gates the mutation. A hook whose command
+ * fails to LAUNCH is skipped (a broken hook must not stall the event or the
+ * other hooks); a non-zero exit comes back as a normal [`CommandOutput`]. The
+ * registry is loaded inline (cheap), then the matched templates run on the
+ * blocking pool, same shape as [`run_plugin_command`].
+ * 
+ * DEFERRED (PER-48): a hook command can mutate the repo and is NOT wrapped in a
+ * `crate::safety::snapshot` — the same deferral [`run_plugin_command`] and the
+ * module doc already document. Reentrancy is not a concern via GitCat: a hook's
+ * `git commit`/etc. is an external shell call that does not re-fire GitCat's own
+ * Tama lifecycle events, so a commit-created hook that commits cannot loop.
+ * 
+ * JS: `commands.runHooks(event, ctx)`.
+ */
+async runHooks(event: PluginEvent, ctx: PlaceholderCtx) : Promise<Result<HookRun[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("run_hooks", { event, ctx }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Read `file_name`'s current content (repo-root only). Missing file => `Ok("")`,
  * never an error — see module doc comment.
  * JS: `commands.readRepoFile(path, fileName)` -> `Result<string, string>`.
@@ -3519,6 +3545,10 @@ error: string | null;
  * complete one.
  */
 truncated: boolean }
+/**
+ * The captured result of ONE plugin hook firing on a lifecycle event.
+ */
+export type HookRun = { pluginId: string; event: PluginEvent; output: CommandOutput }
 /**
  * One hunk's selection. `header` is `DiffHunkRow::header` byte-for-byte, as
  * last fetched by `workdir_file_diff` — the anchor this module re-verifies

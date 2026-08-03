@@ -18,6 +18,7 @@ import MainlinePicker from "./islands/mainlinepicker/MainlinePicker.svelte";
 import TamaConfirm from "./islands/tamaconfirm/TamaConfirm.svelte";
 import RepoSummary from "./islands/reposummary/RepoSummary.svelte";
 import { repoSummaryCtrl } from "./islands/reposummary/reposummary.svelte.ts";
+import { pluginHooksCtrl } from "./islands/pluginhooks/pluginhooks.svelte.ts";
 import Remotes from "./islands/remotes/Remotes.svelte";
 import { remotesCtrl } from "./islands/remotes/remotes.svelte.ts";
 import { resolver } from "./islands/resolver/resolver.svelte.ts";
@@ -609,6 +610,11 @@ if (IN_TAURI) {
     dlog("trigger", "file watcher: repo-changed (external git-dir change)");
     void refreshFromExternalChange();
   });
+
+  // PER-43: start the plugin lifecycle-hook dispatcher — subscribes to the Tama
+  // event bus so commit/undo/mutation moments fire matching plugin hooks. (The
+  // repo-open/switch hooks are pushed from openRepo()'s tail in legacy/main.ts.)
+  pluginHooksCtrl.start();
 
   // Streaming graph load: the "graph-batch" event listener is registered inside
   // legacy/main.ts (next to onGraphBatch, BEFORE its boot-time openRepo), not

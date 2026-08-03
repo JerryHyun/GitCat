@@ -15,6 +15,7 @@ import { orderRefs } from "./reforder.ts";
 import { LruCache } from "./graphcache.ts";
 import { dashboardCtrl } from "../islands/dashboard/dashboard.svelte.ts";
 import { repoSummaryCtrl } from "../islands/reposummary/reposummary.svelte.ts";
+import { pluginHooksCtrl } from "../islands/pluginhooks/pluginhooks.svelte.ts";
 import { syncProgressCtrl } from "../islands/syncprogress/syncprogress.svelte.ts";
 import { tamaConfirmCtrl } from "../islands/tamaconfirm/tamaconfirm.svelte.ts";
 // Hidden Easter egg — see its own header doc + this file's click-counter
@@ -2597,6 +2598,9 @@ async function openRepo(path){
     // and self-contained (own try/catch), so it can never block opening the
     // repo — same as watch_repo/track_repo_opened above.
     await repoSummaryCtrl.maybeAutoShow(path);
+    // PER-43: fire plugin lifecycle hooks for this open (repo-opened / -switched).
+    // Fire-and-forget observers — never blocks the open (own async + try/catch).
+    pluginHooksCtrl.onRepoOpened(path);
     return true;
   }catch(e){ setGraphLoadingPill(false); Tama.warn("Couldn't open that repo — "+e,5000); console.error(e); return false; }
   finally{ openRepoBusy=false; if(pickBtn){ pickBtn.disabled=false; if(pickSpinner) pickSpinner.remove(); } if(graphLoading) graphLoading.style.display="none"; }
