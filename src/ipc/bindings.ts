@@ -3750,6 +3750,47 @@ kind: ToolKind;
  */
 cmd: string }
 /**
+ * One declarative widget inside a [`PluginPanel`] (PER-45) — a FIXED, closed
+ * vocabulary GitCat renders ITSELF. A panel runs NO plugin code: the only way
+ * a widget triggers behavior is a `button`/`command-output` that names one of
+ * the plugin's OWN [`PluginCommand`] ids, which the frontend invokes through
+ * the exact same declarative `run_plugin_command` path as the palette/menu
+ * (PER-42) — nothing is ever eval'd.
+ * 
+ * Internally tagged by a kebab-case `"type"` discriminator, so a manifest
+ * author writes e.g. `{"type":"command-output","command":"status"}`:
+ * 
+ * * `text`           — `{ "type":"text", "text": "..." }` a paragraph.
+ * * `heading`        — `{ "type":"heading", "text": "..." }` a section heading.
+ * * `button`         — `{ "type":"button", "label":"...", "command":"id" }`
+ * runs the plugin's own command `id` when clicked.
+ * * `command-output` — `{ "type":"command-output", "command":"id", "label"? }`
+ * runs command `id` when the panel opens and shows its stdout; `label` is an
+ * optional caption.
+ * 
+ * A `button`/`command-output` `command` MUST reference an existing command id
+ * within the SAME plugin — a dangling reference is rejected at
+ * [`validate_manifest`] time.
+ */
+export type PanelItem = 
+/**
+ * A paragraph of body text.
+ */
+{ type: "text"; text: string } | 
+/**
+ * A section heading.
+ */
+{ type: "heading"; text: string } | 
+/**
+ * A button that runs the plugin's OWN command with id `command` on click.
+ */
+{ type: "button"; label: string; command: string } | 
+/**
+ * Runs the plugin's OWN command `command` when the panel opens and shows
+ * its stdout. `label` is an optional caption above the output.
+ */
+{ type: "command-output"; command: string; label?: string | null }
+/**
  * One author/committer identity. `t` is a unix timestamp; the frontend formats it.
  */
 export type Person = { n: string; e: string; t: number }
@@ -3867,6 +3908,14 @@ id: string; name: string; version: string; description: string | null;
  */
 enabled?: boolean; commands?: PluginCommand[]; hooks?: PluginHook[]; 
 /**
+ * Declarative UI PANELS (PER-45) this plugin contributes — titled surfaces
+ * of a FIXED widget vocabulary (see [`PanelItem`]) GitCat renders itself.
+ * `#[serde(default)]` so every pre-panels manifest still loads (absent =>
+ * no panels). Panel ids are validated unique-within-plugin and every
+ * button/command-output must reference one of THIS plugin's commands.
+ */
+panels?: PluginPanel[]; 
+/**
  * Optional Tama SKIN (PER-47) — pose sprites + copy this plugin
  * contributes. `#[serde(default)]` + `Option` so every pre-skin manifest
  * still loads (absent => no skin). See [`PluginTama`].
@@ -3950,6 +3999,13 @@ export type PluginHook = { event: PluginEvent; run: string;
  * change is covered by global Undo; see `plugin_exec::run_hooks`.
  */
 mutates?: boolean }
+/**
+ * A declarative UI PANEL a plugin contributes (PER-45): a titled surface of
+ * [`PanelItem`] widgets GitCat renders itself. `id` is a stable, plugin-unique
+ * key (validated by [`is_valid_id`] + a within-plugin uniqueness check in
+ * [`validate_manifest`]); the frontend opens a panel by that id.
+ */
+export type PluginPanel = { id: string; title: string; items: PanelItem[] }
 /**
  * Where a command surfaces. Serialized lowercase (`"palette"`/`"menu"`/
  * `"both"`); defaults to `Palette` when a manifest omits it.

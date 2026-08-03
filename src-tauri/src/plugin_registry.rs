@@ -175,6 +175,57 @@ pub struct PluginTama {
     pub copy: HashMap<String, String>,
 }
 
+/// One declarative widget inside a [`PluginPanel`] (PER-45) — a FIXED, closed
+/// vocabulary GitCat renders ITSELF. A panel runs NO plugin code: the only way
+/// a widget triggers behavior is a `button`/`command-output` that names one of
+/// the plugin's OWN [`PluginCommand`] ids, which the frontend invokes through
+/// the exact same declarative `run_plugin_command` path as the palette/menu
+/// (PER-42) — nothing is ever eval'd.
+///
+/// Internally tagged by a kebab-case `"type"` discriminator, so a manifest
+/// author writes e.g. `{"type":"command-output","command":"status"}`:
+///
+/// * `text`           — `{ "type":"text", "text": "..." }` a paragraph.
+/// * `heading`        — `{ "type":"heading", "text": "..." }` a section heading.
+/// * `button`         — `{ "type":"button", "label":"...", "command":"id" }`
+///   runs the plugin's own command `id` when clicked.
+/// * `command-output` — `{ "type":"command-output", "command":"id", "label"? }`
+///   runs command `id` when the panel opens and shows its stdout; `label` is an
+///   optional caption.
+///
+/// A `button`/`command-output` `command` MUST reference an existing command id
+/// within the SAME plugin — a dangling reference is rejected at
+/// [`validate_manifest`] time.
+#[derive(Serialize, Deserialize, Clone, Debug, specta::Type)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum PanelItem {
+    /// A paragraph of body text.
+    Text { text: String },
+    /// A section heading.
+    Heading { text: String },
+    /// A button that runs the plugin's OWN command with id `command` on click.
+    Button { label: String, command: String },
+    /// Runs the plugin's OWN command `command` when the panel opens and shows
+    /// its stdout. `label` is an optional caption above the output.
+    CommandOutput {
+        command: String,
+        #[serde(default)]
+        label: Option<String>,
+    },
+}
+
+/// A declarative UI PANEL a plugin contributes (PER-45): a titled surface of
+/// [`PanelItem`] widgets GitCat renders itself. `id` is a stable, plugin-unique
+/// key (validated by [`is_valid_id`] + a within-plugin uniqueness check in
+/// [`validate_manifest`]); the frontend opens a panel by that id.
+#[derive(Serialize, Deserialize, Clone, Debug, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginPanel {
+    pub id: String,
+    pub title: String,
+    pub items: Vec<PanelItem>,
+}
+
 /// A plugin manifest (`plugin.json`).
 #[derive(Serialize, Deserialize, Clone, Debug, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -194,6 +245,13 @@ pub struct Plugin {
     pub commands: Vec<PluginCommand>,
     #[serde(default)]
     pub hooks: Vec<PluginHook>,
+    /// Declarative UI PANELS (PER-45) this plugin contributes — titled surfaces
+    /// of a FIXED widget vocabulary (see [`PanelItem`]) GitCat renders itself.
+    /// `#[serde(default)]` so every pre-panels manifest still loads (absent =>
+    /// no panels). Panel ids are validated unique-within-plugin and every
+    /// button/command-output must reference one of THIS plugin's commands.
+    #[serde(default)]
+    pub panels: Vec<PluginPanel>,
     /// Optional Tama SKIN (PER-47) — pose sprites + copy this plugin
     /// contributes. `#[serde(default)]` + `Option` so every pre-skin manifest
     /// still loads (absent => no skin). See [`PluginTama`].
@@ -349,6 +407,72 @@ pub fn validate_manifest(plugin: &Plugin) -> Result<(), String> {
                 return Err(format!(
                     "Plugin tama pose {key:?} has an unsafe asset path {rel:?} — it must be a relative path inside the plugin dir (no leading '/' and no '..').",
                 ));
+            }
+        }
+    }
+    // Panels (PER-45): each panel needs a valid, plugin-unique id and a
+    // non-empty title; every button/command-output `command` must address an
+    // existing command WITHIN THIS SAME plugin (a dangling reference is
+    // rejected — GitCat renders these declarative widgets itself and a
+    // button/command-output reuses the plugin's OWN command via the same
+    // run_plugin_command path); required text/label fields must be non-empty.
+    let command_ids: std::collections::HashSet<&str> = plugin.commands.iter().map(|c| c.id.as_str()).collect();
+    let mut seen_panel_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for panel in &plugin.panels {
+        if !is_valid_id(&panel.id) {
+            return Err(format!(
+                "Plugin panel id {:?} is invalid — it must start with a lowercase letter or digit and then contain only lowercase letters, digits, and '-'.",
+                panel.id
+            ));
+        }
+        if !seen_panel_ids.insert(panel.id.as_str()) {
+            return Err(format!(
+                "Plugin has a duplicate panel id {:?} — panel ids must be unique within a plugin.",
+                panel.id
+            ));
+        }
+        if panel.title.trim().is_empty() {
+            return Err(format!("Plugin panel {:?} is missing a non-empty title.", panel.id));
+        }
+        for item in &panel.items {
+            match item {
+                PanelItem::Text { text } => {
+                    if text.trim().is_empty() {
+                        return Err(format!("Plugin panel {:?} has a text item with empty text.", panel.id));
+                    }
+                }
+                PanelItem::Heading { text } => {
+                    if text.trim().is_empty() {
+                        return Err(format!("Plugin panel {:?} has a heading item with empty text.", panel.id));
+                    }
+                }
+                PanelItem::Button { label, command } => {
+                    if label.trim().is_empty() {
+                        return Err(format!("Plugin panel {:?} has a button with an empty label.", panel.id));
+                    }
+                    if !command_ids.contains(command.as_str()) {
+                        return Err(format!(
+                            "Plugin panel {:?} has a button referencing command {command:?}, which is not a command in this plugin.",
+                            panel.id
+                        ));
+                    }
+                }
+                PanelItem::CommandOutput { command, label } => {
+                    if let Some(label) = label {
+                        if label.trim().is_empty() {
+                            return Err(format!(
+                                "Plugin panel {:?} has a command-output item with an empty label.",
+                                panel.id
+                            ));
+                        }
+                    }
+                    if !command_ids.contains(command.as_str()) {
+                        return Err(format!(
+                            "Plugin panel {:?} has a command-output referencing command {command:?}, which is not a command in this plugin.",
+                            panel.id
+                        ));
+                    }
+                }
             }
         }
     }
@@ -690,6 +814,7 @@ mod tests {
                 mutates: false,
             }],
             hooks: vec![PluginHook { event: PluginEvent::PostMutation, run: "echo done".into(), mutates: false }],
+            panels: vec![],
             tama: None,
             dir: None,
         }
@@ -1239,6 +1364,157 @@ mod tests {
         assert_eq!(recorded, expected, "dir must be the canonicalized plugin directory");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- Declarative UI panels (PER-45) --------------------------------------
+
+    #[test]
+    fn manifest_with_valid_panels_parses_validates_and_round_trips() {
+        // A manifest declaring a panel with one of every PanelItem variant must
+        // deserialize, pass validation (its button + command-output reference an
+        // existing command), and round-trip through save/load intact.
+        let dir = temp_dir("panels-valid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE_NAME);
+        std::fs::write(
+            &path,
+            r#"{"version":1,"plugins":[{"id":"panely","name":"Panely","version":"1.0.0",
+                "commands":[{"id":"status","label":"Status","run":"git status"}],
+                "panels":[{"id":"overview","title":"Overview","items":[
+                    {"type":"heading","text":"Repository"},
+                    {"type":"text","text":"A friendly summary of things."},
+                    {"type":"button","label":"Refresh","command":"status"},
+                    {"type":"command-output","command":"status","label":"git status"}
+                ]}]}]}"#,
+        )
+        .unwrap();
+
+        let loaded = load_from(&path).expect("a manifest with panels must deserialize");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].panels.len(), 1);
+        let panel = &loaded[0].panels[0];
+        assert_eq!(panel.id, "overview");
+        assert_eq!(panel.title, "Overview");
+        assert_eq!(panel.items.len(), 4);
+        assert!(matches!(&panel.items[0], PanelItem::Heading { text } if text == "Repository"));
+        assert!(matches!(&panel.items[2], PanelItem::Button { label, command } if label == "Refresh" && command == "status"));
+        validate_manifest(&loaded[0]).expect("valid panels must pass validation");
+
+        // Round-trip: save then reload preserves the panel + its items.
+        save_to(&path, &loaded).unwrap();
+        let again = load_from(&path).expect("round-trip load");
+        assert_eq!(again[0].panels[0].items.len(), 4);
+        assert!(matches!(
+            &again[0].panels[0].items[3],
+            PanelItem::CommandOutput { command, label } if command == "status" && label.as_deref() == Some("git status")
+        ));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn each_panel_item_variant_deserializes_from_its_tagged_json() {
+        // The internally-tagged (#[serde(tag="type")], kebab-case) vocabulary:
+        // each variant round-trips from its own tagged JSON object.
+        let item: PanelItem = serde_json::from_str(r#"{"type":"text","text":"hello"}"#).unwrap();
+        assert!(matches!(item, PanelItem::Text { text } if text == "hello"));
+
+        let item: PanelItem = serde_json::from_str(r#"{"type":"heading","text":"Section"}"#).unwrap();
+        assert!(matches!(item, PanelItem::Heading { text } if text == "Section"));
+
+        let item: PanelItem = serde_json::from_str(r#"{"type":"button","label":"Run","command":"go"}"#).unwrap();
+        assert!(matches!(item, PanelItem::Button { label, command } if label == "Run" && command == "go"));
+
+        // command-output WITH an explicit label.
+        let item: PanelItem =
+            serde_json::from_str(r#"{"type":"command-output","command":"go","label":"Output"}"#).unwrap();
+        assert!(matches!(item, PanelItem::CommandOutput { command, label } if command == "go" && label.as_deref() == Some("Output")));
+
+        // command-output OMITTING label => None (#[serde(default)] on `label`).
+        let item: PanelItem = serde_json::from_str(r#"{"type":"command-output","command":"go"}"#).unwrap();
+        assert!(matches!(item, PanelItem::CommandOutput { command, label } if command == "go" && label.is_none()));
+
+        // An unknown discriminator is rejected (closed vocabulary).
+        assert!(serde_json::from_str::<PanelItem>(r#"{"type":"iframe","src":"x"}"#).is_err());
+    }
+
+    #[test]
+    fn panel_button_or_command_output_referencing_a_missing_command_is_rejected() {
+        // sample_plugin has exactly one command, id "greet".
+        // A button naming a command this plugin does not have => rejected.
+        let mut p = sample_plugin("panely");
+        p.panels = vec![PluginPanel {
+            id: "main".into(),
+            title: "Main".into(),
+            items: vec![PanelItem::Button { label: "Go".into(), command: "does-not-exist".into() }],
+        }];
+        let err = validate_manifest(&p).unwrap_err();
+        assert!(err.contains("does-not-exist") && err.contains("not a command"), "got: {err}");
+
+        // A command-output naming a dangling command is likewise rejected.
+        let mut p = sample_plugin("panely");
+        p.panels = vec![PluginPanel {
+            id: "main".into(),
+            title: "Main".into(),
+            items: vec![PanelItem::CommandOutput { command: "ghost".into(), label: None }],
+        }];
+        let err = validate_manifest(&p).unwrap_err();
+        assert!(err.contains("ghost") && err.contains("not a command"), "got: {err}");
+
+        // A button/command-output naming the plugin's OWN existing command validates.
+        let mut p = sample_plugin("panely");
+        p.panels = vec![PluginPanel {
+            id: "main".into(),
+            title: "Main".into(),
+            items: vec![
+                PanelItem::Button { label: "Greet".into(), command: "greet".into() },
+                PanelItem::CommandOutput { command: "greet".into(), label: None },
+            ],
+        }];
+        validate_manifest(&p).expect("a widget referencing an existing command must validate");
+    }
+
+    #[test]
+    fn duplicate_or_invalid_panel_id_or_empty_field_is_rejected() {
+        // Duplicate panel id within one plugin.
+        let mut p = sample_plugin("panely");
+        p.panels = vec![
+            PluginPanel { id: "dup".into(), title: "One".into(), items: vec![] },
+            PluginPanel { id: "dup".into(), title: "Two".into(), items: vec![] },
+        ];
+        let err = validate_manifest(&p).unwrap_err();
+        assert!(err.contains("duplicate panel id"), "got: {err}");
+
+        // Invalid panel id charset (same rule as a plugin/command id).
+        let mut p = sample_plugin("panely");
+        p.panels = vec![PluginPanel { id: "Bad Id".into(), title: "X".into(), items: vec![] }];
+        let err = validate_manifest(&p).unwrap_err();
+        assert!(err.contains("panel id") && err.contains("invalid"), "got: {err}");
+
+        // Empty panel title.
+        let mut p = sample_plugin("panely");
+        p.panels = vec![PluginPanel { id: "ok".into(), title: "   ".into(), items: vec![] }];
+        let err = validate_manifest(&p).unwrap_err();
+        assert!(err.contains("title"), "got: {err}");
+
+        // Empty required item text/label.
+        let mut p = sample_plugin("panely");
+        p.panels = vec![PluginPanel {
+            id: "ok".into(),
+            title: "OK".into(),
+            items: vec![PanelItem::Text { text: "  ".into() }],
+        }];
+        let err = validate_manifest(&p).unwrap_err();
+        assert!(err.contains("empty text"), "got: {err}");
+
+        let mut p = sample_plugin("panely");
+        p.panels = vec![PluginPanel {
+            id: "ok".into(),
+            title: "OK".into(),
+            items: vec![PanelItem::Button { label: "  ".into(), command: "greet".into() }],
+        }];
+        let err = validate_manifest(&p).unwrap_err();
+        assert!(err.contains("empty label"), "got: {err}");
     }
 }
 

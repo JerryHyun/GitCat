@@ -54,6 +54,7 @@ import SetupWizard from "./islands/setupwizard/SetupWizard.svelte";
 import { setupWizardCtrl } from "./islands/setupwizard/setupwizard.svelte.ts";
 import Cmdk from "./islands/cmdk/Cmdk.svelte";
 import { cmdkCtrl } from "./islands/cmdk/cmdk.svelte.ts";
+import PluginPanel from "./islands/pluginpanels/PluginPanel.svelte";
 import VimNav from "./islands/vimnav/VimNav.svelte";
 import SnapshotPreview from "./islands/snapshotpreview/SnapshotPreview.svelte";
 import About from "./islands/about/About.svelte";
@@ -147,6 +148,13 @@ submoduleNavCtrl.refresh(bridge.CUR_REPO as unknown as string);
 mount(Reflog, { target: document.body });
 mount(Rerere, { target: document.body });
 mount(Plumbing, { target: document.body });
+// Declarative plugin panels (PER-45): same on-demand-modal treatment as
+// Reflog/Rerere/Plumbing above — opened from ⌘K (one entry per declared
+// panel, contributed by pluginPanelsCtrl, see cmdk.svelte.ts), never mounted
+// into a drawer. Purely declarative: it renders a plugin's DECLARED widgets
+// (heading/text/button/command-output) and only ever runs that plugin's OWN
+// commands via the same runPluginCommand path PER-42 uses.
+mount(PluginPanel, { target: document.body });
 // Fetch/Pull live-progress modal — opened by doFetch/doPull (legacy/main.ts),
 // which is reached from both the topbar buttons and the native Fetch/Pull menu.
 mount(SyncProgress, { target: document.body });

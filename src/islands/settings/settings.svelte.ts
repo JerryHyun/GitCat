@@ -35,6 +35,7 @@ import * as bridge from "../../legacy/bridge";
 import { IN_TAURI } from "../../ipc/env";
 import { open } from "@tauri-apps/plugin-dialog";
 import { pluginCommandsCtrl } from "../plugincommands/plugincommands.svelte.ts";
+import { pluginPanelsCtrl } from "../pluginpanels/pluginpanels.svelte.ts";
 import type { ConfigEntry, ConfigScope, GitIdentity, Plugin, RawConfigEntry } from "../../ipc/bindings";
 
 export type ThemeMode = "system" | "light" | "dark";
@@ -691,7 +692,8 @@ class SettingsState {
     try {
       const res = await commands.setPluginEnabled(id, enabled);
       if (res.status === "ok") {
-        await pluginCommandsCtrl.reload(); // ⌘K plugin actions follow enable/disable live
+        // ⌘K plugin commands AND panels both follow enable/disable live.
+        await Promise.all([pluginCommandsCtrl.reload(), pluginPanelsCtrl.reload()]);
       } else {
         this.plugins = prev; // backend rejected — undo the optimistic flip
         this.pluginsError = String(res.error ?? "Could not update the plugin.");
@@ -726,7 +728,8 @@ class SettingsState {
       if (res.status === "ok") {
         this.plugins = this.plugins.filter((p) => p.id !== id);
         this.removingPluginId = null;
-        await pluginCommandsCtrl.reload(); // drop its ⌘K actions immediately
+        // Drop both its ⌘K commands AND panels immediately.
+        await Promise.all([pluginCommandsCtrl.reload(), pluginPanelsCtrl.reload()]);
       } else {
         this.pluginsError = String(res.error ?? "Could not remove the plugin.");
       }
@@ -768,7 +771,8 @@ class SettingsState {
         // Re-list rather than append res.data — keeps the exact ordering the
         // backend returns and reflects anything else that changed on disk.
         await this.refreshPlugins();
-        await pluginCommandsCtrl.reload(); // surface the new plugin's ⌘K actions
+        // Surface the new plugin's ⌘K commands AND panels.
+        await Promise.all([pluginCommandsCtrl.reload(), pluginPanelsCtrl.reload()]);
         bridge.tama.say(`Installed ${res.data.name}.`);
       } else {
         this.pluginsError = String(res.error ?? "Could not install that plugin.");

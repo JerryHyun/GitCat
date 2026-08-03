@@ -41,6 +41,7 @@ import { multimergeCtrl } from "../multimerge/multimerge.svelte.ts";
 import { aboutCtrl } from "../about/about.svelte.ts";
 import { updaterCtrl } from "../updater/updater.svelte.ts";
 import { pluginCommandsCtrl } from "../plugincommands/plugincommands.svelte.ts";
+import { pluginPanelsCtrl } from "../pluginpanels/pluginpanels.svelte.ts";
 import { IN_TAURI } from "../../ipc/env";
 
 export const CMD_CAP = 50;
@@ -437,6 +438,12 @@ class CmdkState {
     for (const a of pluginCommandsCtrl.actions) {
       if (!toks.length || matchToks((a.label + " " + a.hint).toLowerCase(), toks)) res.push(a);
     }
+    // Plugin-contributed PANELS (PER-45) — one entry per declared panel, matched
+    // by label+hint exactly like the commands above and lazily loaded on the
+    // same palette open (see show()).
+    for (const a of pluginPanelsCtrl.actions) {
+      if (!toks.length || matchToks((a.label + " " + a.hint).toLowerCase(), toks)) res.push(a);
+    }
     if (!toks.length) {
       for (let i = 0; i < this.refs.length && res.length < REF_DEFAULT; i++) res.push(this.refs[i]);
     } else {
@@ -520,9 +527,13 @@ class CmdkState {
     }
     this.open = true;
     this.filter("");
-    // Lazily pull in plugin-contributed palette commands, then re-run the
-    // current filter so they appear (cached after the first open).
+    // Lazily pull in plugin-contributed palette commands AND panels, then
+    // re-run the current filter so they appear (both cached after the first
+    // open). Two independent lazy loads, each re-filters when it resolves.
     void pluginCommandsCtrl.ensureLoaded().then(() => {
+      if (this.open) this.filter(this.query);
+    });
+    void pluginPanelsCtrl.ensureLoaded().then(() => {
       if (this.open) this.filter(this.query);
     });
   }
@@ -543,5 +554,12 @@ export const cmdkCtrl = new CmdkState();
 // without reopening ⌘K. Wired here (not via a cmdkCtrl import inside
 // plugincommands) to keep that module free of a runtime cycle back into this one.
 pluginCommandsCtrl.onActionsChanged = () => {
+  if (cmdkCtrl.open) cmdkCtrl.filter(cmdkCtrl.query);
+};
+// Same live-refresh seam for plugin PANELS (PER-45) — a force reload of the
+// panel registry (install/enable/remove) re-filters an already-open palette in
+// place. Wired here, not via a cmdkCtrl import inside pluginpanels, to keep
+// that module free of a runtime cycle back into this one.
+pluginPanelsCtrl.onActionsChanged = () => {
   if (cmdkCtrl.open) cmdkCtrl.filter(cmdkCtrl.query);
 };
