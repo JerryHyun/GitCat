@@ -39,6 +39,8 @@ vi.mock("../../legacy/bridge", () => ({
   setTamaEnabled: vi.fn(),
   applyTamaSkin: vi.fn(),
   clearTamaSkin: vi.fn(),
+  setTamaMotionPreset: vi.fn(),
+  setTamaPoseOverrides: vi.fn(),
   tama: { set: vi.fn(), say: vi.fn(), warn: vi.fn(), event: vi.fn() },
 }));
 
@@ -85,8 +87,10 @@ import {
   settingsCtrl,
   pruneSnapshotsPerPolicy,
   applyPersistedTamaSkin,
+  applyPersistedTamaMotion,
   hasTamaSkin,
   pickSkinCopyLine,
+  tamaPoseLabel,
 } from "./settings.svelte.ts";
 // The built-in characters are a pure frontend registry (bundled webp asset URLs
 // + a voice pitch) — imported for real, not mocked, so the built-in-path tests
@@ -145,6 +149,8 @@ function resetCtrl() {
   settingsCtrl.tamaSkinPluginId = null;
   settingsCtrl.tamaSkinBusy = false;
   settingsCtrl.tamaSkinError = "";
+  settingsCtrl.tamaMotionPreset = "default";
+  settingsCtrl.tamaPoseOverrides = {};
   mockInTauri = true;
   vi.clearAllMocks();
   // Default: an empty registry, so the unconditional refreshPlugins() every
@@ -235,6 +241,8 @@ describe("loadSettings / saveSettings — localStorage persistence", () => {
       snapshotRetentionDays: 14,
       tamaEnabled: true,
       tamaSkinPluginId: null,
+      tamaMotionPreset: "default",
+      tamaPoseOverrides: {},
     });
   });
 
@@ -259,6 +267,8 @@ describe("loadSettings / saveSettings — localStorage persistence", () => {
       snapshotRetentionDays: 14,
       tamaEnabled: true,
       tamaSkinPluginId: null,
+      tamaMotionPreset: "default",
+      tamaPoseOverrides: {},
     });
   });
 
@@ -281,6 +291,8 @@ describe("loadSettings / saveSettings — localStorage persistence", () => {
       snapshotRetentionDays: 14,
       tamaEnabled: true,
       tamaSkinPluginId: null,
+      tamaMotionPreset: "default",
+      tamaPoseOverrides: {},
     });
   });
 
@@ -312,6 +324,8 @@ describe("loadSettings / saveSettings — localStorage persistence", () => {
       snapshotRetentionDays: 14,
       tamaEnabled: true,
       tamaSkinPluginId: null,
+      tamaMotionPreset: "default",
+      tamaPoseOverrides: {},
     });
   });
 
@@ -352,6 +366,8 @@ describe("show — seeds app-level fields and drives the identity section", () =
       autoFetchIntervalMinutes: 60,
       tamaEnabled: false,
       tamaSkinPluginId: "acme-skin",
+      tamaMotionPreset: "calm",
+      tamaPoseOverrides: { danger: "shocked" },
     });
 
     settingsCtrl.show(null);
@@ -367,6 +383,8 @@ describe("show — seeds app-level fields and drives the identity section", () =
     expect(settingsCtrl.autoFetchIntervalMinutes).toBe(60);
     expect(settingsCtrl.tamaEnabled).toBe(false);
     expect(settingsCtrl.tamaSkinPluginId).toBe("acme-skin");
+    expect(settingsCtrl.tamaMotionPreset).toBe("calm");
+    expect(settingsCtrl.tamaPoseOverrides).toEqual({ danger: "shocked" });
   });
 
   it("with no repo open, clears identity and never calls getGitIdentity", () => {
@@ -1104,5 +1122,116 @@ describe("tama skin — applyPersistedTamaSkin (boot)", () => {
     await applyPersistedTamaSkin();
 
     expect(commands.loadPluginSkin).not.toHaveBeenCalled();
+  });
+});
+
+describe("tama motion preset (PER-54)", () => {
+  it("defaults to 'default'", () => {
+    expect(settingsCtrl.tamaMotionPreset).toBe("default");
+    expect(loadSettings().tamaMotionPreset).toBe("default");
+  });
+
+  it("setTamaMotionPreset updates state, persists, and applies via bridge.setTamaMotionPreset", () => {
+    settingsCtrl.setTamaMotionPreset("lively");
+
+    expect(settingsCtrl.tamaMotionPreset).toBe("lively");
+    expect(loadSettings().tamaMotionPreset).toBe("lively");
+    expect(bridge.setTamaMotionPreset).toHaveBeenCalledWith("lively");
+  });
+
+  it("also fires in design mode (!IN_TAURI) — a pure-frontend timing knob", () => {
+    mockInTauri = false;
+    settingsCtrl.setTamaMotionPreset("calm");
+
+    expect(settingsCtrl.tamaMotionPreset).toBe("calm");
+    expect(loadSettings().tamaMotionPreset).toBe("calm");
+    expect(bridge.setTamaMotionPreset).toHaveBeenCalledWith("calm");
+  });
+});
+
+describe("tama expression overrides (PER-54)", () => {
+  it("setting an override persists it AND applies the full map via bridge.setTamaPoseOverrides", () => {
+    settingsCtrl.setTamaPoseOverride("danger", "shocked");
+
+    expect(settingsCtrl.tamaPoseOverrides).toEqual({ danger: "shocked" });
+    expect(loadSettings().tamaPoseOverrides).toEqual({ danger: "shocked" });
+    expect(bridge.setTamaPoseOverrides).toHaveBeenCalledWith({ danger: "shocked" });
+  });
+
+  it("accumulates multiple overrides into one map", () => {
+    settingsCtrl.setTamaPoseOverride("danger", "shocked");
+    settingsCtrl.setTamaPoseOverride("idle", "sleep");
+
+    expect(settingsCtrl.tamaPoseOverrides).toEqual({ danger: "shocked", idle: "sleep" });
+    expect(loadSettings().tamaPoseOverrides).toEqual({ danger: "shocked", idle: "sleep" });
+    expect(bridge.setTamaPoseOverrides).toHaveBeenLastCalledWith({ danger: "shocked", idle: "sleep" });
+  });
+
+  it("selecting Default ('') REMOVES just that override and applies the trimmed map", () => {
+    settingsCtrl.setTamaPoseOverride("danger", "shocked");
+    settingsCtrl.setTamaPoseOverride("idle", "sleep");
+
+    settingsCtrl.setTamaPoseOverride("danger", "");
+
+    expect(settingsCtrl.tamaPoseOverrides).toEqual({ idle: "sleep" });
+    expect(loadSettings().tamaPoseOverrides).toEqual({ idle: "sleep" });
+    expect(bridge.setTamaPoseOverrides).toHaveBeenLastCalledWith({ idle: "sleep" });
+  });
+
+  it("tamaPoseOverride / hasTamaPoseOverrides reflect the current map", () => {
+    expect(settingsCtrl.hasTamaPoseOverrides).toBe(false);
+    expect(settingsCtrl.tamaPoseOverride("danger")).toBe("");
+
+    settingsCtrl.setTamaPoseOverride("danger", "alarm");
+
+    expect(settingsCtrl.hasTamaPoseOverrides).toBe(true);
+    expect(settingsCtrl.tamaPoseOverride("danger")).toBe("alarm");
+    expect(settingsCtrl.tamaPoseOverride("idle")).toBe(""); // unset -> Default
+  });
+
+  it("resetTamaPoseOverrides clears all overrides, persists {}, and applies {} to the runtime", () => {
+    settingsCtrl.setTamaPoseOverride("danger", "shocked");
+    settingsCtrl.setTamaPoseOverride("idle", "sleep");
+
+    settingsCtrl.resetTamaPoseOverrides();
+
+    expect(settingsCtrl.tamaPoseOverrides).toEqual({});
+    expect(settingsCtrl.hasTamaPoseOverrides).toBe(false);
+    expect(loadSettings().tamaPoseOverrides).toEqual({});
+    expect(bridge.setTamaPoseOverrides).toHaveBeenLastCalledWith({});
+  });
+
+  it("tamaPoseLabel maps a pose key to its friendly label, else the raw key", () => {
+    expect(tamaPoseLabel("curious")).toBe("Curious");
+    expect(tamaPoseLabel("hero")).toBe("Hero");
+    expect(tamaPoseLabel("nope")).toBe("nope");
+  });
+});
+
+describe("applyPersistedTamaMotion (boot, PER-54)", () => {
+  it("applies the persisted preset + overrides to the runtime via both bridge setters", () => {
+    saveSettings({ tamaMotionPreset: "lively", tamaPoseOverrides: { danger: "shocked" } });
+
+    applyPersistedTamaMotion();
+
+    expect(bridge.setTamaMotionPreset).toHaveBeenCalledWith("lively");
+    expect(bridge.setTamaPoseOverrides).toHaveBeenCalledWith({ danger: "shocked" });
+  });
+
+  it("applies the defaults ('default' + {}) as a baseline when nothing is persisted", () => {
+    applyPersistedTamaMotion();
+
+    expect(bridge.setTamaMotionPreset).toHaveBeenCalledWith("default");
+    expect(bridge.setTamaPoseOverrides).toHaveBeenCalledWith({});
+  });
+
+  it("still applies in design mode (!IN_TAURI) — pure-frontend, no backend gate", () => {
+    mockInTauri = false;
+    saveSettings({ tamaMotionPreset: "calm", tamaPoseOverrides: { idle: "sleep" } });
+
+    applyPersistedTamaMotion();
+
+    expect(bridge.setTamaMotionPreset).toHaveBeenCalledWith("calm");
+    expect(bridge.setTamaPoseOverrides).toHaveBeenCalledWith({ idle: "sleep" });
   });
 });

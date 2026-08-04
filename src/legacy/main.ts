@@ -4,7 +4,7 @@ import { bisectCtrl } from "../islands/bisect/bisect.svelte.ts";
 import { cmdkCtrl } from "../islands/cmdk/cmdk.svelte.ts";
 import { detailCtrl } from "../islands/detail/detail.svelte.ts";
 import { bisectDrawerCtrl } from "../islands/bisectdrawer/bisectdrawer.svelte.ts";
-import { loadSettings, saveSettings, pruneSnapshotsPerPolicy, applyPersistedTamaSkin } from "../islands/settings/settings.svelte.ts";
+import { loadSettings, saveSettings, pruneSnapshotsPerPolicy, applyPersistedTamaSkin, applyPersistedTamaMotion } from "../islands/settings/settings.svelte.ts";
 import { sidebarCtrl } from "../islands/sidebar/sidebar.svelte.ts";
 import { workdirCtrl } from "../islands/workdir/workdir.svelte.ts";
 import { commitMenuCtrl } from "../islands/commitmenu/commitmenu.svelte.ts";
@@ -1265,6 +1265,24 @@ function repaintTamaSkin(){
   const c=$("#tamaCheerImg"); if(c) c.src=tamaPose("happy");
 }
 
+// ── Tama pose overrides + motion presets (PER-54) ───────────────────────────
+// Purely additive, frontend-only customization. Both settings default to their
+// no-op value, so with NO override map AND the "default" preset the mascot
+// behaves byte-for-byte as before. The Settings island persists these in
+// localStorage (gitcat.settings) and drives them through
+// bridge.setTamaPoseOverrides / bridge.setTamaMotionPreset (re-exported from
+// bridge.ts, same live-binding shape as applyTamaSkin/tamaBus). Declared BEFORE
+// `class TamaMascot` / `new TamaMascot(...)` so the constructor's own
+// set("idle") already reads them at their initial (no-op) values — no TDZ.
+const TAMA_POSE_KEYS = new Set(["hero","curious","confident","thinking","happy","alarm","shocked","sleep"]);
+// FSM-state -> poseKey. EMPTY = no overrides = the built-in POSE map below.
+// set() resolves `activeTamaPoseOverrides[state] ?? POSE[state]` (see _pose()).
+let activeTamaPoseOverrides = {};
+// Motion preset: scales the sticky/dwell auto-revert hold and swaps the idle
+// behavior. scale 1 + no idle loop == today's "default".
+let activeTamaMotionPreset = "default";
+let tamaDwellScale = 1;
+
 class TamaMascot{
   static STATES={idle:{sticky:false},sleep:{sticky:false},hint:{sticky:false,dwell:3200},thinking:{sticky:true},warn:{sticky:true},danger:{sticky:true},celebrate:{sticky:false,dwell:3600},rescue:{sticky:true},
     // confused: a real operation FAILURE (see warn() below — distinct from
@@ -1289,14 +1307,14 @@ class TamaMascot{
   // intentionally share one).
   static POSE={idle:"curious",sleep:"sleep",hint:"curious",thinking:"thinking",warn:"shocked",danger:"alarm",celebrate:"happy",rescue:"confident",confused:"shocked",curious:"curious",syncing:"thinking",greeting:"hero"};
   constructor(el){this.nook=el.nook;this.sprite=el.sprite;this.spriteWrap=el.spriteWrap;this.line=el.line;this.tele=el.tele;this.topToast=el.topToast;
-    this.sticky=null;this.toastT=null;this.topToastT=null;this.dwellT=null;this.reduced=matchMedia("(prefers-reduced-motion:reduce)").matches;this.set("idle");this._teleLoop();}
+    this.sticky=null;this.toastT=null;this.topToastT=null;this.dwellT=null;this._animT=null;this._animDirty=false;this.reduced=matchMedia("(prefers-reduced-motion:reduce)").matches;this.set("idle");this._teleLoop();}
   // Only touches the portrait's `src` when the resolved pose actually
   // changed (several states share one pose — see POSE above) — a real
   // "pop" (shrink+fade out via .swap, swap src, overshoot back in via
   // .swap-in — see index.html's own spriteSwapOut/spriteSwapIn keyframes),
   // skipped entirely under reduced-motion (immediate swap, no animation).
-  set(s){clearTimeout(this.dwellT);const cfg=TamaMascot.STATES[s]||TamaMascot.STATES.idle;
-    const pose=TamaMascot.POSE[s]||"curious";
+  set(s){clearTimeout(this.dwellT);this._stopAnimation();const cfg=TamaMascot.STATES[s]||TamaMascot.STATES.idle;
+    const pose=this._pose(s);
     if(this.sprite.dataset.pose!==pose){
       this.sprite.dataset.pose=pose;
       if(this.reduced){ this.sprite.src=tamaPose(pose); }
@@ -1310,7 +1328,8 @@ class TamaMascot{
           setTimeout(()=>this.sprite.classList.remove("swap-in"),240);
         },110);
       }
-    }
+    }else if(this._animDirty){ this.sprite.src=tamaPose(pose); } // an idle animation left a non-resting frame on the same pose — restore it
+    this._animDirty=false;
     // Sound plays on a real FSM-STATE change, not a pose change (several
     // states above intentionally share one pose) — captured before
     // overwriting dataset.state so re-entering the same state (e.g. two
@@ -1319,8 +1338,27 @@ class TamaMascot{
     this.nook.dataset.state=s;
     if(prevState!==s){const kind=STATE_SOUND[s];if(kind)playTamaSound(kind);}
     if(cfg.sticky)this.sticky=s;
-    if(!cfg.sticky&&cfg.dwell)this.dwellT=setTimeout(()=>this.set(this.sticky||"idle"),cfg.dwell);
+    if(!cfg.sticky&&cfg.dwell)this.dwellT=setTimeout(()=>this.set(this.sticky||"idle"),cfg.dwell*tamaDwellScale);
     if(!cfg.sticky&&!cfg.dwell)this.sticky=null;}
+  // PER-54: resolve a state's pose through the active override map, falling
+  // back to the built-in POSE table (and "curious" for any unknown state, as
+  // before). Empty override map => identical to `TamaMascot.POSE[s]||"curious"`.
+  _pose(s){return activeTamaPoseOverrides[s] ?? TamaMascot.POSE[s] ?? "curious";}
+  // PER-54: repaint the CURRENT state's pose immediately (no swap animation),
+  // so a live override change from Settings shows without waiting for the next
+  // FSM transition — same immediate-swap shape as repaintTamaSkin().
+  repaintCurrentPose(){const pose=this._pose(this.nook.dataset.state);if(this.sprite.dataset.pose!==pose){this.sprite.dataset.pose=pose;this.sprite.src=tamaPose(pose);}}
+  // PER-54 animation runner: step the sprite through a sequence of poseKeys via
+  // tamaPose() on a timer. INTERRUPTIBLE — set() calls _stopAnimation() at its
+  // top, so any real state change cancels a running animation cleanly. Skipped
+  // entirely under reduced-motion. loop=true keeps cycling (the idle behavior);
+  // loop=false plays the sequence once. Only touches .src (never dataset.pose),
+  // so set()'s restore path (_animDirty) repaints the resting frame afterward.
+  playTamaAnimation(frames,frameMs,loop){this._stopAnimation();if(this.reduced)return;if(!Array.isArray(frames))return;const seq=frames.filter(f=>TAMA_POSE_KEYS.has(f));if(!seq.length)return;const ms=Math.max(60,frameMs||300);let i=0;const step=()=>{this.sprite.src=tamaPose(seq[i%seq.length]);this._animDirty=true;i++;if(!loop&&i>=seq.length){this._animT=null;return;}this._animT=setTimeout(step,ms);};step();}
+  _stopAnimation(){if(this._animT){clearTimeout(this._animT);this._animT=null;}}
+  // Repaint the resting pose after an animation dirtied .src (used when the idle
+  // loop is torn down, e.g. switching away from the "lively" preset).
+  _restoreRestingPose(){if(!this._animDirty)return;const pose=this._pose(this.nook.dataset.state);this.sprite.dataset.pose=pose;this.sprite.src=tamaPose(pose);this._animDirty=false;}
   // ms is a FLOOR, not the actual dwell — every caller below passes a fixed
   // guess (3200 default, up to 6000 for the danger copy), but the message
   // text itself was never a factor, so a long message could get yanked away
@@ -1420,6 +1458,52 @@ function scheduleGlance(){
   },8000+Math.random()*6000);
 }
 scheduleGlance();
+
+// ── PER-54 setters (mid-file export functions, re-exported from bridge.ts) ───
+// A subtle periodic pose-glance driver used ONLY by the "lively" preset. It
+// fires a short one-shot glance sequence through the animation runner while the
+// mascot is genuinely idle (idle state, cursor at rest, not reduced-motion), so
+// the corner has a little life without constant motion. Fully torn down by
+// stopTamaIdleLoop() (any non-lively preset), which also restores the resting
+// pose. Independent of the CSS-transform scheduleGlance() above.
+let tamaIdleTimer=null;
+function stopTamaIdleLoop(){ if(tamaIdleTimer){ clearInterval(tamaIdleTimer); tamaIdleTimer=null; } Tama._stopAnimation(); Tama._restoreRestingPose(); }
+function startTamaIdleLoop(){
+  stopTamaIdleLoop();
+  if(Tama.reduced) return; // reduced-motion: don't schedule an interval that can only ever no-op
+  tamaIdleTimer=setInterval(()=>{
+    const n=$("#nook");
+    if(!n||Tama.reduced||n.dataset.state!=="idle"||Tama._animT!=null) return;
+    if(performance.now()-Tama.lastMove<4000) return;
+    // idle-pose → thinking → idle-pose: a quick "look around", then settle back.
+    Tama.playTamaAnimation([Tama._pose("idle"),"thinking",Tama._pose("idle")],260,false);
+  },9000);
+}
+// bridge.setTamaMotionPreset — "default"|"calm"|"lively". "default" restores
+// today's behavior exactly (dwell scale 1, no idle loop). "calm" holds poses a
+// bit longer (1.5×) with no idle loop; "lively" shortens holds (0.7×) and adds
+// the subtle idle glance loop above. Unknown values fall back to "default".
+// Hoisted `export function` (TDZ-safe), re-exported from bridge.ts.
+export function setTamaMotionPreset(preset){
+  const p=(preset==="calm"||preset==="lively")?preset:"default";
+  activeTamaMotionPreset=p;
+  if(p==="calm"){ tamaDwellScale=1.5; stopTamaIdleLoop(); }
+  else if(p==="lively"){ tamaDwellScale=0.7; startTamaIdleLoop(); }
+  else{ tamaDwellScale=1; stopTamaIdleLoop(); }
+}
+// bridge.setTamaPoseOverrides — a map of FSM-state -> poseKey. Non-string
+// values and poseKeys not among the 8 valid ones are ignored; {} clears all
+// overrides (back to the built-in POSE map). Repaints the current pose
+// immediately so a live change from Settings is visible without waiting for the
+// next FSM transition. Hoisted `export function`, re-exported from bridge.ts.
+export function setTamaPoseOverrides(overrides){
+  const next={};
+  if(overrides&&typeof overrides==="object"){
+    for(const k in overrides){ const v=overrides[k]; if(typeof v==="string"&&TAMA_POSE_KEYS.has(v)) next[k]=v; }
+  }
+  activeTamaPoseOverrides=next;
+  Tama.repaintCurrentPose();
+}
 
 // Hidden Easter egg: click the portrait itself 7 times within 2.5s to open
 // Tama Gallery (src/islands/tamagallery) — every pose in one grid, click a
@@ -2985,6 +3069,7 @@ setTamaEnabled(loadSettings().tamaEnabled);
 // worth a startup toast). Async, so the two static images below paint the
 // built-ins first and repaintTamaSkin() swaps them once the skin resolves.
 void applyPersistedTamaSkin();
+applyPersistedTamaMotion(); // PER-54: re-apply the persisted motion preset + pose overrides at boot
 $("#dangerTamaImg").src=tamaPose("alarm"); $("#tamaCheerImg").src=tamaPose("happy");
 // Window resize re-renders live (standard); the panel-divider drag is what
 // avoids a live reflow — it moves only a guide line and commits the width once

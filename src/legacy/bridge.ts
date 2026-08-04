@@ -116,6 +116,15 @@ export {
   // class immediately, same live-re-export safety as applyThemeMode/
   // setGraphShowAllTags above (hoisted `function`, no TDZ risk).
   setTamaEnabled,
+  // PER-54 Tama customization (frontend-only, persisted by the Settings island
+  // in localStorage gitcat.settings). setTamaMotionPreset("default"|"calm"|
+  // "lively") scales the sticky/dwell auto-revert hold + swaps the idle
+  // behavior; setTamaPoseOverrides({state:poseKey,…}) overrides which of the 8
+  // painted poses each FSM state shows ({} = no overrides = built-in POSE map).
+  // Both are mid-file hoisted `export function`s in legacy/main.ts — same live-
+  // re-export TDZ-safety as setTamaEnabled/applyTamaSkin above.
+  setTamaMotionPreset,
+  setTamaPoseOverrides,
   // "graph-batch" event handler — src/main.ts's own event listener forwards
   // every batch here (mirrors "repo-changed"/refreshFromExternalChange's own
   // shape). Hoisted `function`, no TDZ risk (same reasoning as

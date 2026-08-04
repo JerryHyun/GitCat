@@ -9,8 +9,17 @@
   // chrome ExternalTools/SetupWizard reuse). The Git Identity section
   // mirrors SetupWizard's own identity step markup closely — see
   // settings.svelte.ts's header doc for why.
-  import { settingsCtrl, CURATED_CONFIG_FIELDS, AUTO_FETCH_INTERVAL_OPTIONS, SETTINGS_TABS } from "./settings.svelte.ts";
-  import type { ThemeMode, SnapshotRetentionMode, GraphLabelPriority } from "./settings.svelte.ts";
+  import {
+    settingsCtrl,
+    CURATED_CONFIG_FIELDS,
+    AUTO_FETCH_INTERVAL_OPTIONS,
+    SETTINGS_TABS,
+    TAMA_MOTION_PRESETS,
+    TAMA_POSE_OPTIONS,
+    TAMA_MOMENT_FIELDS,
+    tamaPoseLabel,
+  } from "./settings.svelte.ts";
+  import type { ThemeMode, SnapshotRetentionMode, GraphLabelPriority, TamaMotionPreset } from "./settings.svelte.ts";
   import type { ConfigScope } from "../../ipc/bindings";
   import { playTamaSound } from "../../legacy/sound.ts";
   import { updaterCtrl } from "../updater/updater.svelte.ts";
@@ -273,6 +282,46 @@
         <div class="pl-err" style="margin-bottom:8px">{settingsCtrl.tamaSkinError}</div>
       {/if}
       <div style="margin-bottom:8px"></div>
+
+      <h4 class="d-lab">Motion</h4>
+      <p class="mut" style="font-size:11.5px;margin:0 0 8px">
+        How lively Tama's idle motion and reactions feel. <b>Default</b> keeps her current behavior.
+      </p>
+      <div class="rm-form" style="margin-bottom:14px;max-width:220px">
+        <select
+          value={settingsCtrl.tamaMotionPreset}
+          onchange={(e) => settingsCtrl.setTamaMotionPreset((e.target as HTMLSelectElement).value as TamaMotionPreset)}
+        >
+          {#each TAMA_MOTION_PRESETS as p (p.value)}
+            <option value={p.value}>{p.label}</option>
+          {/each}
+        </select>
+      </div>
+
+      <h4 class="d-lab">Expressions</h4>
+      <p class="mut" style="font-size:11.5px;margin:0 0 8px">
+        Pick which face Tama makes for each moment. Leave one on <b>Default</b> to keep her built-in look.
+      </p>
+      <div class="rm-form">
+        {#each TAMA_MOMENT_FIELDS as m (m.state)}
+          <label for={"tama-mood-" + m.state} style="font-size:12px;color:var(--muted)" title={m.hint}>{m.label}</label>
+          <select
+            id={"tama-mood-" + m.state}
+            value={settingsCtrl.tamaPoseOverride(m.state)}
+            onchange={(e) => settingsCtrl.setTamaPoseOverride(m.state, (e.target as HTMLSelectElement).value)}
+          >
+            <option value="">Default ({tamaPoseLabel(m.pose)})</option>
+            {#each TAMA_POSE_OPTIONS as pose (pose.value)}
+              <option value={pose.value}>{pose.label}</option>
+            {/each}
+          </select>
+        {/each}
+      </div>
+      <div style="margin-top:10px;margin-bottom:8px">
+        <button class="btn ghost" disabled={!settingsCtrl.hasTamaPoseOverrides} onclick={() => settingsCtrl.resetTamaPoseOverrides()}>
+          Reset expressions
+        </button>
+      </div>
       {/if}
 
       {#if settingsCtrl.activeTab === "identity"}

@@ -111,6 +111,63 @@ export type SnapshotRetentionMode = "off" | "count" | "age" | "hybrid";
 // branch); "branch" promotes the checked-out/local branch ahead of tags.
 export type GraphLabelPriority = "tag" | "branch";
 
+// ── Tama customization (PER-54) ────────────────────────────────────────────
+// PER-54: how lively Tama's idle animation + state-change timing feel.
+// "default" is exactly today's behavior; the runtime (bridge.setTamaMotionPreset,
+// in legacy/main.ts) owns what "calm"/"lively" actually change. Persisted +
+// re-applied at boot (see applyPersistedTamaMotion).
+export type TamaMotionPreset = "default" | "calm" | "lively";
+
+// The motion presets offered in the Tama tab's dropdown.
+export const TAMA_MOTION_PRESETS: { value: TamaMotionPreset; label: string }[] = [
+  { value: "default", label: "Default" },
+  { value: "calm", label: "Calm" },
+  { value: "lively", label: "Lively" },
+];
+
+// The 8 painted poses (TAMA_IMG's own keys — see legacy/main.ts) a moment can be
+// remapped to. "" is the implicit "Default — use the built-in pose" option the
+// template prepends per row; it never appears in this list.
+export const TAMA_POSE_OPTIONS: { value: string; label: string }[] = [
+  { value: "hero", label: "Hero" },
+  { value: "curious", label: "Curious" },
+  { value: "confident", label: "Confident" },
+  { value: "thinking", label: "Thinking" },
+  { value: "happy", label: "Happy" },
+  { value: "alarm", label: "Alarm" },
+  { value: "shocked", label: "Shocked" },
+  { value: "sleep", label: "Sleep" },
+];
+
+// The curated, human-labelled subset of TamaMascot.STATES (legacy/main.ts) the
+// expression remapper exposes — deliberately NOT all 12 raw FSM states (sleep/
+// hint/confused/curious are internal-feeling and left out). Each `state` is a
+// real key usable in a tamaPoseOverrides map (the mascot resolves
+// overrides[state] ?? POSE[state]); `pose` is that state's BUILT-IN default,
+// surfaced in the "Default (…)" option so a user sees what they're overriding.
+export interface TamaMomentField {
+  state: string;
+  label: string;
+  pose: string;
+  hint: string;
+}
+export const TAMA_MOMENT_FIELDS: TamaMomentField[] = [
+  { state: "idle", label: "Idle", pose: "curious", hint: "Resting — nothing is happening" },
+  { state: "thinking", label: "Thinking", pose: "thinking", hint: "A long operation is running" },
+  { state: "syncing", label: "Working / Sync", pose: "thinking", hint: "Fetching, pulling, or pushing" },
+  { state: "warn", label: "Caution", pose: "shocked", hint: "A heads-up before a risky action" },
+  { state: "danger", label: "Danger", pose: "alarm", hint: "About to do something destructive" },
+  { state: "celebrate", label: "Celebrate", pose: "happy", hint: "An operation just succeeded" },
+  { state: "rescue", label: "Rescue", pose: "confident", hint: "An undo or recovery just happened" },
+  { state: "greeting", label: "Greeting", pose: "hero", hint: "No repository open" },
+];
+
+// The display label for a pose key (used by the "Default (…)" option). Falls
+// back to the raw key for an unlisted one. Pure + exported for unit testing.
+export function tamaPoseLabel(key: string): string {
+  return TAMA_POSE_OPTIONS.find((o) => o.value === key)?.label ?? key;
+}
+
 export interface PersistedSettings {
   themeMode: ThemeMode;
   cherryPickRecordOriginDefault: boolean;
@@ -193,6 +250,18 @@ export interface PersistedSettings {
   // boot-apply of a stored plugin id can still fail (plugin later removed/
   // disabled) — that path falls back to the default portraits silently.
   tamaSkinPluginId: string | null;
+  // PER-54: Tama motion preset — how lively her idle animation + state-change
+  // timing feel. "default" is exactly today's behavior; "calm"/"lively" are the
+  // runtime's to define (bridge.setTamaMotionPreset). Re-applied at boot (see
+  // applyPersistedTamaMotion). Default "default" — no behavior change until a
+  // user picks otherwise.
+  tamaMotionPreset: TamaMotionPreset;
+  // PER-54: per-moment expression remap — a map of FSM-state -> pose key that
+  // overlays TamaMascot.POSE (the mascot resolves overrides[state] ?? POSE[state]).
+  // An empty map (the default) means "no overrides, use the built-in poses". Only
+  // a curated subset of states is user-editable (see TAMA_MOMENT_FIELDS); an
+  // unlisted key persisted by a hand-edit still round-trips harmlessly.
+  tamaPoseOverrides: Record<string, string>;
 }
 
 const STORAGE_KEY = "gitcat.settings";
@@ -229,6 +298,8 @@ const DEFAULTS: PersistedSettings = {
   snapshotRetentionDays: 14,
   tamaEnabled: true,
   tamaSkinPluginId: null,
+  tamaMotionPreset: "default",
+  tamaPoseOverrides: {},
 };
 
 // Both loadSettings() (below) and setSoundEffectsVolume() need the same 0-1
@@ -251,6 +322,12 @@ export function loadSettings(): PersistedSettings {
     // to trust this field is always a valid finite 0-1 number, not just the
     // one call site (the volume slider) that happens to go through the setter.
     merged.soundEffectsVolume = Number.isFinite(merged.soundEffectsVolume) ? clamp01(merged.soundEffectsVolume) : DEFAULTS.soundEffectsVolume;
+    // Same read-boundary discipline: a corrupt blob whose tamaPoseOverrides is a
+    // non-plain-object (string/array/null) would survive the shallow spread — coerce
+    // it back to {} so every consumer can trust the field's shape.
+    if (typeof merged.tamaPoseOverrides !== "object" || merged.tamaPoseOverrides === null || Array.isArray(merged.tamaPoseOverrides)) {
+      merged.tamaPoseOverrides = { ...DEFAULTS.tamaPoseOverrides };
+    }
     return merged;
   } catch {
     return { ...DEFAULTS }; // storage disabled (e.g. private mode) or corrupt JSON — fall back quietly
@@ -348,6 +425,20 @@ export async function applyPersistedTamaSkin(): Promise<void> {
   }
 }
 
+// Re-apply the persisted Tama motion preset + expression overrides at boot —
+// called ONCE from legacy/main.ts's startup, right beside applyPersistedTamaSkin.
+// Unlike that skin boot path (plugin-backed, backend-gated, async), these are
+// pure frontend: a timing preset and a pose-key map, handed straight to the
+// mascot via the bridge setters. So this runs UNCONDITIONALLY — design mode
+// included (!IN_TAURI) — and synchronously. Calling with the defaults
+// ("default" + {}) is a harmless baseline no-op by the setters' own contract
+// ("default" restores current behavior; {} = no overrides = the built-in poses).
+export function applyPersistedTamaMotion(): void {
+  const s = loadSettings();
+  bridge.setTamaMotionPreset(s.tamaMotionPreset);
+  bridge.setTamaPoseOverrides(s.tamaPoseOverrides ?? {});
+}
+
 // Canned identity for design-mode (!IN_TAURI), same spirit as setupwizard's
 // own DEMO_IDENTITY. local:false so the browser preview also demos the
 // "using your global identity" messaging (see Settings.svelte), not just
@@ -377,6 +468,16 @@ class SettingsState {
   snapshotRetentionCount = $state(DEFAULTS.snapshotRetentionCount);
   snapshotRetentionDays = $state(DEFAULTS.snapshotRetentionDays);
   tamaEnabled = $state(DEFAULTS.tamaEnabled);
+
+  // ── Tama motion + expression remap (PER-54) — app-level, pure frontend ────
+  // The motion preset drives her idle-animation liveliness + state-change timing
+  // (bridge.setTamaMotionPreset); the override map remaps which of the 8 poses
+  // shows for a given moment (bridge.setTamaPoseOverrides). Both seed from
+  // localStorage in show() and re-apply at boot (applyPersistedTamaMotion). The
+  // override map is copied on seed/write (never mutated in place) so each $state
+  // reassignment is actually observed.
+  tamaMotionPreset = $state<TamaMotionPreset>(DEFAULTS.tamaMotionPreset);
+  tamaPoseOverrides = $state<Record<string, string>>({ ...DEFAULTS.tamaPoseOverrides });
 
   // ── Tama skin picker (PER-47) — app-level, NOT repo-scoped ──────────────
   // The active skin's plugin id (null = built-in). Seeded from localStorage in
@@ -832,6 +933,8 @@ class SettingsState {
     this.tamaEnabled = s.tamaEnabled;
     this.tamaSkinPluginId = s.tamaSkinPluginId;
     this.tamaSkinError = "";
+    this.tamaMotionPreset = s.tamaMotionPreset;
+    this.tamaPoseOverrides = { ...s.tamaPoseOverrides };
     this.repo = repo ?? "";
     this.identityError = "";
     this.configError = "";
@@ -942,6 +1045,48 @@ class SettingsState {
     this.tamaEnabled = v;
     saveSettings({ tamaEnabled: v });
     bridge.setTamaEnabled(v); // applies the .tama-off class immediately — see legacy/main.ts
+  }
+
+  // ── Tama motion preset + expression remap (PER-54) ──────────────────────
+  // Both persist like every other instant-apply pref AND hand the new value to
+  // the runtime via a bridge setter. The bridge setters are pure frontend/DOM
+  // (a timing knob + a pose-key lookup), so they fire in design mode too — no
+  // IN_TAURI gate here, unlike the plugin-backed skin picker below.
+  setTamaMotionPreset(v: TamaMotionPreset): void {
+    this.tamaMotionPreset = v;
+    saveSettings({ tamaMotionPreset: v });
+    bridge.setTamaMotionPreset(v); // adjusts idle/timing behavior live — see legacy/main.ts
+  }
+
+  // What a moment's <select> currently shows: its override pose, or "" (the
+  // "Default" option — i.e. fall back to the built-in POSE[state]).
+  tamaPoseOverride(state: string): string {
+    return this.tamaPoseOverrides[state] ?? "";
+  }
+
+  // Whether ANY override is set — gates the "Reset expressions" button.
+  get hasTamaPoseOverrides(): boolean {
+    return Object.keys(this.tamaPoseOverrides).length > 0;
+  }
+
+  // A moment row's onchange. pose === "" (the "Default" option) REMOVES the
+  // override so that state resolves to POSE[state] again; any pose key SETS it.
+  // Rebuilds the map (never mutates in place) so the $state assignment is seen,
+  // persists the whole map, and hands it to the runtime.
+  setTamaPoseOverride(state: string, pose: string): void {
+    const next = { ...this.tamaPoseOverrides };
+    if (pose) next[state] = pose;
+    else delete next[state];
+    this.tamaPoseOverrides = next;
+    saveSettings({ tamaPoseOverrides: next });
+    bridge.setTamaPoseOverrides(next); // remaps the resolved poses live — see legacy/main.ts
+  }
+
+  // "Reset expressions" — drop every override back to the built-in poses.
+  resetTamaPoseOverrides(): void {
+    this.tamaPoseOverrides = {};
+    saveSettings({ tamaPoseOverrides: {} });
+    bridge.setTamaPoseOverrides({});
   }
 
   // The skin picker's onchange. Three kinds of selection:
