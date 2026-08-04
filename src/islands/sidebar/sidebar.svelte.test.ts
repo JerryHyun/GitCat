@@ -68,7 +68,17 @@ vi.mock("../resolver/resolver.svelte.ts", () => ({
 import * as bridge from "../../legacy/bridge";
 import { commands } from "../../ipc/bindings";
 import { resolver } from "../resolver/resolver.svelte.ts";
-import { sidebarCtrl, submoduleAction, submoduleNeedsForceConfirm, submoduleCanOpen, SUBMODULES_ALL, SUBMODULES_SYNC_ALL } from "./sidebar.svelte.ts";
+import {
+  sidebarCtrl,
+  submoduleAction,
+  submoduleNeedsForceConfirm,
+  submoduleCanOpen,
+  SUBMODULES_ALL,
+  SUBMODULES_SYNC_ALL,
+  buildRefRows,
+  refFolderPaths,
+  stripRemote,
+} from "./sidebar.svelte.ts";
 
 function ok<T>(data: T): { status: "ok"; data: T } {
   return { status: "ok", data };
@@ -2204,5 +2214,198 @@ describe("copyBranchName", () => {
     vi.advanceTimersByTime(400); // dev's own 900ms timeout
     expect(sidebarCtrl.copiedBranch).toBe("");
     vi.useRealTimers();
+  });
+});
+
+// ── ref folder tree (Git-Fork-style "/"-segmented hierarchy) ────────────────
+// buildRefRows/refFolderPaths/stripRemote are pure module-level functions, so
+// these drive them directly with plain string fixtures — no controller state,
+// no DOM, no mocked commands.
+
+describe("stripRemote", () => {
+  it("drops the leading remote name", () => {
+    expect(stripRemote("origin/feature/x")).toBe("feature/x");
+    expect(stripRemote("origin/main")).toBe("main");
+  });
+
+  it("leaves a ref with no slash untouched rather than emptying it", () => {
+    expect(stripRemote("main")).toBe("main");
+  });
+
+  it("only strips the FIRST segment, so a nested path survives intact", () => {
+    expect(stripRemote("upstream/release/1.0/hotfix")).toBe("release/1.0/hotfix");
+  });
+});
+
+describe("buildRefRows", () => {
+  const never = () => false;
+  const id = (s: string) => s;
+
+  it("leaves a flat ref list byte-identical to before (no folders at all)", () => {
+    const rows = buildRefRows(["main", "dev"], id, never);
+    expect(rows).toEqual([
+      { kind: "leaf", path: "main", label: "main", depth: 0, item: "main" },
+      { kind: "leaf", path: "dev", label: "dev", depth: 0, item: "dev" },
+    ]);
+  });
+
+  it("groups a shared prefix into a folder and shows only the last segment on the leaf", () => {
+    const rows = buildRefRows(["feature/a", "feature/b"], id, never);
+    expect(rows).toEqual([
+      { kind: "folder", path: "feature", label: "feature", depth: 0, count: 2, collapsed: false },
+      { kind: "leaf", path: "feature/a", label: "a", depth: 1, item: "feature/a" },
+      { kind: "leaf", path: "feature/b", label: "b", depth: 1, item: "feature/b" },
+    ]);
+  });
+
+  it("keeps the leaf's FULL name in path so row hooks (data-branch, checkout) still address the real ref", () => {
+    const rows = buildRefRows(["feature/PER-53"], id, never);
+    const leaf = rows.find((r) => r.kind === "leaf")!;
+    expect(leaf.path).toBe("feature/PER-53");
+    expect(leaf.label).toBe("PER-53");
+  });
+
+  it("nests arbitrarily deep, one folder per segment", () => {
+    const rows = buildRefRows(["fix/win/askpass"], id, never);
+    expect(rows).toEqual([
+      { kind: "folder", path: "fix", label: "fix", depth: 0, count: 1, collapsed: false },
+      { kind: "folder", path: "fix/win", label: "win", depth: 1, count: 1, collapsed: false },
+      { kind: "leaf", path: "fix/win/askpass", label: "askpass", depth: 2, item: "fix/win/askpass" },
+    ]);
+  });
+
+  it("preserves first-appearance order and never re-sorts the caller's own ordering", () => {
+    // Backend ref order is the source of truth; this only groups.
+    const rows = buildRefRows(["zeta/b", "alpha", "zeta/a"], id, never);
+    expect(rows.map((r) => r.label)).toEqual(["zeta", "b", "a", "alpha"]);
+  });
+
+  it("counts every leaf at or below a folder, including nested ones", () => {
+    const rows = buildRefRows(["r/1/a", "r/1/b", "r/2/c"], id, never);
+    const byPath = Object.fromEntries(rows.filter((r) => r.kind === "folder").map((r) => [r.path, r.count]));
+    expect(byPath).toEqual({ r: 3, "r/1": 2, "r/2": 1 });
+  });
+
+  it("a collapsed folder still reports its count but emits none of its descendants", () => {
+    const rows = buildRefRows(["feature/a", "feature/b", "main"], id, (p) => p === "feature");
+    expect(rows).toEqual([
+      { kind: "folder", path: "feature", label: "feature", depth: 0, count: 2, collapsed: true },
+      { kind: "leaf", path: "main", label: "main", depth: 0, item: "main" },
+    ]);
+  });
+
+  it("collapses nested folders independently of their parent", () => {
+    const rows = buildRefRows(["a/b/c", "a/d"], id, (p) => p === "a/b");
+    expect(rows.map((r) => r.kind + ":" + r.path)).toEqual(["folder:a", "folder:a/b", "leaf:a/d"]);
+  });
+
+  it("forceExpand overrides collapsed state without clearing it (filter-active behavior)", () => {
+    const collapsed = (p: string) => p === "feature";
+    const folded = buildRefRows(["feature/a"], id, collapsed);
+    expect(folded).toHaveLength(1); // just the folder row
+
+    const forced = buildRefRows(["feature/a"], id, collapsed, true);
+    expect(forced.map((r) => r.kind)).toEqual(["folder", "leaf"]);
+    // The folder still reports itself as expanded while forced, so the view's
+    // twisty doesn't render "closed" over visible children.
+    expect(forced[0]).toMatchObject({ kind: "folder", collapsed: false });
+  });
+
+  it("works on objects via getName, exposing the original item on the leaf", () => {
+    const items = [{ name: "feature/x", sha: "abc" }];
+    const rows = buildRefRows(items, (b) => b.name, never);
+    const leaf = rows.find((r) => r.kind === "leaf")!;
+    expect(leaf.item).toBe(items[0]);
+  });
+
+  it("drops empty segments instead of rendering a blank folder row", () => {
+    // git rejects these ref names; pure defensiveness for a hand-typed fixture.
+    const rows = buildRefRows(["a//b", "trailing/"], id, never);
+    expect(rows).toEqual([
+      { kind: "folder", path: "a", label: "a", depth: 0, count: 1, collapsed: false },
+      { kind: "leaf", path: "a//b", label: "b", depth: 1, item: "a//b" },
+      { kind: "leaf", path: "trailing/", label: "trailing", depth: 0, item: "trailing/" },
+    ]);
+  });
+
+  it("ignores a name that is nothing but separators", () => {
+    expect(buildRefRows(["//"], id, never)).toEqual([]);
+  });
+
+  it("returns an empty list for no items", () => {
+    expect(buildRefRows([], id, never)).toEqual([]);
+  });
+
+  it("a folder and a leaf can share a name without colliding", () => {
+    const rows = buildRefRows(["release", "release/1.0"], id, never);
+    expect(rows.map((r) => r.kind + ":" + r.path)).toEqual(["leaf:release", "folder:release", "leaf:release/1.0"]);
+  });
+});
+
+describe("refFolderPaths", () => {
+  it("lists every folder at every nesting level, deduplicated, in first-appearance order", () => {
+    expect(refFolderPaths(["a/b/c", "a/d", "z/e"], (s) => s)).toEqual(["a", "a/b", "z"]);
+  });
+
+  it("returns nothing for a flat list (so the collapse-all control can hide itself)", () => {
+    expect(refFolderPaths(["main", "dev"], (s) => s)).toEqual([]);
+  });
+});
+
+describe("sidebar folder collapse state", () => {
+  beforeEach(() => {
+    sidebarCtrl.collapsedFolders = [];
+    sidebarCtrl.locals = [];
+    sidebarCtrl.remotes = [];
+  });
+
+  it("toggles a folder closed then open again", () => {
+    expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(false);
+    sidebarCtrl.toggleFolder("local", "feature");
+    expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(true);
+    sidebarCtrl.toggleFolder("local", "feature");
+    expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(false);
+  });
+
+  it("keys by section, so the same folder name under Local and Remotes collapses independently", () => {
+    sidebarCtrl.toggleFolder("local", "feature");
+    expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(true);
+    expect(sidebarCtrl.isFolderCollapsed("remote", "feature")).toBe(false);
+  });
+
+  it("collapse-all folds every nested folder of one section, leaving the other section untouched", () => {
+    sidebarCtrl.locals = [
+      { name: "feature/win/a", sha: "1", ahead: null, behind: null, upstream: null, lastCommitTime: NOW },
+      { name: "main", sha: "2", ahead: null, behind: null, upstream: null, lastCommitTime: NOW },
+    ];
+    sidebarCtrl.toggleFolder("remote", "keepme");
+
+    sidebarCtrl.setAllFoldersCollapsed("local", true);
+    expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(true);
+    expect(sidebarCtrl.isFolderCollapsed("local", "feature/win")).toBe(true);
+    expect(sidebarCtrl.isFolderCollapsed("remote", "keepme")).toBe(true); // other section survives
+  });
+
+  it("expand-all drops only this section's keys", () => {
+    sidebarCtrl.toggleFolder("local", "feature");
+    sidebarCtrl.toggleFolder("remote", "feature");
+    sidebarCtrl.setAllFoldersCollapsed("local", false);
+    expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(false);
+    expect(sidebarCtrl.isFolderCollapsed("remote", "feature")).toBe(true);
+  });
+
+  it("remote collapse-all keys folders by the remote-STRIPPED path the rows actually render with", () => {
+    sidebarCtrl.remotes = [{ name: "origin/feature/x", sha: "1" }];
+    sidebarCtrl.setAllFoldersCollapsed("remote", true);
+    expect(sidebarCtrl.isFolderCollapsed("remote", "feature")).toBe(true);
+    expect(sidebarCtrl.isFolderCollapsed("remote", "origin/feature")).toBe(false);
+  });
+
+  it("hasFolders reports whether a collapse-all control is worth showing", () => {
+    expect(sidebarCtrl.hasFolders("local")).toBe(false);
+    sidebarCtrl.locals = [{ name: "main", sha: "1", ahead: null, behind: null, upstream: null, lastCommitTime: NOW }];
+    expect(sidebarCtrl.hasFolders("local")).toBe(false);
+    sidebarCtrl.locals = [{ name: "feature/a", sha: "1", ahead: null, behind: null, upstream: null, lastCommitTime: NOW }];
+    expect(sidebarCtrl.hasFolders("local")).toBe(true);
   });
 });

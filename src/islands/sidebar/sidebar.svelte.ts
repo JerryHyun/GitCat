@@ -318,6 +318,167 @@ export const SUBMODULES_ALL = "__submodules__";
 // same `submodulesRecursive` toggle.
 export const SUBMODULES_SYNC_ALL = "__submodules_sync__";
 
+// ── ref folder tree (Git-Fork-style "/"-segmented hierarchy) ───────────────
+//
+// Branch names are conventionally path-like (`feature/PER-53-tama-swap`,
+// `release/1.0`, `fix/win/askpass`), but the sidebar used to render them as one
+// flat list of full names — in a repo with a few dozen branches that reads as
+// undifferentiated noise, and the shared prefix is repeated on every row while
+// the part that actually distinguishes them gets ellipsized off the right edge
+// first (`.ref-item .rname` is `overflow:hidden;text-overflow:ellipsis`). This
+// groups them the way Git Fork/Sourcetree/VS Code all do: each `/`-separated
+// segment except the last becomes a collapsible FOLDER, and a leaf row shows
+// only its own last segment.
+//
+// Deliberately produces a FLAT, pre-ordered row array rather than a nested
+// structure: Svelte 5 can render a recursive tree via self-referencing
+// snippets, but a flat list keeps the view a single ordinary `{#each}` (so
+// every existing per-row concern — the visibility checkbox, `data-branch`
+// hooks the legacy layer/vimnav already query, the context menu, the busy
+// spinner — stays exactly where it was), and makes the whole grouping a pure
+// function this file can unit-test directly with no DOM at all.
+//
+// A one-segment name (`main`) is a depth-0 leaf and never gets a folder, so a
+// repo that doesn't use `/` at all renders byte-identically to before.
+export type RefRow<T> =
+  | { kind: "folder"; path: string; label: string; depth: number; count: number; collapsed: boolean }
+  | { kind: "leaf"; path: string; label: string; depth: number; item: T };
+
+// Internal tree shape, collapsed into `RefRow[]` by the walk at the end of
+// `buildRefRows`. `order` preserves FIRST-APPEARANCE order of both folders and
+// leaves so the caller's own sort (the backend's ref ordering) still decides
+// what comes first — this only groups, it never re-sorts.
+type TreeDir<T> = {
+  dirs: Map<string, TreeDir<T>>;
+  leaves: { label: string; path: string; item: T }[];
+  order: string[]; // interleaved keys: "d:<segment>" for a dir, "l:<index>" for a leaf
+};
+
+function emptyDir<T>(): TreeDir<T> {
+  return { dirs: new Map(), leaves: [], order: [] };
+}
+
+/**
+ * Group `items` into a flat, render-ready row list by splitting each item's
+ * name on "/".
+ *
+ * `getName` returns the name to group by — note this is the name RELATIVE to
+ * whatever subtree is being rendered, not necessarily the full ref: the
+ * remotes section already groups by remote (`remoteGroups`), so it passes
+ * `origin/feature/x` with the `origin/` prefix stripped, giving a `feature`
+ * folder rather than a redundant `origin` one nested inside the `origin`
+ * header that's already on screen.
+ *
+ * `isCollapsed(path)` is asked per folder using the folder's own full path
+ * (e.g. `feature/win`), so nested folders collapse independently.
+ *
+ * `forceExpand` renders every folder open regardless of `isCollapsed` — used
+ * while a text filter is active, so surviving matches can never be hidden
+ * inside a folder the user collapsed earlier (the same thing VS Code's
+ * explorer and Git Fork's own filter box do). Collapsed state is NOT cleared,
+ * so it comes back intact once the filter is emptied.
+ *
+ * Empty-segment noise (`a//b`, a stray trailing "/") is dropped rather than
+ * producing a blank folder row: git itself rejects those ref names, so this is
+ * pure defensiveness for a hand-typed filter/fixture, not a real code path.
+ */
+export function buildRefRows<T>(
+  items: T[],
+  getName: (item: T) => string,
+  isCollapsed: (path: string) => boolean,
+  forceExpand = false,
+): RefRow<T>[] {
+  const root = emptyDir<T>();
+
+  for (const item of items) {
+    const segments = getName(item).split("/").filter((s) => s !== "");
+    if (segments.length === 0) continue;
+    const leafLabel = segments[segments.length - 1];
+    let dir = root;
+    let prefix = "";
+    for (const seg of segments.slice(0, -1)) {
+      prefix = prefix ? `${prefix}/${seg}` : seg;
+      let next = dir.dirs.get(seg);
+      if (!next) {
+        next = emptyDir<T>();
+        dir.dirs.set(seg, next);
+        dir.order.push(`d:${seg}`);
+      }
+      dir = next;
+    }
+    dir.order.push(`l:${dir.leaves.length}`);
+    dir.leaves.push({ label: leafLabel, path: getName(item), item });
+  }
+
+  // Total leaves at or below a folder — drives its count badge, so a collapsed
+  // folder still tells you how much it's hiding.
+  function countLeaves(dir: TreeDir<T>): number {
+    let n = dir.leaves.length;
+    for (const child of dir.dirs.values()) n += countLeaves(child);
+    return n;
+  }
+
+  const rows: RefRow<T>[] = [];
+  function walk(dir: TreeDir<T>, depth: number, prefix: string): void {
+    for (const key of dir.order) {
+      if (key.startsWith("l:")) {
+        const leaf = dir.leaves[Number(key.slice(2))];
+        rows.push({ kind: "leaf", path: leaf.path, label: leaf.label, depth, item: leaf.item });
+      } else {
+        const seg = key.slice(2);
+        const child = dir.dirs.get(seg)!;
+        const path = prefix ? `${prefix}/${seg}` : seg;
+        const collapsed = !forceExpand && isCollapsed(path);
+        rows.push({ kind: "folder", path, label: seg, depth, count: countLeaves(child), collapsed });
+        // A collapsed folder contributes its own row (with its count) but none
+        // of its descendants — that's the whole point of collapsing, and it
+        // also means the view never renders rows it would just have to hide.
+        if (!collapsed) walk(child, depth + 1, path);
+      }
+    }
+  }
+  walk(root, 0, "");
+  return rows;
+}
+
+/**
+ * Drop a remote ref's leading remote name (`origin/feature/x` -> `feature/x`).
+ *
+ * The remotes section already prints the remote as its own `.remote-head`
+ * divider (see Sidebar.svelte's `remoteGroups`, which groups on exactly this
+ * first segment), so grouping the rows underneath by the FULL ref would nest
+ * every one of them inside a redundant `origin` folder sitting under the
+ * `origin` header. A ref with no "/" at all (never produced by git for a
+ * remote-tracking branch, but cheap to be safe about) is returned unchanged
+ * rather than becoming an empty string.
+ */
+export function stripRemote(name: string): string {
+  const slash = name.indexOf("/");
+  return slash === -1 ? name : name.slice(slash + 1);
+}
+
+/**
+ * Every folder path in `items`, at every nesting level (`feature`,
+ * `feature/win`, …) — what "collapse all" needs in order to fold the whole
+ * tree in one click without first having to render it.
+ */
+export function refFolderPaths<T>(items: T[], getName: (item: T) => string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of items) {
+    const segments = getName(item).split("/").filter((s) => s !== "");
+    let prefix = "";
+    for (const seg of segments.slice(0, -1)) {
+      prefix = prefix ? `${prefix}/${seg}` : seg;
+      if (!seen.has(prefix)) {
+        seen.add(prefix);
+        out.push(prefix);
+      }
+    }
+  }
+  return out;
+}
+
 class SidebarState {
   locals = $state<LocalBranch[]>([]);
   remotes = $state<SimpleRef[]>([]);
@@ -345,6 +506,63 @@ class SidebarState {
   autoMode = $state(false);
   snapshots = $state<Snapshot[]>([]);
   filter = $state("");
+  // Collapsed folder paths in the ref tree (see buildRefRows). Keyed
+  // "<section>:<folderPath>" — `local:feature`, `remote:origin/feature` — so
+  // the same folder name appearing under both Local and Remotes collapses
+  // independently rather than in lockstep.
+  //
+  // A plain array, not a Set: it stays small (folder count, not branch count),
+  // `$state` tracks a reassigned array without needing svelte/reactivity's
+  // SvelteSet, and an array serializes as-is if this is ever persisted per repo
+  // the way visibleLocal/visibleRemote already are. Deliberately NOT persisted
+  // yet — collapse state is cheap to re-establish and a wrong-looking restored
+  // tree is more confusing than a fully expanded one on open.
+  collapsedFolders = $state<string[]>([]);
+
+  isFolderCollapsed(section: "local" | "remote", path: string): boolean {
+    return this.collapsedFolders.includes(`${section}:${path}`);
+  }
+
+  toggleFolder(section: "local" | "remote", path: string): void {
+    const key = `${section}:${path}`;
+    this.collapsedFolders = this.collapsedFolders.includes(key)
+      ? this.collapsedFolders.filter((k) => k !== key)
+      : [...this.collapsedFolders, key];
+  }
+
+  /**
+   * Fold/unfold every folder of one section at once. Mirrors the
+   * "Hide all branches"/"Show all branches" pair already in the filter bar:
+   * one click to get to a clean slate, one to get everything back.
+   *
+   * Collapsing takes the folder list from the section's CURRENT refs
+   * (refFolderPaths) rather than from whatever happens to be rendered, so it
+   * folds nested folders too — including ones inside a folder that's already
+   * collapsed and therefore not on screen. Expanding just drops every key for
+   * this section, which cannot strand a folder as collapsed-but-unreachable.
+   */
+  setAllFoldersCollapsed(section: "local" | "remote", collapsed: boolean): void {
+    const others = this.collapsedFolders.filter((k) => !k.startsWith(`${section}:`));
+    if (!collapsed) {
+      this.collapsedFolders = others;
+      return;
+    }
+    const paths =
+      section === "local"
+        ? refFolderPaths(this.locals, (b) => b.name)
+        : // Remotes are rendered under a per-remote header with the remote name
+          // already stripped from each row (see Sidebar.svelte's remoteGroups),
+          // so their folder paths are keyed the same stripped way.
+          refFolderPaths(this.remotes, (r) => stripRemote(r.name));
+    this.collapsedFolders = [...others, ...paths.map((p) => `${section}:${p}`)];
+  }
+
+  /** Whether this section has any folder to collapse at all. */
+  hasFolders(section: "local" | "remote"): boolean {
+    return section === "local"
+      ? refFolderPaths(this.locals, (b) => b.name).length > 0
+      : refFolderPaths(this.remotes, (r) => stripRemote(r.name)).length > 0;
+  }
   busy = $state(false);
   // Which row `busy` applies to (a local branch name or a full remote ref
   // like "origin/main") — lets the view spinner-out just the one row being

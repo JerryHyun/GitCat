@@ -299,7 +299,30 @@ button{font-family:inherit;font-size:inherit;color:inherit;cursor:pointer}
 .ref-group>summary .manage-btn{margin-left:4px;border:none;background:transparent;color:var(--muted);
   cursor:pointer;font-size:13px;line-height:1;padding:2px 4px;border-radius:4px;flex:none}
 .ref-group>summary .manage-btn:hover{background:var(--panel);color:var(--text)}
+/* Ref folder tree (buildRefRows in sidebar.svelte.ts). --depth is set inline
+   per row and drives ONE indent rule shared by folder rows and leaf rows, so a
+   leaf always lines up under its own folder's label no matter how deep it sits.
+   Defaults to 0 so any .ref-item rendered outside the tree (the "＋ New
+   branch…" row, the tag/submodule/snapshot sections) keeps its original
+   24px inset untouched. */
+.ref-item,.ref-folder{--depth:0}
+.ref-folder{display:flex;align-items:center;gap:6px;cursor:pointer;border-radius:6px;
+  padding:4px 8px 4px calc(10px + var(--depth) * 12px);color:var(--muted);font-weight:600;font-size:11px;user-select:none}
+.ref-folder:hover{background:var(--elevated);color:var(--text)}
+.ref-folder .tw{transition:transform .15s;color:var(--muted);transform:rotate(90deg);flex:none}
+.ref-folder.collapsed .tw{transform:none}
+.ref-folder .rname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ref-folder .count{font-family:var(--mono);font-size:10px;background:var(--elevated);padding:0 6px;border-radius:var(--r-pill);flex:none}
+.ref-folder:hover .count{background:var(--panel)}
+/* Collapse-all/expand-all on a section summary — same box as the Remotes
+   "⋮ Manage remotes" button it sits next to, just not pushed to the far right
+   (that button already claims margin-left:auto). */
+.ref-group>summary .fold-btn{margin-left:auto;font-size:12px}
+.ref-group>summary .manage-btn+.manage-btn,.ref-group>summary .fold-btn+.manage-btn{margin-left:0}
 .ref-item{display:flex;align-items:center;gap:8px;padding:5px 8px 5px 24px;border-radius:6px;cursor:pointer;position:relative}
+/* AFTER the shorthand above on purpose — a `padding` shorthand declared later
+   would reset this back to the flat 24px. */
+.ref-item{padding-left:calc(24px + var(--depth) * 12px)}
 .ref-item:hover{background:var(--elevated)}
 .ref-item.current{background:color-mix(in srgb,var(--accent) 14%,transparent)}
 .ref-item.current::before{content:"";position:absolute;left:10px;top:50%;transform:translateY(-50%);width:5px;height:5px;border-radius:50%;background:var(--accent)}
