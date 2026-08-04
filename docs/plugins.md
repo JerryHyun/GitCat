@@ -196,7 +196,7 @@ The `<message>` is trimmed and capped at ~160 characters. The directive line its
 
 ## Tama skins {#tama-skins}
 
-A plugin can also ship an alternate **look and voice** for Tama by declaring a top-level `tama` object. This is purely declarative art and copy — a skin contributes no commands and no hooks, runs no process, and needs no open repository. GitCat itself ships two built-in characters, **Momo (pink)** and **Sora (blue)**, always available in the same picker; a plugin skin is the same feature contributed from outside the app. See [`examples/plugins/midori-skin`](https://github.com/zangjiucheng/GitCat/tree/main/examples/plugins/midori-skin) for a full-character example.
+A plugin can also ship an alternate **look and voice** for Tama by declaring a top-level `tama` object. This is purely declarative art and copy — a skin contributes no commands and no hooks, runs no process, and needs no open repository. Once installed, pick it in **Settings → Tama → Skin**. See [`examples/plugins/midori-skin`](https://github.com/zangjiucheng/GitCat/tree/main/examples/plugins/midori-skin) for a full-character example.
 
 Apply a skin from **Settings → Tama → Skin**: the picker lists **Default (built-in)**, the built-in characters, and every enabled plugin that declares a `tama` field.
 

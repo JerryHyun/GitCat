@@ -91,7 +91,7 @@ import {
 // The built-in characters are a pure frontend registry (bundled webp asset URLs
 // + a voice pitch) — imported for real, not mocked, so the built-in-path tests
 // assert against the actual poses/pitch the app ships.
-import { BUILTIN_SKINS, builtinSkinById } from "./builtinskins.ts";
+import { BUILTIN_SKINS } from "./builtinskins.ts";
 
 function ok<T>(data: T): { status: "ok"; data: T } {
   return { status: "ok", data };
@@ -1026,39 +1026,12 @@ describe("tama skin — setTamaSkin (interactive picker)", () => {
 });
 
 describe("tama skin — built-in characters (PER-53)", () => {
-  it("the picker offers the bundled built-in characters (Momo, Sora)", () => {
-    expect(settingsCtrl.builtinSkins.map((s) => s.id)).toEqual(["builtin:momo", "builtin:sora"]);
-    expect(BUILTIN_SKINS.map((s) => s.id)).toEqual(["builtin:momo", "builtin:sora"]);
-  });
-
-  it("applies a built-in's poses + voicePitch SYNCHRONOUSLY, persists the id, greets, and never hits the backend", async () => {
-    const momo = builtinSkinById("builtin:momo")!;
-
-    await settingsCtrl.setTamaSkin("builtin:momo");
-
-    expect(commands.loadPluginSkin).not.toHaveBeenCalled();
-    expect(bridge.applyTamaSkin).toHaveBeenCalledWith(momo.poses, momo.voicePitch);
-    expect(settingsCtrl.tamaSkinPluginId).toBe("builtin:momo");
-    expect(loadSettings().tamaSkinPluginId).toBe("builtin:momo");
-    expect(bridge.tama.say).toHaveBeenCalled(); // its greeting line
-    expect(settingsCtrl.tamaSkinBusy).toBe(false);
-    expect(settingsCtrl.tamaSkinError).toBe("");
-  });
-
-  it("applies a built-in for real even in design mode (!IN_TAURI) — a built-in is pure frontend, not a demo toast", async () => {
-    mockInTauri = false;
-    const sora = builtinSkinById("builtin:sora")!;
-
-    await settingsCtrl.setTamaSkin("builtin:sora");
-
-    expect(commands.loadPluginSkin).not.toHaveBeenCalled();
-    expect(bridge.applyTamaSkin).toHaveBeenCalledWith(sora.poses, sora.voicePitch);
-    expect(loadSettings().tamaSkinPluginId).toBe("builtin:sora");
-  });
-
-  it("Momo speaks higher and Sora lower than the default 1.0 voice", () => {
-    expect(builtinSkinById("builtin:momo")!.voicePitch).toBeGreaterThan(1);
-    expect(builtinSkinById("builtin:sora")!.voicePitch).toBeLessThan(1);
+  it("ships no built-in characters today; the picker's list mirrors BUILTIN_SKINS (empty)", () => {
+    // The hue-shift recolor built-ins (Momo/Sora) were removed — a global recolor
+    // tints Tama's skin and reads as "off". The mechanism stays for a future
+    // PAINTED built-in; until then alternate characters come from skin plugins.
+    expect(BUILTIN_SKINS).toEqual([]);
+    expect(settingsCtrl.builtinSkins).toEqual([]);
   });
 
   it("an unrecognised builtin:* id coerces to Default (clears + persists null), never loading it as a plugin", async () => {
@@ -1111,27 +1084,9 @@ describe("tama skin — applyPersistedTamaSkin (boot)", () => {
     expect(bridge.clearTamaSkin).toHaveBeenCalled();
   });
 
-  it("re-applies a persisted BUILT-IN character SYNCHRONOUSLY (poses + pitch), no backend", async () => {
-    saveSettings({ tamaSkinPluginId: "builtin:sora" });
-    const sora = builtinSkinById("builtin:sora")!;
-
-    await applyPersistedTamaSkin();
-
-    expect(commands.loadPluginSkin).not.toHaveBeenCalled();
-    expect(bridge.applyTamaSkin).toHaveBeenCalledWith(sora.poses, sora.voicePitch);
-  });
-
-  it("applies a persisted built-in on boot even in design mode (!IN_TAURI) — pure frontend", async () => {
-    mockInTauri = false;
-    saveSettings({ tamaSkinPluginId: "builtin:momo" });
-    const momo = builtinSkinById("builtin:momo")!;
-
-    await applyPersistedTamaSkin();
-
-    expect(commands.loadPluginSkin).not.toHaveBeenCalled();
-    expect(bridge.applyTamaSkin).toHaveBeenCalledWith(momo.poses, momo.voicePitch);
-  });
-
+  // No built-in characters ship today, so any persisted "builtin:*" id is
+  // unrecognised on boot and stays on Default (covered below). When a painted
+  // built-in is added, add its boot-apply test here.
   it("an unrecognised builtin:* id on boot stays on Default: no apply, no clear, no backend", async () => {
     saveSettings({ tamaSkinPluginId: "builtin:gone" });
 
