@@ -2241,11 +2241,11 @@ describe("buildRefRows", () => {
   const never = () => false;
   const id = (s: string) => s;
 
-  it("leaves a flat ref list byte-identical to before (no folders at all)", () => {
+  it("renders a flat ref list as plain depth-0 leaves, sorted by name", () => {
     const rows = buildRefRows(["main", "dev"], id, never);
     expect(rows).toEqual([
-      { kind: "leaf", path: "main", label: "main", depth: 0, item: "main" },
       { kind: "leaf", path: "dev", label: "dev", depth: 0, item: "dev" },
+      { kind: "leaf", path: "main", label: "main", depth: 0, item: "main" },
     ]);
   });
 
@@ -2274,10 +2274,42 @@ describe("buildRefRows", () => {
     ]);
   });
 
-  it("preserves first-appearance order and never re-sorts the caller's own ordering", () => {
-    // Backend ref order is the source of truth; this only groups.
+  it("puts every folder before every plain branch at the same level", () => {
+    // `alpha` sorts before `zeta` alphabetically, but it's a LEAF — folders
+    // come first regardless, so the structure of a level is all at its top.
     const rows = buildRefRows(["zeta/b", "alpha", "zeta/a"], id, never);
-    expect(rows.map((r) => r.label)).toEqual(["zeta", "b", "a", "alpha"]);
+    expect(rows.map((r) => `${r.kind}:${r.label}`)).toEqual(["folder:zeta", "leaf:a", "leaf:b", "leaf:alpha"]);
+  });
+
+  it("sorts folders A-Z and leaves A-Z independently, at every level", () => {
+    const rows = buildRefRows(["z/9", "z/1", "b/x", "m", "a"], id, never);
+    expect(rows.map((r) => `${r.kind}:${r.label}`)).toEqual([
+      "folder:b",
+      "leaf:x",
+      "folder:z",
+      "leaf:1",
+      "leaf:9",
+      "leaf:a",
+      "leaf:m",
+    ]);
+  });
+
+  it("re-sorts regardless of the order items arrive in", () => {
+    const forwards = buildRefRows(["a/1", "a/2", "b"], id, never).map((r) => r.label);
+    const backwards = buildRefRows(["b", "a/2", "a/1"], id, never).map((r) => r.label);
+    expect(backwards).toEqual(forwards);
+  });
+
+  it("sorts numerically, so release/10 comes after release/2 rather than before it", () => {
+    // Plain lexicographic ordering puts "10" before "2", which is actively
+    // wrong for the version-like names this grouping exists to tidy up.
+    const rows = buildRefRows(["release/10", "release/2", "release/1"], id, never);
+    expect(rows.filter((r) => r.kind === "leaf").map((r) => r.label)).toEqual(["1", "2", "10"]);
+  });
+
+  it("sorts case-insensitively, so Fix/ and fix/ don't land far apart", () => {
+    const rows = buildRefRows(["beta", "Alpha", "gamma"], id, never);
+    expect(rows.map((r) => r.label)).toEqual(["Alpha", "beta", "gamma"]);
   });
 
   it("counts every leaf at or below a folder, including nested ones", () => {
@@ -2338,7 +2370,9 @@ describe("buildRefRows", () => {
 
   it("a folder and a leaf can share a name without colliding", () => {
     const rows = buildRefRows(["release", "release/1.0"], id, never);
-    expect(rows.map((r) => r.kind + ":" + r.path)).toEqual(["leaf:release", "folder:release", "leaf:release/1.0"]);
+    // The folder wins the ordering (folders always precede leaves); the
+    // same-named leaf still renders, it just follows.
+    expect(rows.map((r) => r.kind + ":" + r.path)).toEqual(["folder:release", "leaf:release/1.0", "leaf:release"]);
   });
 });
 

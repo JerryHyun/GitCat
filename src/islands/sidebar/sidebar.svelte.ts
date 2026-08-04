@@ -345,17 +345,30 @@ export type RefRow<T> =
   | { kind: "leaf"; path: string; label: string; depth: number; item: T };
 
 // Internal tree shape, collapsed into `RefRow[]` by the walk at the end of
-// `buildRefRows`. `order` preserves FIRST-APPEARANCE order of both folders and
-// leaves so the caller's own sort (the backend's ref ordering) still decides
-// what comes first — this only groups, it never re-sorts.
+// `buildRefRows`.
 type TreeDir<T> = {
   dirs: Map<string, TreeDir<T>>;
   leaves: { label: string; path: string; item: T }[];
-  order: string[]; // interleaved keys: "d:<segment>" for a dir, "l:<index>" for a leaf
 };
 
 function emptyDir<T>(): TreeDir<T> {
-  return { dirs: new Map(), leaves: [], order: [] };
+  return { dirs: new Map(), leaves: [] };
+}
+
+// Row ordering WITHIN each folder level: every folder first (A-Z), then every
+// plain branch (A-Z). Folders-before-leaves is what Git Fork, Sourcetree and
+// VS Code's explorer all do, and it's what makes a deep tree scannable — the
+// structure is all at the top of each level instead of interleaved with leaves.
+//
+// `numeric: true` so `release/2` sorts before `release/10` rather than after it
+// (plain lexicographic puts "10" before "2", which is actively wrong for the
+// version-like branch names this grouping exists to tidy up).
+//
+// `sensitivity: "base"` makes it case-insensitive: git ref names ARE
+// case-sensitive, but a list where `Fix/` sorts miles away from `fix/` reads as
+// broken to anyone scanning it alphabetically.
+function compareRefLabels(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 }
 
 /**
@@ -373,10 +386,16 @@ function emptyDir<T>(): TreeDir<T> {
  * (e.g. `feature/win`), so nested folders collapse independently.
  *
  * `forceExpand` renders every folder open regardless of `isCollapsed` — used
- * while a text filter is active, so surviving matches can never be hidden
+ * while a ref filter is active, so surviving matches can never be hidden
  * inside a folder the user collapsed earlier (the same thing VS Code's
  * explorer and Git Fork's own filter box do). Collapsed state is NOT cleared,
  * so it comes back intact once the filter is emptied.
+ *
+ * Rows are ordered per level by `compareRefLabels`: folders A-Z first, then
+ * plain branches A-Z. The caller's incoming order is therefore NOT preserved —
+ * that's deliberate (see `compareRefLabels`' own comment), and it's the whole
+ * reason the sidebar's ref order no longer depends on how the backend happened
+ * to enumerate refs.
  *
  * Empty-segment noise (`a//b`, a stray trailing "/") is dropped rather than
  * producing a blank folder row: git itself rejects those ref names, so this is
@@ -402,11 +421,9 @@ export function buildRefRows<T>(
       if (!next) {
         next = emptyDir<T>();
         dir.dirs.set(seg, next);
-        dir.order.push(`d:${seg}`);
       }
       dir = next;
     }
-    dir.order.push(`l:${dir.leaves.length}`);
     dir.leaves.push({ label: leafLabel, path: getName(item), item });
   }
 
@@ -420,21 +437,20 @@ export function buildRefRows<T>(
 
   const rows: RefRow<T>[] = [];
   function walk(dir: TreeDir<T>, depth: number, prefix: string): void {
-    for (const key of dir.order) {
-      if (key.startsWith("l:")) {
-        const leaf = dir.leaves[Number(key.slice(2))];
-        rows.push({ kind: "leaf", path: leaf.path, label: leaf.label, depth, item: leaf.item });
-      } else {
-        const seg = key.slice(2);
-        const child = dir.dirs.get(seg)!;
-        const path = prefix ? `${prefix}/${seg}` : seg;
-        const collapsed = !forceExpand && isCollapsed(path);
-        rows.push({ kind: "folder", path, label: seg, depth, count: countLeaves(child), collapsed });
-        // A collapsed folder contributes its own row (with its count) but none
-        // of its descendants — that's the whole point of collapsing, and it
-        // also means the view never renders rows it would just have to hide.
-        if (!collapsed) walk(child, depth + 1, path);
-      }
+    // Folders first, A-Z …
+    for (const seg of [...dir.dirs.keys()].sort(compareRefLabels)) {
+      const child = dir.dirs.get(seg)!;
+      const path = prefix ? `${prefix}/${seg}` : seg;
+      const collapsed = !forceExpand && isCollapsed(path);
+      rows.push({ kind: "folder", path, label: seg, depth, count: countLeaves(child), collapsed });
+      // A collapsed folder contributes its own row (with its count) but none of
+      // its descendants — that's the whole point of collapsing, and it also
+      // means the view never renders rows it would just have to hide.
+      if (!collapsed) walk(child, depth + 1, path);
+    }
+    // … then the plain branches at this level, A-Z.
+    for (const leaf of [...dir.leaves].sort((a, b) => compareRefLabels(a.label, b.label))) {
+      rows.push({ kind: "leaf", path: leaf.path, label: leaf.label, depth, item: leaf.item });
     }
   }
   walk(root, 0, "");
