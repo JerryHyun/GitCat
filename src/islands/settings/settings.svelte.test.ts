@@ -66,8 +66,14 @@ const openMock = vi.fn();
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: (...args: unknown[]) => openMock(...args),
 }));
+// pluginsCtrl (imported transitively via settings.svelte.ts's skin picker) pulls
+// in both plugin-registry reload seams; mock both so importing it never loads
+// the real sibling islands. The skin picker only reads pluginsCtrl.plugins.
 vi.mock("../plugincommands/plugincommands.svelte.ts", () => ({
   pluginCommandsCtrl: { reload: vi.fn() },
+}));
+vi.mock("../pluginpanels/pluginpanels.svelte.ts", () => ({
+  pluginPanelsCtrl: { reload: vi.fn() },
 }));
 
 let mockInTauri = true;
@@ -79,7 +85,7 @@ vi.mock("../../ipc/env", () => ({
 
 import { commands } from "../../ipc/bindings";
 import * as bridge from "../../legacy/bridge";
-import { pluginCommandsCtrl } from "../plugincommands/plugincommands.svelte.ts";
+import { pluginsCtrl } from "../plugins/plugins.svelte.ts";
 import type { GitIdentity, Plugin } from "../../ipc/bindings";
 import {
   loadSettings,
@@ -140,12 +146,15 @@ function resetCtrl() {
   settingsCtrl.identityLoading = false;
   settingsCtrl.identitySaving = false;
   settingsCtrl.identityError = "";
-  settingsCtrl.plugins = [];
-  settingsCtrl.pluginsLoading = false;
-  settingsCtrl.pluginsError = "";
-  settingsCtrl.pluginBusyId = null;
-  settingsCtrl.pluginInstalling = false;
-  settingsCtrl.removingPluginId = null;
+  // The plugin registry lives on pluginsCtrl now (its own view); the skin picker
+  // just reads it. Reset it here so the skinnablePlugins tests are isolated.
+  pluginsCtrl.plugins = [];
+  pluginsCtrl.selectedId = null;
+  pluginsCtrl.filter = "";
+  pluginsCtrl.pluginsError = "";
+  pluginsCtrl.pluginBusyId = null;
+  pluginsCtrl.pluginInstalling = false;
+  pluginsCtrl.removingPluginId = null;
   settingsCtrl.tamaSkinPluginId = null;
   settingsCtrl.tamaSkinBusy = false;
   settingsCtrl.tamaSkinError = "";
@@ -722,197 +731,9 @@ describe("saveIdentity", () => {
   });
 });
 
-describe("plugins — refreshPlugins", () => {
-  it("populates the list from list_plugins on success", async () => {
-    vi.mocked(commands.listPlugins).mockResolvedValueOnce(ok([plugin({ id: "a", name: "Alpha" }), plugin({ id: "b", name: "Beta" })]));
-
-    await settingsCtrl.refreshPlugins();
-
-    expect(settingsCtrl.plugins.map((p) => p.id)).toEqual(["a", "b"]);
-    expect(settingsCtrl.pluginsError).toBe("");
-    expect(settingsCtrl.pluginsLoading).toBe(false);
-  });
-
-  it("surfaces a backend error without crashing", async () => {
-    vi.mocked(commands.listPlugins).mockResolvedValueOnce(err("registry unreadable"));
-
-    await settingsCtrl.refreshPlugins();
-
-    expect(settingsCtrl.plugins).toEqual([]);
-    expect(settingsCtrl.pluginsError).toContain("registry unreadable");
-  });
-
-  it("a rejected round trip is caught and surfaced, not left as an unhandled rejection", async () => {
-    vi.mocked(commands.listPlugins).mockRejectedValueOnce(new Error("invoke failed"));
-
-    await settingsCtrl.refreshPlugins();
-
-    expect(settingsCtrl.pluginsError).toContain("invoke failed");
-    expect(settingsCtrl.pluginsLoading).toBe(false);
-  });
-
-  it("design mode (!IN_TAURI): empty list, no backend call", async () => {
-    mockInTauri = false;
-    settingsCtrl.plugins = [plugin()];
-
-    await settingsCtrl.refreshPlugins();
-
-    expect(commands.listPlugins).not.toHaveBeenCalled();
-    expect(settingsCtrl.plugins).toEqual([]);
-  });
-
-  it("show() refreshes the plugin registry when the modal opens", async () => {
-    vi.mocked(commands.listPlugins).mockResolvedValueOnce(ok([plugin({ id: "x" })]));
-
-    settingsCtrl.show(null);
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(commands.listPlugins).toHaveBeenCalled();
-    expect(settingsCtrl.plugins.map((p) => p.id)).toEqual(["x"]);
-  });
-});
-
-describe("plugins — setPluginEnabled", () => {
-  it("flips the local copy and reloads the ⌘K registry on success", async () => {
-    settingsCtrl.plugins = [plugin({ id: "a", enabled: true })];
-    vi.mocked(commands.setPluginEnabled).mockResolvedValueOnce(ok(null));
-
-    await settingsCtrl.setPluginEnabled("a", false);
-
-    expect(commands.setPluginEnabled).toHaveBeenCalledWith("a", false);
-    expect(settingsCtrl.plugins[0].enabled).toBe(false);
-    expect(pluginCommandsCtrl.reload).toHaveBeenCalled();
-    expect(settingsCtrl.pluginBusyId).toBeNull();
-  });
-
-  it("surfaces a backend failure and does NOT reload or flip the local copy", async () => {
-    settingsCtrl.plugins = [plugin({ id: "a", enabled: true })];
-    vi.mocked(commands.setPluginEnabled).mockResolvedValueOnce(err("write failed"));
-
-    await settingsCtrl.setPluginEnabled("a", false);
-
-    expect(settingsCtrl.plugins[0].enabled).toBe(true);
-    expect(settingsCtrl.pluginsError).toContain("write failed");
-    expect(pluginCommandsCtrl.reload).not.toHaveBeenCalled();
-  });
-
-  it("design mode (!IN_TAURI): flips locally with a Tama toast, no IPC and no reload", async () => {
-    mockInTauri = false;
-    settingsCtrl.plugins = [plugin({ id: "a", enabled: true })];
-
-    await settingsCtrl.setPluginEnabled("a", false);
-
-    expect(commands.setPluginEnabled).not.toHaveBeenCalled();
-    expect(pluginCommandsCtrl.reload).not.toHaveBeenCalled();
-    expect(settingsCtrl.plugins[0].enabled).toBe(false);
-    expect(bridge.tama.say).toHaveBeenCalled();
-  });
-});
-
-describe("plugins — remove (inline confirm)", () => {
-  it("start/cancel just toggle removingPluginId, no backend call", () => {
-    settingsCtrl.startRemovePlugin("a");
-    expect(settingsCtrl.removingPluginId).toBe("a");
-
-    settingsCtrl.cancelRemovePlugin();
-    expect(settingsCtrl.removingPluginId).toBeNull();
-    expect(commands.removePlugin).not.toHaveBeenCalled();
-  });
-
-  it("confirmRemovePlugin drops the row, clears the confirm, and reloads ⌘K on success", async () => {
-    settingsCtrl.plugins = [plugin({ id: "a" }), plugin({ id: "b" })];
-    settingsCtrl.removingPluginId = "a";
-    vi.mocked(commands.removePlugin).mockResolvedValueOnce(ok(null));
-
-    await settingsCtrl.confirmRemovePlugin("a");
-
-    expect(commands.removePlugin).toHaveBeenCalledWith("a");
-    expect(settingsCtrl.plugins.map((p) => p.id)).toEqual(["b"]);
-    expect(settingsCtrl.removingPluginId).toBeNull();
-    expect(pluginCommandsCtrl.reload).toHaveBeenCalled();
-  });
-
-  it("keeps the row and surfaces the error on a backend failure", async () => {
-    settingsCtrl.plugins = [plugin({ id: "a" })];
-    settingsCtrl.removingPluginId = "a";
-    vi.mocked(commands.removePlugin).mockResolvedValueOnce(err("could not remove"));
-
-    await settingsCtrl.confirmRemovePlugin("a");
-
-    expect(settingsCtrl.plugins.map((p) => p.id)).toEqual(["a"]);
-    expect(settingsCtrl.pluginsError).toContain("could not remove");
-    expect(pluginCommandsCtrl.reload).not.toHaveBeenCalled();
-  });
-
-  it("design mode (!IN_TAURI): drops locally with a Tama toast, no IPC", async () => {
-    mockInTauri = false;
-    settingsCtrl.plugins = [plugin({ id: "a" })];
-    settingsCtrl.removingPluginId = "a";
-
-    await settingsCtrl.confirmRemovePlugin("a");
-
-    expect(commands.removePlugin).not.toHaveBeenCalled();
-    expect(settingsCtrl.plugins).toEqual([]);
-    expect(settingsCtrl.removingPluginId).toBeNull();
-    expect(bridge.tama.say).toHaveBeenCalled();
-  });
-});
-
-describe("plugins — installPlugin", () => {
-  it("picks a path, installs it, re-lists, reloads ⌘K, and toasts on success", async () => {
-    openMock.mockResolvedValueOnce("/plugins/foo/plugin.json");
-    vi.mocked(commands.installPluginFromPath).mockResolvedValueOnce(ok(plugin({ id: "foo", name: "Foo" })));
-    vi.mocked(commands.listPlugins).mockResolvedValueOnce(ok([plugin({ id: "foo", name: "Foo" })]));
-
-    await settingsCtrl.installPlugin();
-
-    expect(commands.installPluginFromPath).toHaveBeenCalledWith("/plugins/foo/plugin.json");
-    expect(commands.listPlugins).toHaveBeenCalled();
-    expect(settingsCtrl.plugins.map((p) => p.id)).toEqual(["foo"]);
-    expect(pluginCommandsCtrl.reload).toHaveBeenCalled();
-    expect(bridge.tama.say).toHaveBeenCalled();
-    expect(settingsCtrl.pluginInstalling).toBe(false);
-  });
-
-  it("does nothing when the picker is cancelled (null)", async () => {
-    openMock.mockResolvedValueOnce(null);
-
-    await settingsCtrl.installPlugin();
-
-    expect(commands.installPluginFromPath).not.toHaveBeenCalled();
-    expect(pluginCommandsCtrl.reload).not.toHaveBeenCalled();
-  });
-
-  it("surfaces a backend install failure and does NOT reload ⌘K", async () => {
-    openMock.mockResolvedValueOnce("/plugins/bad/plugin.json");
-    vi.mocked(commands.installPluginFromPath).mockResolvedValueOnce(err("duplicate id"));
-
-    await settingsCtrl.installPlugin();
-
-    expect(settingsCtrl.pluginsError).toContain("duplicate id");
-    expect(pluginCommandsCtrl.reload).not.toHaveBeenCalled();
-  });
-
-  it("surfaces a dialog failure without calling the backend", async () => {
-    openMock.mockRejectedValueOnce(new Error("no dialog"));
-
-    await settingsCtrl.installPlugin();
-
-    expect(settingsCtrl.pluginsError).toContain("no dialog");
-    expect(commands.installPluginFromPath).not.toHaveBeenCalled();
-  });
-
-  it("design mode (!IN_TAURI): no picker, no IPC, just a Tama toast", async () => {
-    mockInTauri = false;
-
-    await settingsCtrl.installPlugin();
-
-    expect(openMock).not.toHaveBeenCalled();
-    expect(commands.installPluginFromPath).not.toHaveBeenCalled();
-    expect(bridge.tama.say).toHaveBeenCalled();
-  });
-});
+// NOTE: plugin registry MANAGEMENT (refreshPlugins/setPluginEnabled/remove/
+// install) moved to its own view — see plugins.svelte.test.ts. Settings only
+// still touches the plugin list through the Tama skin picker below.
 
 describe("tama skin — hasTamaSkin / pickSkinCopyLine (pure helpers)", () => {
   it("hasTamaSkin is true only when the plugin declares a (truthy) tama field", () => {
@@ -940,14 +761,25 @@ describe("tama skin — hasTamaSkin / pickSkinCopyLine (pure helpers)", () => {
 });
 
 describe("tama skin — skinnablePlugins", () => {
-  it("lists only ENABLED plugins that declare a tama field", () => {
-    settingsCtrl.plugins = [
+  it("lists only ENABLED plugins that declare a tama field (read from pluginsCtrl)", () => {
+    pluginsCtrl.plugins = [
       skinnablePlugin("skin-on", "Skin On"),
       plugin({ id: "no-skin", name: "No Skin" }),
       { ...skinnablePlugin("skin-off", "Skin Off"), enabled: false } as unknown as Plugin,
     ];
 
     expect(settingsCtrl.skinnablePlugins.map((p) => p.id)).toEqual(["skin-on"]);
+  });
+
+  it("show() refreshes pluginsCtrl so the skin picker's list is current", async () => {
+    vi.mocked(commands.listPlugins).mockResolvedValueOnce(ok([skinnablePlugin("x", "X")]));
+
+    settingsCtrl.show(null);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(commands.listPlugins).toHaveBeenCalled();
+    expect(pluginsCtrl.plugins.map((p) => p.id)).toEqual(["x"]);
   });
 });
 

@@ -38,6 +38,8 @@ import Dashboard from "./islands/dashboard/Dashboard.svelte";
 import { dashboardCtrl } from "./islands/dashboard/dashboard.svelte.ts";
 import ExternalTools from "./islands/externaltools/ExternalTools.svelte";
 import { externalToolsCtrl } from "./islands/externaltools/externaltools.svelte.ts";
+import Plugins from "./islands/plugins/Plugins.svelte";
+import { pluginsCtrl } from "./islands/plugins/plugins.svelte.ts";
 import Settings from "./islands/settings/Settings.svelte";
 import { settingsCtrl, loadSettings } from "./islands/settings/settings.svelte.ts";
 import DanglingRecovery from "./islands/danglingrecovery/DanglingRecovery.svelte";
@@ -206,6 +208,12 @@ mount(Dashboard, { target: document.body });
 // "Resolve with external tool" buttons, which live on Detail.svelte/
 // Workdir.svelte's file rows and Resolver.svelte instead).
 mount(ExternalTools, { target: document.body });
+// Plugins manager (PER-49 follow-up): the installed-plugin registry moved out
+// of the old Settings → Plugins tab into its own VS Code Extensions-style
+// two-pane view — app-level (no repo needed) like External Tools/Dashboard, so
+// the same on-demand-modal + Tools-menu/⌘K treatment. It OWNS the plugin list;
+// the Settings Tama skin picker now reads pluginsCtrl.plugins.
+mount(Plugins, { target: document.body });
 // App Settings: theme/cherry-pick-default/auto-update-check prefs (app-level,
 // like External Tools/Dashboard above) plus a Git Identity section scoped to
 // whichever repo is open (forwards bridge.CUR_REPO, like Remotes) — see
@@ -568,6 +576,9 @@ if (IN_TAURI) {
         break;
       case "external-tools":
         externalToolsCtrl.show();
+        break;
+      case "plugins":
+        pluginsCtrl.show();
         break;
       case "settings":
         settingsCtrl.show(bridge.CUR_REPO as unknown as string);

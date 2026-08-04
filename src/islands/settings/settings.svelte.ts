@@ -33,9 +33,7 @@
 import { commands } from "../../ipc/bindings";
 import * as bridge from "../../legacy/bridge";
 import { IN_TAURI } from "../../ipc/env";
-import { open } from "@tauri-apps/plugin-dialog";
-import { pluginCommandsCtrl } from "../plugincommands/plugincommands.svelte.ts";
-import { pluginPanelsCtrl } from "../pluginpanels/pluginpanels.svelte.ts";
+import { pluginsCtrl } from "../plugins/plugins.svelte.ts";
 import { BUILTIN_SKINS, builtinSkinById, isBuiltinSkinId, type BuiltinSkin } from "./builtinskins.ts";
 import type { ConfigEntry, ConfigScope, GitIdentity, Plugin, RawConfigEntry } from "../../ipc/bindings";
 
@@ -94,14 +92,13 @@ const CURATED_CONFIG_KEYS = CURATED_CONFIG_FIELDS.map((f) => f.key);
 // Git Identity (the one section with its own explicit Save button), and Git
 // Config (curated fields + the Advanced raw editor — kept together since
 // both read/write the exact same underlying config store via configScope).
-export type SettingsTab = "general" | "tama" | "identity" | "gitconfig" | "plugins";
+export type SettingsTab = "general" | "tama" | "identity" | "gitconfig";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "general", label: "General" },
   { id: "tama", label: "Tama" },
   { id: "identity", label: "Git Identity" },
   { id: "gitconfig", label: "Git Config" },
-  { id: "plugins", label: "Plugins" },
 ];
 
 // Safety-Manager snapshot auto-cleanup policy — see PersistedSettings below.
@@ -497,10 +494,11 @@ class SettingsState {
   }
 
   // Enabled plugins that ship a Tama skin — the plugin entries the picker offers
-  // after "Default" and the built-in characters. Reads the SAME `plugins` list
-  // the Plugins tab already loads on every show(), so no extra fetch.
+  // after "Default" and the built-in characters. Reads the plugin registry from
+  // pluginsCtrl (its single owner since the Plugins tab became its own view);
+  // show() below kicks a pluginsCtrl.refreshPlugins() so this is fresh on open.
   get skinnablePlugins(): Plugin[] {
-    return this.plugins.filter((p) => p.enabled !== false && hasTamaSkin(p));
+    return pluginsCtrl.plugins.filter((p) => p.enabled !== false && hasTamaSkin(p));
   }
 
   // ── git identity section (repo-scoped, explicit Save) ───────────────────
@@ -754,163 +752,6 @@ class SettingsState {
     }
   }
 
-  // ── plugins section (app-level, NOT repo-scoped) ────────────────────────
-  // Installed plugin manifests (list_plugins). App-level like External Tools —
-  // the plugin registry is global, not tied to CUR_REPO — so refreshPlugins()
-  // never reads this.repo. Each mutation (enable/disable/remove/install) writes
-  // the registry then calls pluginCommandsCtrl.reload() so ⌘K's plugin actions
-  // refresh WITHOUT reopening the palette (PER-42's own force-reload seam).
-  plugins = $state<Plugin[]>([]);
-  pluginsLoading = $state(false); // listPlugins() in flight
-  pluginsError = $state("");
-  // The plugin whose enable/disable/remove write is in flight — disables just
-  // that one row's controls (same one-target-at-a-time shape as
-  // savingConfigKey above / remotes.svelte.ts's busyTarget). null when idle.
-  pluginBusyId = $state<string | null>(null);
-  pluginInstalling = $state(false); // installPluginFromPath() (incl. picker) in flight
-  // Which plugin has its inline "Remove?" confirm showing — remotes.svelte.ts's
-  // own removingName idiom (a lightweight in-row confirm, no separate modal).
-  removingPluginId = $state<string | null>(null);
-
-  // enabled defaults to true when a manifest omits it (see Plugin.enabled), so
-  // the toggle reads `p.enabled !== false`; this always writes an explicit
-  // boolean back.
-  async refreshPlugins(): Promise<void> {
-    this.pluginsError = "";
-    this.removingPluginId = null;
-    if (!IN_TAURI) {
-      // Design mode (plain browser) has no plugin backend — an empty list is
-      // the correct, non-confusing demo state, the SAME discipline
-      // plugincommands.svelte.ts (the sibling controller for this exact
-      // subsystem) uses in its own !IN_TAURI branch.
-      this.plugins = [];
-      return;
-    }
-    this.pluginsLoading = true;
-    try {
-      const res = await commands.listPlugins();
-      if (res.status === "ok") {
-        this.plugins = res.data;
-      } else {
-        this.pluginsError = String(res.error ?? "Could not list installed plugins.");
-      }
-    } catch (e) {
-      this.pluginsError = "Could not list installed plugins — " + e;
-    } finally {
-      this.pluginsLoading = false;
-    }
-  }
-
-  async setPluginEnabled(id: string, enabled: boolean): Promise<void> {
-    this.pluginsError = "";
-    if (!IN_TAURI) {
-      this.plugins = this.plugins.map((p) => (p.id === id ? { ...p, enabled } : p));
-      bridge.tama.say(`This is where ${id} would be ${enabled ? "enabled" : "disabled"} (demo).`);
-      return;
-    }
-    this.pluginBusyId = id;
-    // Optimistic: reflect the toggle locally right away so the checkbox matches
-    // the click, then REVERT if the backend write fails — otherwise the one-way
-    // `checked={p.enabled}` binding won't snap a failed toggle back (Svelte
-    // wouldn't see a value change to re-set the DOM). `prev` is the pre-toggle
-    // list to restore on failure.
-    const prev = this.plugins;
-    this.plugins = this.plugins.map((p) => (p.id === id ? { ...p, enabled } : p));
-    try {
-      const res = await commands.setPluginEnabled(id, enabled);
-      if (res.status === "ok") {
-        // ⌘K plugin commands AND panels both follow enable/disable live.
-        await Promise.all([pluginCommandsCtrl.reload(), pluginPanelsCtrl.reload()]);
-      } else {
-        this.plugins = prev; // backend rejected — undo the optimistic flip
-        this.pluginsError = String(res.error ?? "Could not update the plugin.");
-      }
-    } catch (e) {
-      this.plugins = prev; // backend threw — undo the optimistic flip
-      this.pluginsError = "Could not update the plugin — " + e;
-    } finally {
-      this.pluginBusyId = null;
-    }
-  }
-
-  startRemovePlugin(id: string): void {
-    this.removingPluginId = id;
-  }
-
-  cancelRemovePlugin(): void {
-    this.removingPluginId = null;
-  }
-
-  async confirmRemovePlugin(id: string): Promise<void> {
-    this.pluginsError = "";
-    if (!IN_TAURI) {
-      this.plugins = this.plugins.filter((p) => p.id !== id);
-      this.removingPluginId = null;
-      bridge.tama.say(`This is where ${id} would be removed (demo).`);
-      return;
-    }
-    this.pluginBusyId = id;
-    try {
-      const res = await commands.removePlugin(id);
-      if (res.status === "ok") {
-        this.plugins = this.plugins.filter((p) => p.id !== id);
-        this.removingPluginId = null;
-        // Drop both its ⌘K commands AND panels immediately.
-        await Promise.all([pluginCommandsCtrl.reload(), pluginPanelsCtrl.reload()]);
-      } else {
-        this.pluginsError = String(res.error ?? "Could not remove the plugin.");
-      }
-    } catch (e) {
-      this.pluginsError = "Could not remove the plugin — " + e;
-    } finally {
-      this.pluginBusyId = null;
-    }
-  }
-
-  // Pick a plugin.json and install it. The backend's install_plugin_from_path
-  // accepts a plugin.json FILE or a DIRECTORY containing one; a single-select
-  // file picker filtered to JSON covers both cases (pick a standalone manifest,
-  // or drill into a plugin folder and pick its plugin.json) — the same
-  // @tauri-apps/plugin-dialog `open()` shape applypatch.svelte.ts already uses.
-  async installPlugin(): Promise<void> {
-    if (this.pluginInstalling) return;
-    this.pluginsError = "";
-    if (!IN_TAURI) {
-      bridge.tama.say("This is where you'd pick a plugin.json to install (demo).");
-      return;
-    }
-    let picked: string | string[] | null;
-    try {
-      picked = await open({
-        title: "Install plugin",
-        multiple: false,
-        filters: [{ name: "Plugin manifest (plugin.json)", extensions: ["json"] }],
-      });
-    } catch (e) {
-      this.pluginsError = "Could not open the file dialog — " + e;
-      return;
-    }
-    if (!picked || Array.isArray(picked)) return; // cancelled (Array.isArray is defensive-only — multiple:false never returns one)
-    this.pluginInstalling = true;
-    try {
-      const res = await commands.installPluginFromPath(picked);
-      if (res.status === "ok") {
-        // Re-list rather than append res.data — keeps the exact ordering the
-        // backend returns and reflects anything else that changed on disk.
-        await this.refreshPlugins();
-        // Surface the new plugin's ⌘K commands AND panels.
-        await Promise.all([pluginCommandsCtrl.reload(), pluginPanelsCtrl.reload()]);
-        bridge.tama.say(`Installed ${res.data.name}.`);
-      } else {
-        this.pluginsError = String(res.error ?? "Could not install that plugin.");
-      }
-    } catch (e) {
-      this.pluginsError = "Could not install that plugin — " + e;
-    } finally {
-      this.pluginInstalling = false;
-    }
-  }
-
   // Entry point (Tools menu / ⌘K). Always re-seeds app-level fields from
   // localStorage and re-fetches identity — same "never trust stale state
   // across a reopen" discipline as every other on-demand modal.
@@ -939,8 +780,6 @@ class SettingsState {
     this.identityError = "";
     this.configError = "";
     this.advancedOpen = false; // collapsed by default on every reopen — not a state worth persisting across sessions
-    this.pluginsError = "";
-    this.removingPluginId = null; // never reopen mid-confirm
     this.open = true;
     if (this.repo) {
       void this.refreshIdentity();
@@ -949,9 +788,10 @@ class SettingsState {
       this.identity = null;
       this.configEntries = {};
     }
-    // Plugins are app-level (not repo-scoped) — refresh the registry on every
-    // open regardless of whether a repo is present, same as External Tools.
-    void this.refreshPlugins();
+    // The Tama skin picker offers every enabled skin-shipping plugin (see
+    // skinnablePlugins). pluginsCtrl owns the registry now, so refresh it here on
+    // every open — app-level (not repo-scoped), same as it did as our own tab.
+    void pluginsCtrl.refreshPlugins();
   }
 
   close(): void {

@@ -141,8 +141,53 @@
         <input type="checkbox" checked={settingsCtrl.useNightlyChannel} onchange={onNightlyToggle} />
         Use nightly builds
       </label>
-      <div class="mut" style="font-size:11.5px;margin:0 0 14px 26px;line-height:1.5">
+      <div class="mut" style="font-size:11.5px;margin:0 0 10px 26px;line-height:1.5">
         Unstable daily builds with verbose debug logging. You can switch back to the latest stable release at any time.
+      </div>
+      <!-- Manual update: the same updaterCtrl state machine the About panel and
+           the Help ▸ Check for Updates item drive, inline here so an update can
+           be checked, downloaded, and installed without leaving Settings. -->
+      <div style="margin:0 0 14px">
+        {#if updaterCtrl.phase === "idle"}
+          <button class="btn ghost" onclick={() => updaterCtrl.check()}>Check for updates now</button>
+        {:else if updaterCtrl.phase === "checking"}
+          <span class="mut" style="font-size:12.5px"><span class="spinner"></span> Checking for updates&#8230;</span>
+        {:else if updaterCtrl.phase === "up-to-date"}
+          <span class="mut" style="font-size:12.5px">
+            You're up to date. <button class="btn ghost" style="padding:2px 8px;font-size:11px" onclick={() => updaterCtrl.dismiss()}>OK</button>
+          </span>
+        {:else if updaterCtrl.phase === "available"}
+          <div style="border:1px solid var(--border);border-radius:var(--r-control);padding:10px 12px;max-width:340px">
+            <div style="font-size:12.5px"><b>v{updaterCtrl.version}</b> is available <span class="mut">(you have v{updaterCtrl.currentVersion})</span></div>
+            {#if updaterCtrl.notes}
+              <p class="mut" style="font-size:11.5px;white-space:pre-wrap;margin:6px 0 0;max-height:120px;overflow:auto">{updaterCtrl.notes}</p>
+            {/if}
+            <div style="display:flex;gap:8px;margin-top:10px">
+              <button class="btn ghost" onclick={() => updaterCtrl.dismiss()}>Not now</button>
+              <button class="btn" onclick={() => updaterCtrl.downloadAndInstall()}>Download &amp; Install</button>
+            </div>
+          </div>
+        {:else if updaterCtrl.phase === "downloading"}
+          <div style="border:1px solid var(--border);border-radius:var(--r-control);padding:10px 12px;max-width:340px">
+            {#if updaterCtrl.progress != null}
+              <div style="height:6px;border-radius:3px;background:var(--elevated);overflow:hidden">
+                <div style="height:100%;width:{updaterCtrl.progress}%;background:var(--accent);transition:width .15s"></div>
+              </div>
+              <span class="mut" style="font-size:11.5px">Downloading&#8230; {updaterCtrl.progress}%</span>
+            {:else}
+              <span class="mut" style="font-size:12.5px"><span class="spinner"></span> Downloading&#8230;</span>
+            {/if}
+          </div>
+        {:else if updaterCtrl.phase === "ready"}
+          <div style="border:1px solid var(--border);border-radius:var(--r-control);padding:10px 12px;max-width:340px">
+            <div style="font-size:12.5px">Update downloaded &#8212; restart to finish installing.</div>
+            <div style="margin-top:10px"><button class="btn" onclick={() => updaterCtrl.restart()}>Restart Now</button></div>
+          </div>
+        {:else if updaterCtrl.phase === "error"}
+          <span class="mut" style="font-size:12.5px">
+            {updaterCtrl.error} <button class="btn ghost" style="padding:2px 8px;font-size:11px" onclick={() => updaterCtrl.dismiss()}>Dismiss</button>
+          </span>
+        {/if}
       </div>
 
       <h4 class="d-lab">Auto-fetch</h4>
@@ -484,61 +529,6 @@
       {/if}
       {/if}
 
-      {#if settingsCtrl.activeTab === "plugins"}
-      <h4 class="d-lab">Plugins</h4>
-      <p class="mut" style="font-size:11.5px;margin:0 0 10px">
-        Plugins add commands to the &#8984;K palette and can run on repository events. A plugin is a <code>plugin.json</code> manifest; GitCat only ever runs the external commands it declares — it never connects to anything itself.
-      </p>
-      {#if settingsCtrl.pluginsError}
-        <div class="pl-err" style="margin-bottom:8px">{settingsCtrl.pluginsError}</div>
-      {/if}
-      {#if settingsCtrl.pluginsLoading}
-        <div class="log-row"><span class="spinner"></span><span class="msg mut">Loading plugins&#8230;</span></div>
-      {:else}
-        {#if settingsCtrl.plugins.length === 0}
-          <p class="mut">No plugins installed yet.</p>
-        {:else}
-          <div class="rm-list">
-            {#each settingsCtrl.plugins as p (p.id)}
-              {#if settingsCtrl.removingPluginId === p.id}
-                <div class="rm-item rm-confirm">
-                  <span class="msg">Remove <b>{p.name}</b>? This unregisters it from GitCat; its <code>plugin.json</code> on disk is left untouched.</span>
-                  {#if settingsCtrl.pluginBusyId === p.id}<span class="spinner"></span>{/if}
-                  <div class="rm-act">
-                    <button class="danger" disabled={settingsCtrl.pluginBusyId === p.id} onclick={() => settingsCtrl.confirmRemovePlugin(p.id)}>Remove</button>
-                    <button disabled={settingsCtrl.pluginBusyId === p.id} onclick={() => settingsCtrl.cancelRemovePlugin()}>Cancel</button>
-                  </div>
-                </div>
-              {:else}
-                <div class="rm-item">
-                  <div class="rm-main">
-                    <span class="rm-name">{p.name} <span class="mut" style="font-weight:400">v{p.version}</span></span>
-                    {#if p.description}<span class="rm-url mut" title={p.description}>{p.description}</span>{/if}
-                    <span class="mut" style="font-size:11px">{p.commands?.length ?? 0} commands &#183; {p.hooks?.length ?? 0} hooks</span>
-                  </div>
-                  {#if settingsCtrl.pluginBusyId === p.id}<span class="spinner"></span>{/if}
-                  <div class="rm-act" style="align-items:center">
-                    <label class="set-toggle" style="margin:0" title="Enable or disable this plugin">
-                      <input
-                        type="checkbox"
-                        checked={p.enabled !== false}
-                        disabled={settingsCtrl.pluginBusyId === p.id}
-                        onchange={(e) => settingsCtrl.setPluginEnabled(p.id, (e.target as HTMLInputElement).checked)}
-                      />
-                      Enabled
-                    </label>
-                    <button disabled={settingsCtrl.pluginBusyId === p.id} onclick={() => settingsCtrl.startRemovePlugin(p.id)}>Remove</button>
-                  </div>
-                </div>
-              {/if}
-            {/each}
-          </div>
-        {/if}
-        <button class="btn" style="margin-top:10px" disabled={settingsCtrl.pluginInstalling} onclick={() => settingsCtrl.installPlugin()}>
-          {#if settingsCtrl.pluginInstalling}<span class="spinner"></span> Installing&#8230;{:else}&#65291; Install plugin&#8230;{/if}
-        </button>
-      {/if}
-      {/if}
     </div>
     <div class="modal-foot">
       <button class="btn ghost" disabled={settingsCtrl.identitySaving} onclick={() => settingsCtrl.close()}>Close</button>

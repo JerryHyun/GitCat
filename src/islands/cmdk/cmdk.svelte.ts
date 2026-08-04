@@ -33,6 +33,7 @@ import { codeSearchCtrl } from "../codesearch/codesearch.svelte.ts";
 import { openBisectEntry } from "../bisectdrawer/bisectdrawer.svelte.ts";
 import { dashboardCtrl } from "../dashboard/dashboard.svelte.ts";
 import { externalToolsCtrl } from "../externaltools/externaltools.svelte.ts";
+import { pluginsCtrl } from "../plugins/plugins.svelte.ts";
 import { settingsCtrl } from "../settings/settings.svelte.ts";
 import { danglingRecoveryCtrl } from "../danglingrecovery/danglingrecovery.svelte.ts";
 import { repoFilesCtrl } from "../repofiles/repofiles.svelte.ts";
@@ -183,6 +184,15 @@ const ACTIONS: ActionItem[] = [
     label: "External Tools",
     hint: "Configure a diff/merge tool to open from GitCat's own UI",
     run: () => externalToolsCtrl.show(),
+  },
+  // Plugins manager — app-level like External Tools (no repo needed), its own
+  // VS Code Extensions-style view (see plugins.svelte.ts).
+  {
+    type: "action",
+    id: "plugins",
+    label: "Plugins",
+    hint: "Enable, disable, remove, or install GitCat plugins",
+    run: () => pluginsCtrl.show(),
   },
   // App Settings: theme/cherry-pick-default/auto-update-check prefs plus a
   // Git Identity section — repo-scoped like Reflog/Rerere (forwards
