@@ -6,9 +6,20 @@ on:
   # branch double-runs the whole suite (once per event) on every commit to an
   # open PR. Restricting push to main is the standard fix: main itself is
   # never a PR head here, so it can't double-fire the other way either.
+  #
+  # Docs-only changes are handled entirely by docs.yml (VitePress build + Pages
+  # deploy) and cannot affect the Rust core or the Svelte app, so skip this whole
+  # suite when EVERY changed file is under docs/. `paths-ignore` skips a run only
+  # when ALL changed files match, so a mixed code+docs commit still runs full CI.
+  # (package.json / pnpm-lock.yaml are NOT under docs/, so a real dependency
+  # change still triggers both this suite and docs.yml, as it should.)
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
   pull_request:
+    paths-ignore:
+      - "docs/**"
 
 # Cancel superseded runs on the same branch/PR to save CI minutes.
 concurrency:
