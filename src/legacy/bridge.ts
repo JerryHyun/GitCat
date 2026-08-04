@@ -150,3 +150,12 @@ export {
   demoBisectStatus,
   demoBisectMark,
 } from "../islands/bisectdrawer/bisectdrawer.svelte.ts";
+
+// PER-53: Tama's per-character voice-pitch multiplier lives in the leaf
+// legacy/sound.ts (it can't import from legacy/main.ts — see sound.ts's own
+// header), so it's re-exported here directly from ./sound rather than through
+// ./main. legacy/main.ts's applyTamaSkin(poses, voicePitch)/clearTamaSkin()
+// already drive it for the skin picker; this seam lets an island set the pitch
+// on its own if it ever needs to. Named `setTamaVoicePitch` to match the other
+// `setTama*` bridge verbs (setTamaEnabled above).
+export { setVoicePitch as setTamaVoicePitch } from "./sound.ts";

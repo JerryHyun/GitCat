@@ -36,6 +36,7 @@ import { IN_TAURI } from "../../ipc/env";
 import { open } from "@tauri-apps/plugin-dialog";
 import { pluginCommandsCtrl } from "../plugincommands/plugincommands.svelte.ts";
 import { pluginPanelsCtrl } from "../pluginpanels/pluginpanels.svelte.ts";
+import { BUILTIN_SKINS, builtinSkinById, isBuiltinSkinId, type BuiltinSkin } from "./builtinskins.ts";
 import type { ConfigEntry, ConfigScope, GitIdentity, Plugin, RawConfigEntry } from "../../ipc/bindings";
 
 export type ThemeMode = "system" | "light" | "dark";
@@ -181,13 +182,16 @@ export interface PersistedSettings {
   // personality trait of the app, not a bug users need to opt out of a
   // regression for.
   tamaEnabled: boolean;
-  // PER-47: id of the installed plugin whose Tama skin is currently active, or
-  // null for the built-in painted portraits. Persisted here (not a separate
-  // localStorage key) so it round-trips with every other client-only pref and
-  // is re-applied at boot (see applyPersistedTamaSkin). A skin only ever becomes
-  // the persisted value AFTER it loads successfully once, so a boot-apply of a
-  // stored id can still fail (plugin later removed/disabled) — that path falls
-  // back to the built-ins silently.
+  // PER-47/PER-53: id of the Tama look currently active, or null for the default
+  // painted portraits. Broadened in PER-53 to hold EITHER a "builtin:*" character
+  // id (Momo/Sora — see builtinskins.ts) OR an installed plugin's id; the field
+  // name is kept for back-compat (an existing persisted plugin id still round-
+  // trips unchanged). Persisted here (not a separate localStorage key) so it
+  // round-trips with every other client-only pref and is re-applied at boot (see
+  // applyPersistedTamaSkin). A built-in applies synchronously; a plugin id only
+  // ever becomes the persisted value AFTER it loads successfully once, so a
+  // boot-apply of a stored plugin id can still fail (plugin later removed/
+  // disabled) — that path falls back to the default portraits silently.
   tamaSkinPluginId: string | null;
 }
 
@@ -317,16 +321,30 @@ export function pickSkinCopyLine(copy: Record<string, string> | null | undefined
 // fire-and-forget" boot shape; never rejects.
 export async function applyPersistedTamaSkin(): Promise<void> {
   const id = loadSettings().tamaSkinPluginId;
-  if (!id || !IN_TAURI) return;
+  if (!id) return;
+  // A built-in character (Momo/Sora) is pure frontend — its poses are bundled
+  // asset URLs and its voice pitch a plain number, so it applies SYNCHRONOUSLY
+  // with no backend round-trip, and works even in design mode (!IN_TAURI).
+  const builtin = builtinSkinById(id);
+  if (builtin) {
+    bridge.applyTamaSkin(builtin.poses, builtin.voicePitch);
+    return;
+  }
+  // A "builtin:*" id we don't recognise (persisted by a newer/older build) —
+  // stay on the default portraits rather than trying to load it as a plugin.
+  // Nothing is applied yet at boot, so returning leaves the default in place.
+  if (isBuiltinSkinId(id)) return;
+  // Otherwise it's a plugin id: async, backend-gated, silent fail-safe.
+  if (!IN_TAURI) return;
   try {
     const res = await commands.loadPluginSkin(id);
     if (res.status === "ok") {
-      bridge.applyTamaSkin(res.data.poses ?? {});
+      bridge.applyTamaSkin(res.data.poses ?? {}, res.data.voicePitch ?? undefined);
     } else {
       bridge.clearTamaSkin();
     }
   } catch {
-    bridge.clearTamaSkin(); // stays on the built-ins — silent per contract
+    bridge.clearTamaSkin(); // stays on the default portraits — silent per contract
   }
 }
 
@@ -369,9 +387,17 @@ class SettingsState {
   tamaSkinBusy = $state(false);
   tamaSkinError = $state("");
 
-  // Enabled plugins that ship a Tama skin — the only entries the picker offers
-  // besides "Default (built-in)". Reads the SAME `plugins` list the Plugins tab
-  // already loads on every show(), so no extra fetch.
+  // The bundled Tama characters (Momo/Sora) the picker always offers, between
+  // "Default" and any plugin-provided skins. A plain constant list — no fetch,
+  // no gating — surfaced through the controller so the template reads it the same
+  // way it reads skinnablePlugins.
+  get builtinSkins(): BuiltinSkin[] {
+    return BUILTIN_SKINS;
+  }
+
+  // Enabled plugins that ship a Tama skin — the plugin entries the picker offers
+  // after "Default" and the built-in characters. Reads the SAME `plugins` list
+  // the Plugins tab already loads on every show(), so no extra fetch.
   get skinnablePlugins(): Plugin[] {
     return this.plugins.filter((p) => p.enabled !== false && hasTamaSkin(p));
   }
@@ -918,36 +944,61 @@ class SettingsState {
     bridge.setTamaEnabled(v); // applies the .tama-off class immediately — see legacy/main.ts
   }
 
-  // The skin picker's onchange. `null`/"" -> Default (built-in): clear the
-  // overlay and forget the persisted choice. Otherwise load the plugin's skin
-  // and overlay Tama's poses via the bridge. The id is PERSISTED only AFTER a
-  // successful load, so a broken skin never becomes the boot-applied one; an
-  // interactive failure reverts the selection to Default and surfaces
-  // tamaSkinError (unlike the silent boot path). Design mode (!IN_TAURI) has no
-  // backend to load from — it persists + demos with a toast, no real overlay.
+  // The skin picker's onchange. Three kinds of selection:
+  //   - `null`/"" -> Default: clear the overlay (poses AND voice pitch) and
+  //     forget the persisted choice.
+  //   - a "builtin:*" id (Momo/Sora) -> apply its bundled poses + voicePitch
+  //     SYNCHRONOUSLY (no backend), persist immediately, and surface its greeting
+  //     once. Works in design mode too — a built-in is pure frontend.
+  //   - a plugin id -> load the plugin's skin from the backend and overlay its
+  //     poses + voicePitch. The id is PERSISTED only AFTER a successful load, so a
+  //     broken plugin skin never becomes the boot-applied one; an interactive
+  //     failure reverts the selection to Default and surfaces tamaSkinError
+  //     (unlike the silent boot path). Design mode (!IN_TAURI) has no backend to
+  //     load a plugin skin from — it persists + demos with a toast, no real overlay.
   async setTamaSkin(id: string | null): Promise<void> {
-    const pluginId = id || null;
+    const chosen = id || null;
     this.tamaSkinError = "";
-    if (!pluginId) {
+    if (!chosen) {
       this.tamaSkinPluginId = null;
       saveSettings({ tamaSkinPluginId: null });
       bridge.clearTamaSkin();
       return;
     }
-    // Reflect the choice in the control right away; only persist after the load
-    // resolves so a failed one doesn't linger as the stored value.
-    this.tamaSkinPluginId = pluginId;
+    // Built-in character — pure frontend, applies at once (poses + voice pitch),
+    // no backend and no busy spinner.
+    const builtin = builtinSkinById(chosen);
+    if (builtin) {
+      this.tamaSkinPluginId = builtin.id;
+      bridge.applyTamaSkin(builtin.poses, builtin.voicePitch);
+      saveSettings({ tamaSkinPluginId: builtin.id });
+      const line = pickSkinCopyLine(builtin.copy);
+      if (line) bridge.tama.say(line);
+      return;
+    }
+    // A "builtin:*" id we don't recognise — coerce to Default rather than trying
+    // to load it as a plugin (a plugin id can never carry the "builtin:" prefix).
+    if (isBuiltinSkinId(chosen)) {
+      this.tamaSkinPluginId = null;
+      saveSettings({ tamaSkinPluginId: null });
+      bridge.clearTamaSkin();
+      return;
+    }
+    // Otherwise it's a plugin id. Reflect the choice in the control right away;
+    // only persist after the load resolves so a failed one doesn't linger as the
+    // stored value.
+    this.tamaSkinPluginId = chosen;
     if (!IN_TAURI) {
-      saveSettings({ tamaSkinPluginId: pluginId });
-      bridge.tama.say(`This is where the "${pluginId}" Tama skin would load (demo).`);
+      saveSettings({ tamaSkinPluginId: chosen });
+      bridge.tama.say(`This is where the "${chosen}" Tama skin would load (demo).`);
       return;
     }
     this.tamaSkinBusy = true;
     try {
-      const res = await commands.loadPluginSkin(pluginId);
+      const res = await commands.loadPluginSkin(chosen);
       if (res.status === "ok") {
-        bridge.applyTamaSkin(res.data.poses ?? {});
-        saveSettings({ tamaSkinPluginId: pluginId });
+        bridge.applyTamaSkin(res.data.poses ?? {}, res.data.voicePitch ?? undefined);
+        saveSettings({ tamaSkinPluginId: chosen });
         const line = pickSkinCopyLine(res.data.copy as Record<string, string>);
         if (line) bridge.tama.say(line);
       } else {

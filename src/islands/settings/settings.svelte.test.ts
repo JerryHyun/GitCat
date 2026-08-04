@@ -88,6 +88,10 @@ import {
   hasTamaSkin,
   pickSkinCopyLine,
 } from "./settings.svelte.ts";
+// The built-in characters are a pure frontend registry (bundled webp asset URLs
+// + a voice pitch) — imported for real, not mocked, so the built-in-path tests
+// assert against the actual poses/pitch the app ships.
+import { BUILTIN_SKINS, builtinSkinById } from "./builtinskins.ts";
 
 function ok<T>(data: T): { status: "ok"; data: T } {
   return { status: "ok", data };
@@ -955,7 +959,9 @@ describe("tama skin — setTamaSkin (interactive picker)", () => {
     await settingsCtrl.setTamaSkin("acme");
 
     expect(commands.loadPluginSkin).toHaveBeenCalledWith("acme");
-    expect(bridge.applyTamaSkin).toHaveBeenCalledWith({ hero: "data:hero" });
+    // A skin with no voicePitch forwards `undefined` as the 2nd arg (main.ts's
+    // applyTamaSkin reads that as "no change" -> the default 1.0 voice).
+    expect(bridge.applyTamaSkin).toHaveBeenCalledWith({ hero: "data:hero" }, undefined);
     expect(settingsCtrl.tamaSkinPluginId).toBe("acme");
     expect(loadSettings().tamaSkinPluginId).toBe("acme");
     expect(bridge.tama.say).toHaveBeenCalledWith("New look, にゃ〜");
@@ -968,8 +974,18 @@ describe("tama skin — setTamaSkin (interactive picker)", () => {
 
     await settingsCtrl.setTamaSkin("acme");
 
-    expect(bridge.applyTamaSkin).toHaveBeenCalledWith({ hero: "data:hero" });
+    expect(bridge.applyTamaSkin).toHaveBeenCalledWith({ hero: "data:hero" }, undefined);
     expect(bridge.tama.say).not.toHaveBeenCalled();
+  });
+
+  it("forwards a plugin skin's voicePitch through to bridge.applyTamaSkin", async () => {
+    vi.mocked(commands.loadPluginSkin).mockResolvedValueOnce(
+      ok({ poses: { hero: "data:hero" }, copy: {}, voicePitch: 1.3 } as unknown as { poses: Record<string, string>; copy: Record<string, string> }),
+    );
+
+    await settingsCtrl.setTamaSkin("acme");
+
+    expect(bridge.applyTamaSkin).toHaveBeenCalledWith({ hero: "data:hero" }, 1.3);
   });
 
   it("a backend error reverts the selection to Default, clears the overlay, and surfaces tamaSkinError", async () => {
@@ -1009,6 +1025,56 @@ describe("tama skin — setTamaSkin (interactive picker)", () => {
   });
 });
 
+describe("tama skin — built-in characters (PER-53)", () => {
+  it("the picker offers the bundled built-in characters (Momo, Sora)", () => {
+    expect(settingsCtrl.builtinSkins.map((s) => s.id)).toEqual(["builtin:momo", "builtin:sora"]);
+    expect(BUILTIN_SKINS.map((s) => s.id)).toEqual(["builtin:momo", "builtin:sora"]);
+  });
+
+  it("applies a built-in's poses + voicePitch SYNCHRONOUSLY, persists the id, greets, and never hits the backend", async () => {
+    const momo = builtinSkinById("builtin:momo")!;
+
+    await settingsCtrl.setTamaSkin("builtin:momo");
+
+    expect(commands.loadPluginSkin).not.toHaveBeenCalled();
+    expect(bridge.applyTamaSkin).toHaveBeenCalledWith(momo.poses, momo.voicePitch);
+    expect(settingsCtrl.tamaSkinPluginId).toBe("builtin:momo");
+    expect(loadSettings().tamaSkinPluginId).toBe("builtin:momo");
+    expect(bridge.tama.say).toHaveBeenCalled(); // its greeting line
+    expect(settingsCtrl.tamaSkinBusy).toBe(false);
+    expect(settingsCtrl.tamaSkinError).toBe("");
+  });
+
+  it("applies a built-in for real even in design mode (!IN_TAURI) — a built-in is pure frontend, not a demo toast", async () => {
+    mockInTauri = false;
+    const sora = builtinSkinById("builtin:sora")!;
+
+    await settingsCtrl.setTamaSkin("builtin:sora");
+
+    expect(commands.loadPluginSkin).not.toHaveBeenCalled();
+    expect(bridge.applyTamaSkin).toHaveBeenCalledWith(sora.poses, sora.voicePitch);
+    expect(loadSettings().tamaSkinPluginId).toBe("builtin:sora");
+  });
+
+  it("Momo speaks higher and Sora lower than the default 1.0 voice", () => {
+    expect(builtinSkinById("builtin:momo")!.voicePitch).toBeGreaterThan(1);
+    expect(builtinSkinById("builtin:sora")!.voicePitch).toBeLessThan(1);
+  });
+
+  it("an unrecognised builtin:* id coerces to Default (clears + persists null), never loading it as a plugin", async () => {
+    saveSettings({ tamaSkinPluginId: "builtin:momo" });
+    settingsCtrl.tamaSkinPluginId = "builtin:momo";
+
+    await settingsCtrl.setTamaSkin("builtin:does-not-exist");
+
+    expect(commands.loadPluginSkin).not.toHaveBeenCalled();
+    expect(bridge.applyTamaSkin).not.toHaveBeenCalled();
+    expect(bridge.clearTamaSkin).toHaveBeenCalled();
+    expect(settingsCtrl.tamaSkinPluginId).toBeNull();
+    expect(loadSettings().tamaSkinPluginId).toBeNull();
+  });
+});
+
 describe("tama skin — applyPersistedTamaSkin (boot)", () => {
   it("no-ops with no persisted skin", async () => {
     await applyPersistedTamaSkin();
@@ -1024,7 +1090,7 @@ describe("tama skin — applyPersistedTamaSkin (boot)", () => {
     await applyPersistedTamaSkin();
 
     expect(commands.loadPluginSkin).toHaveBeenCalledWith("acme");
-    expect(bridge.applyTamaSkin).toHaveBeenCalledWith({ hero: "data:hero", sleep: "data:sleep" });
+    expect(bridge.applyTamaSkin).toHaveBeenCalledWith({ hero: "data:hero", sleep: "data:sleep" }, undefined);
   });
 
   it("falls back to the built-ins SILENTLY when the persisted skin fails to load (plugin removed/disabled)", async () => {
@@ -1043,6 +1109,37 @@ describe("tama skin — applyPersistedTamaSkin (boot)", () => {
 
     await expect(applyPersistedTamaSkin()).resolves.toBeUndefined();
     expect(bridge.clearTamaSkin).toHaveBeenCalled();
+  });
+
+  it("re-applies a persisted BUILT-IN character SYNCHRONOUSLY (poses + pitch), no backend", async () => {
+    saveSettings({ tamaSkinPluginId: "builtin:sora" });
+    const sora = builtinSkinById("builtin:sora")!;
+
+    await applyPersistedTamaSkin();
+
+    expect(commands.loadPluginSkin).not.toHaveBeenCalled();
+    expect(bridge.applyTamaSkin).toHaveBeenCalledWith(sora.poses, sora.voicePitch);
+  });
+
+  it("applies a persisted built-in on boot even in design mode (!IN_TAURI) — pure frontend", async () => {
+    mockInTauri = false;
+    saveSettings({ tamaSkinPluginId: "builtin:momo" });
+    const momo = builtinSkinById("builtin:momo")!;
+
+    await applyPersistedTamaSkin();
+
+    expect(commands.loadPluginSkin).not.toHaveBeenCalled();
+    expect(bridge.applyTamaSkin).toHaveBeenCalledWith(momo.poses, momo.voicePitch);
+  });
+
+  it("an unrecognised builtin:* id on boot stays on Default: no apply, no clear, no backend", async () => {
+    saveSettings({ tamaSkinPluginId: "builtin:gone" });
+
+    await applyPersistedTamaSkin();
+
+    expect(commands.loadPluginSkin).not.toHaveBeenCalled();
+    expect(bridge.applyTamaSkin).not.toHaveBeenCalled();
+    expect(bridge.clearTamaSkin).not.toHaveBeenCalled();
   });
 
   it("design mode (!IN_TAURI): never touches the backend, even with a persisted id", async () => {

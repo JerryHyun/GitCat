@@ -59,6 +59,15 @@ const VALID_TAMA_POSE_KEYS: [&str; 8] =
 /// rather than base64-inline a huge blob into a `data:` URI.
 const MAX_TAMA_ASSET_BYTES: u64 = 512 * 1024;
 
+/// Clamp bounds for a Tama skin's optional voice PITCH multiplier (PER-53). A
+/// skin may retune Tama's speech-synthesis pitch; a finite value outside this
+/// range is CLAMPED here by the loader ([`build_skin`]), and a non-finite value
+/// (NaN/±inf) is rejected up front at [`validate_manifest`]. `1.0` is the
+/// unchanged default the frontend uses when a skin declares no pitch. Kept in
+/// sync by hand with the frontend's `sound.ts`.
+const VOICE_PITCH_MIN: f32 = 0.5;
+const VOICE_PITCH_MAX: f32 = 2.0;
+
 // ---------------------------------------------------------------------------
 // Manifest types
 // ---------------------------------------------------------------------------
@@ -173,6 +182,14 @@ pub struct PluginTama {
     /// Optional voice/copy lines the skin contributes, passed through verbatim.
     #[serde(default)]
     pub copy: HashMap<String, String>,
+    /// Optional voice PITCH multiplier (PER-53) the skin retunes Tama's speech
+    /// synthesis to. `#[serde(default)]` + `Option` so every pre-PER-53 manifest
+    /// still loads (absent => `None` => "no change", i.e. the frontend's default
+    /// pitch of `1.0`). A present value MUST be finite — NaN/±inf are rejected at
+    /// [`validate_manifest`]; a finite out-of-range value is CLAMPED to
+    /// `[VOICE_PITCH_MIN, VOICE_PITCH_MAX]` by the loader ([`build_skin`]).
+    #[serde(default)]
+    pub voice_pitch: Option<f32>,
 }
 
 /// One declarative widget inside a [`PluginPanel`] (PER-45) — a FIXED, closed
@@ -397,6 +414,17 @@ pub fn validate_manifest(plugin: &Plugin) -> Result<(), String> {
     // level gate; [`load_plugin_skin`] additionally canonicalizes + containment-
     // checks each asset (catching symlink escape) before reading any bytes.
     if let Some(tama) = &plugin.tama {
+        // Voice pitch (PER-53): a present value must be a FINITE number. NaN/±inf
+        // can't be sensibly clamped, so reject them up front here; a finite but
+        // out-of-range value is allowed through and CLAMPED by the loader
+        // ([`build_skin`]) into `[VOICE_PITCH_MIN, VOICE_PITCH_MAX]`.
+        if let Some(pitch) = tama.voice_pitch {
+            if !pitch.is_finite() {
+                return Err(format!(
+                    "Plugin tama voicePitch {pitch} is not a finite number — it must be a finite value (a finite out-of-range value is clamped to [{VOICE_PITCH_MIN}, {VOICE_PITCH_MAX}])."
+                ));
+            }
+        }
         for (key, rel) in &tama.poses {
             if !VALID_TAMA_POSE_KEYS.contains(&key.as_str()) {
                 return Err(format!(
@@ -607,6 +635,11 @@ pub fn find_command(app: &AppHandle<Wry>, plugin_id: &str, command_id: &str) -> 
 pub struct TamaSkin {
     pub poses: HashMap<String, String>,
     pub copy: HashMap<String, String>,
+    /// The skin's voice PITCH multiplier (PER-53), already CLAMPED to
+    /// `[VOICE_PITCH_MIN, VOICE_PITCH_MAX]` by [`build_skin`]. `None` means "no
+    /// change" — the frontend leaves Tama at the default pitch of `1.0`.
+    #[serde(default)]
+    pub voice_pitch: Option<f32>,
 }
 
 /// Map an allow-listed asset extension to its `data:` URI MIME type. Returns
@@ -633,6 +666,20 @@ fn asset_is_within_dir(canonical_dir: &Path, canonical_asset: &Path) -> bool {
     canonical_asset.starts_with(canonical_dir)
 }
 
+/// Clamp a manifest voice-pitch multiplier into the supported range (PER-53).
+/// A finite value is clamped to `[VOICE_PITCH_MIN, VOICE_PITCH_MAX]`; a
+/// non-finite value (NaN/±inf) is dropped to `None` ("no change"). Defense in
+/// depth: [`validate_manifest`] already rejects a non-finite pitch at install,
+/// but the loader NEVER trusts that — a hand-edited `plugins.json` could still
+/// carry one — so `build_skin` re-sanitizes before handing a value to the UI.
+fn clamp_voice_pitch(pitch: f32) -> Option<f32> {
+    if pitch.is_finite() {
+        Some(pitch.clamp(VOICE_PITCH_MIN, VOICE_PITCH_MAX))
+    } else {
+        None
+    }
+}
+
 /// Build a [`TamaSkin`] from `plugin`'s declared Tama assets. PURE (no
 /// `AppHandle`) so it's driven directly by the unit tests. Does file IO —
 /// callers run it on the blocking pool (see [`load_plugin_skin`]).
@@ -652,6 +699,10 @@ pub fn build_skin(plugin: &Plugin) -> TamaSkin {
         return skin; // no skin declared
     };
     skin.copy = tama.copy.clone();
+    // Voice pitch (PER-53) is manifest metadata, not an asset — pass it through
+    // (clamped) BEFORE the dir/asset gates below, so a skin with no resolvable
+    // source dir still retunes the voice even though its poses are unavailable.
+    skin.voice_pitch = tama.voice_pitch.and_then(clamp_voice_pitch);
 
     let Some(dir) = plugin.dir.as_deref() else {
         eprintln!("plugin {:?}: Tama assets unavailable — no resolvable source dir", plugin.id);
@@ -1167,7 +1218,9 @@ mod tests {
         )
         .unwrap();
         let loaded = load_from(&path).expect("tama without copy must still load");
-        assert!(loaded[0].tama.as_ref().unwrap().copy.is_empty(), "omitted copy defaults empty");
+        let tama = loaded[0].tama.as_ref().unwrap();
+        assert!(tama.copy.is_empty(), "omitted copy defaults empty");
+        assert_eq!(tama.voice_pitch, None, "omitted voicePitch defaults None (no change)");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1176,7 +1229,7 @@ mod tests {
         let mut p = sample_plugin("skin");
         let mut poses = HashMap::new();
         poses.insert("wiggle".to_string(), "assets/wiggle.webp".to_string());
-        p.tama = Some(PluginTama { poses, copy: HashMap::new() });
+        p.tama = Some(PluginTama { poses, copy: HashMap::new(), voice_pitch: None });
         let err = validate_manifest(&p).unwrap_err();
         assert!(err.contains("wiggle") && err.contains("built-in pose"), "got: {err}");
     }
@@ -1189,7 +1242,7 @@ mod tests {
             let mut p = sample_plugin("skin");
             let mut poses = HashMap::new();
             poses.insert(key.to_string(), format!("assets/{key}.webp"));
-            p.tama = Some(PluginTama { poses, copy: HashMap::new() });
+            p.tama = Some(PluginTama { poses, copy: HashMap::new(), voice_pitch: None });
             validate_manifest(&p).unwrap_or_else(|e| panic!("pose key {key:?} should be valid: {e}"));
         }
     }
@@ -1200,7 +1253,7 @@ mod tests {
         let mut p = sample_plugin("skin");
         let mut poses = HashMap::new();
         poses.insert("curious".to_string(), "../../etc/passwd".to_string());
-        p.tama = Some(PluginTama { poses, copy: HashMap::new() });
+        p.tama = Some(PluginTama { poses, copy: HashMap::new(), voice_pitch: None });
         let err = validate_manifest(&p).unwrap_err();
         assert!(err.contains("unsafe asset path"), "dotdot path should be rejected, got: {err}");
 
@@ -1211,7 +1264,7 @@ mod tests {
         poses.insert("curious".to_string(), "/etc/passwd".to_string());
         #[cfg(windows)]
         poses.insert("curious".to_string(), r"C:\Windows\system32\x.webp".to_string());
-        p.tama = Some(PluginTama { poses, copy: HashMap::new() });
+        p.tama = Some(PluginTama { poses, copy: HashMap::new(), voice_pitch: None });
         let err = validate_manifest(&p).unwrap_err();
         assert!(err.contains("unsafe asset path"), "absolute path should be rejected, got: {err}");
     }
@@ -1272,7 +1325,7 @@ mod tests {
         poses.insert("sleep".to_string(), "assets/missing.webp".to_string()); // missing
         let mut copy = HashMap::new();
         copy.insert("curious".to_string(), "hmm?".to_string());
-        plugin.tama = Some(PluginTama { poses, copy });
+        plugin.tama = Some(PluginTama { poses, copy, voice_pitch: None });
 
         let skin = build_skin(&plugin);
 
@@ -1310,7 +1363,7 @@ mod tests {
         poses.insert("curious".to_string(), "assets/curious.webp".to_string());
         let mut copy = HashMap::new();
         copy.insert("curious".to_string(), "hmm?".to_string());
-        p.tama = Some(PluginTama { poses, copy });
+        p.tama = Some(PluginTama { poses, copy, voice_pitch: None });
         p.dir = None;
         let skin = build_skin(&p);
         assert!(skin.poses.is_empty(), "no dir => no assets");
@@ -1337,7 +1390,7 @@ mod tests {
         plugin.dir = Some(std::fs::canonicalize(&plugin_dir).unwrap().to_string_lossy().into_owned());
         let mut poses = HashMap::new();
         poses.insert("curious".to_string(), "escape.webp".to_string());
-        plugin.tama = Some(PluginTama { poses, copy: HashMap::new() });
+        plugin.tama = Some(PluginTama { poses, copy: HashMap::new(), voice_pitch: None });
 
         let skin = build_skin(&plugin);
         assert!(skin.poses.is_empty(), "a symlink escaping the plugin dir must be skipped, got: {:?}", skin.poses);
@@ -1364,6 +1417,75 @@ mod tests {
         assert_eq!(recorded, expected, "dir must be the canonicalized plugin directory");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- Tama voice pitch (PER-53) -------------------------------------------
+
+    #[test]
+    fn tama_voice_pitch_round_trips_through_manifest_and_save_load() {
+        // An in-range `voicePitch` must deserialize, pass validation, and survive
+        // a save/load round-trip unchanged. `1.5` is exactly representable in f32.
+        let dir = temp_dir("tama-pitch");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE_NAME);
+        std::fs::write(
+            &path,
+            r#"{"version":1,"plugins":[{"id":"skin","name":"Skin","version":"1.0.0",
+                "tama":{"poses":{"hero":"hero.webp"},"voicePitch":1.5}}]}"#,
+        )
+        .unwrap();
+
+        let loaded = load_from(&path).expect("a manifest with voicePitch must deserialize");
+        assert_eq!(loaded[0].tama.as_ref().unwrap().voice_pitch, Some(1.5), "voicePitch must deserialize");
+        validate_manifest(&loaded[0]).expect("an in-range voicePitch must validate");
+
+        save_to(&path, &loaded).unwrap();
+        let again = load_from(&path).expect("round-trip load");
+        assert_eq!(again[0].tama.as_ref().unwrap().voice_pitch, Some(1.5), "voicePitch must round-trip through save/load");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_skin_clamps_voice_pitch_and_passes_none_through() {
+        // The loader clamps into [VOICE_PITCH_MIN, VOICE_PITCH_MAX]; `None` stays
+        // `None` ("no change"); a non-finite value is dropped to `None` (defense
+        // in depth). sample_plugin has `dir: None`, so build_skin sets the pitch
+        // then takes the copy-only early return — the pitch still passes through.
+        let with_pitch = |pitch: Option<f32>| {
+            let mut p = sample_plugin("pitch");
+            p.tama = Some(PluginTama { poses: HashMap::new(), copy: HashMap::new(), voice_pitch: pitch });
+            build_skin(&p).voice_pitch
+        };
+
+        assert_eq!(with_pitch(Some(1.25)), Some(1.25), "an in-range value passes through unchanged");
+        assert_eq!(with_pitch(Some(9.0)), Some(VOICE_PITCH_MAX), "above the max is clamped down");
+        assert_eq!(with_pitch(Some(0.1)), Some(VOICE_PITCH_MIN), "below the min is clamped up");
+        assert_eq!(with_pitch(None), None, "None stays None (no change)");
+        assert_eq!(with_pitch(Some(f32::NAN)), None, "NaN is dropped to None");
+        assert_eq!(with_pitch(Some(f32::INFINITY)), None, "inf is dropped to None");
+    }
+
+    #[test]
+    fn tama_voice_pitch_non_finite_is_rejected_at_validation() {
+        // NaN/±inf can't be sensibly clamped, so validation rejects them up front.
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut p = sample_plugin("skin");
+            p.tama = Some(PluginTama { poses: HashMap::new(), copy: HashMap::new(), voice_pitch: Some(bad) });
+            let err = validate_manifest(&p).unwrap_err();
+            assert!(err.contains("voicePitch") && err.contains("finite"), "{bad} should be rejected, got: {err}");
+        }
+    }
+
+    #[test]
+    fn tama_voice_pitch_finite_out_of_range_passes_validation_and_is_clamped_by_the_loader() {
+        // Contract split: validation only rejects NON-finite pitches; a FINITE
+        // out-of-range value installs fine and is CLAMPED by the loader — never
+        // rejected. So 5.0 validates, then build_skin clamps it to the max.
+        let mut p = sample_plugin("skin");
+        p.tama = Some(PluginTama { poses: HashMap::new(), copy: HashMap::new(), voice_pitch: Some(5.0) });
+        validate_manifest(&p).expect("a finite out-of-range voicePitch must pass validation (clamped, not rejected)");
+        assert_eq!(build_skin(&p).voice_pitch, Some(VOICE_PITCH_MAX), "the loader clamps it to the max");
     }
 
     // -- Declarative UI panels (PER-45) --------------------------------------

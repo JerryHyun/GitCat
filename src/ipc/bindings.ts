@@ -4042,7 +4042,16 @@ poses: Partial<{ [key in string]: string }>;
 /**
  * Optional voice/copy lines the skin contributes, passed through verbatim.
  */
-copy?: Partial<{ [key in string]: string }> }
+copy?: Partial<{ [key in string]: string }>; 
+/**
+ * Optional voice PITCH multiplier (PER-53) the skin retunes Tama's speech
+ * synthesis to. `#[serde(default)]` + `Option` so every pre-PER-53 manifest
+ * still loads (absent => `None` => "no change", i.e. the frontend's default
+ * pitch of `1.0`). A present value MUST be finite — NaN/±inf are rejected at
+ * [`validate_manifest`]; a finite out-of-range value is CLAMPED to
+ * `[VOICE_PITCH_MIN, VOICE_PITCH_MAX]` by the loader ([`build_skin`]).
+ */
+voicePitch?: number | null }
 /**
  * Whatever `revparse_single` resolved `rev` to. Internally tagged on `kind`
  * (verified empirically against specta 2.0.0-rc.22 — this generates a clean
@@ -4357,7 +4366,13 @@ export type TagObject = { sha: string; name: string; tagger: PlumbingPerson | nu
  * a missing/oversize/wrong-extension/escaping asset is silently omitted, so a
  * partial skin still loads.
  */
-export type TamaSkin = { poses: Partial<{ [key in string]: string }>; copy: Partial<{ [key in string]: string }> }
+export type TamaSkin = { poses: Partial<{ [key in string]: string }>; copy: Partial<{ [key in string]: string }>; 
+/**
+ * The skin's voice PITCH multiplier (PER-53), already CLAMPED to
+ * `[VOICE_PITCH_MIN, VOICE_PITCH_MAX]` by [`build_skin`]. `None` means "no
+ * change" — the frontend leaves Tama at the default pitch of `1.0`.
+ */
+voicePitch?: number | null }
 /**
  * One planner row's chosen action, as sent back to [`rebase_interactive_start`].
  * `sha` is validated against a FRESHLY recomputed commit range before

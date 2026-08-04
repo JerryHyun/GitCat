@@ -60,6 +60,7 @@ A manifest is a small JSON document. Here's a complete, annotated example:
 | `enabled` | — | boolean | Defaults to `true` when omitted — a freshly installed plugin is active until you disable it. |
 | `commands` | — | array | Zero or more [commands](#commands). Defaults to `[]`. |
 | `hooks` | — | array | Zero or more [hooks](#hooks). Defaults to `[]`. |
+| `tama` | — | object | Optional [Tama skin](#tama-skins) — an alternate look and voice for the mascot (poses, a greeting, a voice pitch). |
 
 A manifest must be a regular file no larger than **256 KB** (a `plugin.json` is tiny by design).
 
@@ -192,6 +193,35 @@ A command or hook can nudge Tama's mood straight from its **stdout**, without an
 The `<message>` is trimmed and capped at ~160 characters. The directive line itself is stripped from the output Tama shows — so `printf '::gitcat.tama ok Done!'` makes Tama celebrate and say "Done!" without echoing the raw control line. If a command prints several directives, the **last valid one wins**. With no directive at all, GitCat surfaces the command's output as usual.
 
 **A plugin can never spoof a safety warning.** The four tokens above are the *only* path from plugin stdout to a Tama pose, and every target is benign or informational. GitCat's safety-critical poses (the alarmed "danger" face, the rewrite/undo warnings) are reachable **only** when GitCat itself flagged a destructive action — no `<reaction>` maps to them. Any other token (`danger`, `warn`, `undo`, or arbitrary garbage) is silently **ignored**: it changes nothing and can't even win the "last valid line" race against a real `ok`.
+
+## Tama skins {#tama-skins}
+
+A plugin can also ship an alternate **look and voice** for Tama by declaring a top-level `tama` object. This is purely declarative art and copy — a skin contributes no commands and no hooks, runs no process, and needs no open repository. GitCat itself ships two built-in characters, **Momo (pink)** and **Sora (blue)**, always available in the same picker; a plugin skin is the same feature contributed from outside the app. See [`examples/plugins/midori-skin`](https://github.com/zangjiucheng/GitCat/tree/main/examples/plugins/midori-skin) for a full-character example.
+
+Apply a skin from **Settings → Tama → Skin**: the picker lists **Default (built-in)**, the built-in characters, and every enabled plugin that declares a `tama` field.
+
+```jsonc
+{
+  "id": "midori-skin",
+  "name": "Midori (green)",
+  "version": "1.0.0",
+  "tama": {
+    "poses": {
+      "hero": "poses/hero.webp",
+      "curious": "poses/curious.webp"
+      // …the remaining pose keys…
+    },
+    "voicePitch": 1.05,          // optional; omit for the default 1.0
+    "copy": { "greeting": "Fresh leaves, clean history." } // optional
+  }
+}
+```
+
+| Field | Required | Type | Notes |
+| --- | --- | --- | --- |
+| `poses` | ✅ | object | Maps a built-in pose **key** to a **relative** image path inside the plugin folder. The eight keys are `hero`, `curious`, `confident`, `thinking`, `happy`, `alarm`, `shocked`, `sleep`. A skin may override **some or all** of them — any key it omits falls back to Tama's default painted portrait. Any other key is rejected at install time. Paths may not be absolute or contain `..`. |
+| `voicePitch` | — | number | A multiplier applied to Tama's synthesized sound effects, so the character speaks higher (`> 1`) or lower (`< 1`). Omitted means **no change** (`1.0`). Must be finite; a finite out-of-range value is **clamped** to `[0.5, 2.0]` when the skin loads. |
+| `copy` | — | object | Optional greeting/voice lines. GitCat surfaces one (preferring `applied` > `greeting` > `hero`, else the first) as a courtesy toast when the skin is applied, capped at ~160 chars. It can never reach a safety-critical pose — the same trust boundary as a `::gitcat.tama` reaction. |
 
 ## Installing & managing plugins
 

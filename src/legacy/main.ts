@@ -29,7 +29,7 @@ import { dlog } from "../devlog";
 // TamaMascot.set() below plays a short synthesized chime on a real state
 // change via STATE_SOUND — see sound.ts's own header for why this is a leaf
 // module main.ts imports FROM, never the reverse.
-import { playTamaSound, STATE_SOUND } from "./sound.ts";
+import { playTamaSound, STATE_SOUND, setVoicePitch } from "./sound.ts";
 "use strict";
 const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
 const TAU=Math.PI*2;
@@ -1250,8 +1250,15 @@ export function tamaPose(key){ return activeTamaSkin[key] ?? TAMA_IMG[key]; }
 // repaints the mascot's CURRENT pose immediately (through the accessor) so a
 // live skin swap from Settings is visible without waiting for the next FSM
 // state change — pure DOM, TamaMascot itself is never touched.
-export const applyTamaSkin = (poses) => { activeTamaSkin = (poses && typeof poses === "object") ? { ...poses } : {}; repaintTamaSkin(); };
-export const clearTamaSkin = () => { activeTamaSkin = {}; repaintTamaSkin(); };
+// PER-53: an optional 2nd arg sets the character's VOICE PITCH too (see
+// sound.ts's setVoicePitch) — a built-in character or plugin skin ships its own
+// voicePitch alongside its poses, so applying a skin swaps both the look and the
+// sound in one call. Omitted/undefined means "no pitch change" (resets to 1.0),
+// so the existing single-arg callers (and any skin without a voicePitch) keep
+// Tama's default voice; clearTamaSkin() likewise restores the painted portraits
+// AND the 1.0 default voice.
+export const applyTamaSkin = (poses, voicePitch) => { activeTamaSkin = (poses && typeof poses === "object") ? { ...poses } : {}; setVoicePitch(voicePitch ?? 1); repaintTamaSkin(); };
+export const clearTamaSkin = () => { activeTamaSkin = {}; setVoicePitch(1); repaintTamaSkin(); };
 function repaintTamaSkin(){
   const spr=$("#sprite"); if(spr && spr.dataset.pose) spr.src=tamaPose(spr.dataset.pose);
   const d=$("#dangerTamaImg"); if(d) d.src=tamaPose("alarm");
