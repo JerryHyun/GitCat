@@ -6,6 +6,7 @@
   // ExternalTools); the two-pane split + list rows are the only bespoke styling
   // (the scoped style block below). All state + management is in plugins.svelte.ts.
   import { pluginsCtrl, pluginContribution } from "./plugins.svelte.ts";
+  import Trash2 from "@lucide/svelte/icons/trash-2";
 
   function onKeydown(e: KeyboardEvent) {
     if (e.key === "Escape" && pluginsCtrl.open) pluginsCtrl.close();
@@ -98,23 +99,36 @@
 
               <div class="pl-detail-actions">
                 {#if pluginsCtrl.removingPluginId === p.id}
-                  <span class="msg" style="flex:1;min-width:0">Remove <b>{p.name}</b>? Its <code>plugin.json</code> on disk is left untouched.</span>
-                  {#if pluginsCtrl.pluginBusyId === p.id}<span class="spinner"></span>{/if}
-                  <button class="danger" disabled={pluginsCtrl.pluginBusyId === p.id} onclick={() => pluginsCtrl.confirmRemovePlugin(p.id)}>Remove</button>
-                  <button disabled={pluginsCtrl.pluginBusyId === p.id} onclick={() => pluginsCtrl.cancelRemovePlugin()}>Cancel</button>
+                  <div class="pl-confirm">
+                    <span class="pl-confirm-msg">Remove <b>{p.name}</b>? Its <code>plugin.json</code> on disk is left untouched.</span>
+                    <div class="pl-confirm-act">
+                      <button class="btn ghost" disabled={pluginsCtrl.pluginBusyId === p.id} onclick={() => pluginsCtrl.cancelRemovePlugin()}>Cancel</button>
+                      <button class="btn danger" disabled={pluginsCtrl.pluginBusyId === p.id} onclick={() => pluginsCtrl.confirmRemovePlugin(p.id)}>
+                        {#if pluginsCtrl.pluginBusyId === p.id}<span class="spinner"></span> {/if}Remove
+                      </button>
+                    </div>
+                  </div>
                 {:else}
-                  <label class="set-toggle" style="margin:0" title="Enable or disable this plugin">
-                    <input
-                      type="checkbox"
-                      checked={p.enabled !== false}
+                  <div class="pl-enable">
+                    <button
+                      type="button"
+                      class="pl-switch"
+                      class:on={p.enabled !== false}
+                      role="switch"
+                      aria-checked={p.enabled !== false}
+                      aria-label={p.enabled !== false ? "Disable this plugin" : "Enable this plugin"}
                       disabled={pluginsCtrl.pluginBusyId === p.id}
-                      onchange={(e) => pluginsCtrl.setPluginEnabled(p.id, (e.target as HTMLInputElement).checked)}
-                    />
-                    Enabled
-                  </label>
-                  {#if pluginsCtrl.pluginBusyId === p.id}<span class="spinner"></span>{/if}
+                      onclick={() => pluginsCtrl.setPluginEnabled(p.id, p.enabled === false)}
+                    >
+                      <span class="pl-switch-knob"></span>
+                    </button>
+                    <span class="pl-enable-label">{p.enabled !== false ? "Enabled" : "Disabled"}</span>
+                    {#if pluginsCtrl.pluginBusyId === p.id}<span class="spinner"></span>{/if}
+                  </div>
                   <span style="flex:1"></span>
-                  <button disabled={pluginsCtrl.pluginBusyId === p.id} onclick={() => pluginsCtrl.startRemovePlugin(p.id)}>Remove</button>
+                  <button class="pl-remove" disabled={pluginsCtrl.pluginBusyId === p.id} onclick={() => pluginsCtrl.startRemovePlugin(p.id)}>
+                    <Trash2 size={14} aria-hidden="true" /> Remove
+                  </button>
                 {/if}
               </div>
             {:else}
@@ -269,8 +283,108 @@
   .pl-detail-actions {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     margin-top: auto;
     padding-top: 18px;
+  }
+  /* Enable/disable — a proper pill toggle (amber when on) rather than a bare
+     checkbox, to match the app's warm control language. */
+  .pl-enable {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .pl-enable-label {
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .pl-switch {
+    position: relative;
+    flex: 0 0 auto;
+    width: 34px;
+    height: 20px;
+    padding: 0;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--elevated);
+    cursor: pointer;
+    transition:
+      background-color 0.15s,
+      border-color 0.15s;
+  }
+  .pl-switch.on {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .pl-switch:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .pl-switch-knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition:
+      transform 0.15s,
+      background-color 0.15s;
+  }
+  .pl-switch.on .pl-switch-knob {
+    transform: translateX(14px);
+    background: #fff;
+  }
+  /* Remove — a quiet ghost button that only lights up danger-red on hover,
+     mirroring the app's .wd-act.danger / .tb-btn.danger pattern. */
+  .pl-remove {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: var(--r-control);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    transition:
+      color 0.12s,
+      border-color 0.12s,
+      background-color 0.12s;
+  }
+  .pl-remove:hover:not(:disabled),
+  .pl-remove:focus-visible:not(:disabled) {
+    color: var(--danger);
+    border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+  }
+  .pl-remove:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  /* Inline remove confirm — the destructive action gets the app's solid
+     .btn.danger (red glow); Cancel stays a plain ghost. */
+  .pl-confirm {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: space-between;
+  }
+  .pl-confirm-msg {
+    flex: 1;
+    min-width: 180px;
+    font-size: 12px;
+    color: var(--text);
+  }
+  .pl-confirm-act {
+    display: flex;
+    gap: 8px;
+    flex: 0 0 auto;
   }
 </style>
