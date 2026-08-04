@@ -295,14 +295,14 @@ that omits `mutates` runs **outside** Undo. See
 
 ## Tama skins {#tama-skins}
 
-A plugin can also ship an alternate **look and voice** for Tama by declaring a top-level `tama` object. This is purely declarative art and copy — a skin contributes no commands and no hooks, runs no process, and needs no open repository. Once installed, pick it in **Settings → Tama → Skin**. See [`examples/plugins/midori-skin`](https://github.com/zangjiucheng/GitCat/tree/main/examples/plugins/midori-skin) for a full-character example.
+A plugin can also ship an alternate **look and voice** for Tama by declaring a top-level `tama` object. This is purely declarative art and copy — a skin contributes no commands and no hooks, runs no process, and needs no open repository. It ships its own pose images (bring real character art; recolors of the default read as off), and once installed you pick it in **Settings → Tama → Skin**.
 
 Apply a skin from **Settings → Tama → Skin**: the picker lists **Default (built-in)**, the built-in characters, and every enabled plugin that declares a `tama` field.
 
 ```jsonc
 {
-  "id": "midori-skin",
-  "name": "Midori (green)",
+  "id": "my-character-skin",
+  "name": "My Character",
   "version": "1.0.0",
   "tama": {
     "poses": {
@@ -311,7 +311,7 @@ Apply a skin from **Settings → Tama → Skin**: the picker lists **Default (bu
       // …the remaining pose keys…
     },
     "voicePitch": 1.05,          // optional; omit for the default 1.0
-    "copy": { "greeting": "Fresh leaves, clean history." } // optional
+    "copy": { "greeting": "Hi, I'm filling in for Tama today." } // optional
   }
 }
 ```

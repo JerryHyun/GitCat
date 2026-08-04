@@ -2,18 +2,19 @@
   "id": "commit-subject-lint",
   "name": "Commit Subject Lint",
   "version": "1.0.0",
-  "description": "A commit-created hook that checks the new commit's subject line length and reacts through Tama. Also exposes an on-demand command to lint HEAD.",
+  "description": "A commit-created hook (plus an on-demand command) that checks the new commit's subject line and reacts through Tama. Written as a cross-platform Luau handler.",
+  "lua": "main.lua",
   "hooks": [
     {
       "event": "commit-created",
-      "run": "s=$(git log -1 --format=%s); n=${#s}; if [ \"$n\" -gt 72 ]; then echo \"::gitcat.tama problem Commit subject is $n chars (over 72) — consider shortening it.\"; else echo \"::gitcat.tama ok Commit subject looks good ($n chars).\"; fi"
+      "handler": "on_commit"
     }
   ],
   "commands": [
     {
       "id": "lint-head",
       "label": "Lint: Check HEAD commit subject length",
-      "run": "s=$(git log -1 --format=%s); n=${#s}; if [ \"$n\" -gt 72 ]; then echo \"::gitcat.tama problem HEAD subject is $n chars (over 72) — consider shortening it.\"; else echo \"::gitcat.tama ok HEAD subject looks good ($n chars).\"; fi",
+      "handler": "lint_head",
       "context": "repo",
       "placement": "palette"
     }

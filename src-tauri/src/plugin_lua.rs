@@ -619,6 +619,53 @@ mod runtime_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // ---- shipped example: commit-subject-lint -------------------------------
+
+    #[test]
+    fn shipped_commit_subject_lint_reacts_ok_for_short_and_problem_for_long() {
+        // Runs the ACTUAL examples/plugins/commit-subject-lint/main.lua against a
+        // real temp repo, so the shipped Luau example can't silently rot (a syntax
+        // error, a renamed handler, or a broken git() call fails this test). Only
+        // the `lint_head` command handler is exercised; `on_commit` shares the same
+        // private lint()/report() path.
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../examples/plugins/commit-subject-lint/main.lua"),
+        )
+        .expect("read shipped commit-subject-lint main.lua");
+
+        let dir = tmp_dir("subject-lint");
+        // The handler reads via git() in repo_dir, so ctx can stay default.
+        let git = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&dir).args(args).output().expect("git");
+            assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init"]);
+        git(&["config", "user.email", "lint@example.com"]);
+        git(&["config", "user.name", "Lint Test"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("f.txt"), "one").unwrap();
+        git(&["add", "."]);
+
+        let repo = dir.to_str().unwrap();
+        let ctx = PlaceholderCtx::default();
+
+        // A short, clean subject -> Tama's "ok".
+        git(&["commit", "-m", "Add a short clean subject"]);
+        let out = run(&src, "lint_head", &ctx, repo).expect("lint_head runs");
+        assert!(out.stdout.contains("::gitcat.tama ok"), "short subject should be ok, got: {:?}", out.stdout);
+        assert!(!out.stdout.contains("::gitcat.tama problem"), "short subject must not be a problem: {:?}", out.stdout);
+
+        // A subject well over 72 chars -> Tama's "problem".
+        std::fs::write(dir.join("f.txt"), "two").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", &"x".repeat(90)]);
+        let out = run(&src, "lint_head", &ctx, repo).expect("lint_head runs");
+        assert!(out.stdout.contains("::gitcat.tama problem"), "long subject should be a problem, got: {:?}", out.stdout);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // ---- sandbox: dangerous libraries absent --------------------------------
 
     #[test]

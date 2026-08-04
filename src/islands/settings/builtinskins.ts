@@ -7,8 +7,8 @@
 // genuinely PAINTED alternate character (8 poses matching the keys below) can be
 // dropped in here as a `BuiltinSkin` and it becomes a no-install option in the
 // Settings → Tama → Skin picker. Until then, alternate characters come only from
-// SKIN PLUGINS (a plugin.json with a `tama.poses` map — see examples/plugins/
-// midori-skin and docs/plugins.md), which let anyone bring their own art.
+// SKIN PLUGINS (a plugin.json with a `tama.poses` map — see the "Tama skins"
+// section of docs/plugins.md), which let anyone bring their own art.
 //
 // A built-in (when present) is pure frontend: each pose is a real image asset
 // `import`ed here (Vite turns a `.webp` import into a hashed asset-URL string),
