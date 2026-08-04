@@ -11,6 +11,8 @@ A GitCat plugin is a `plugin.json` describing:
 - **`hooks`** — external commands GitCat runs when a lifecycle event fires.
 - **`tama`** — an optional alternate look (and voice) for Tama: pose art, a
   greeting line, and a `voicePitch` (see [`midori-skin`](./midori-skin/)).
+- **`lua`** — an optional main Luau script; a command/hook can name a `handler`
+  function in it instead of a shell `run` (see [`lua-hello`](./lua-hello/)).
 
 GitCat itself contacts **no AI and no network**. A plugin's `run` string is a
 **user-authored external command** run on your machine — the same trust boundary
@@ -24,6 +26,7 @@ as a difftool/mergetool command. Install only plugins you trust.
 | [`commit-subject-lint`](./commit-subject-lint/) | A `commit-created` **hook** that lints the new commit's subject and reacts via Tama; plus an on-demand lint command. |
 | [`open-in-editor`](./open-in-editor/) | External-tool commands using the **placeholder grammar** (`{repo}`, `{sha}`) and the `--` flag-injection guard. |
 | [`midori-skin`](./midori-skin/) | A full-character **Tama skin**: the `tama` manifest field (eight `poses` + a `voicePitch` + a `copy` greeting), contributing no commands or hooks. |
+| [`lua-hello`](./lua-hello/) | A **Luau-scripted** command: the `lua` manifest field + a command with a `handler` (not a shell `run`), using the sandboxed host API (`ctx`, `git`, `tama.react`, `print`). |
 
 ## Installing
 

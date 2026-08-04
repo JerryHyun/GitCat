@@ -466,17 +466,39 @@ pub async fn run_plugin_command(
         .filter(|p| !p.trim().is_empty())
         .ok_or_else(|| "No repository path was provided for the plugin command.".to_string())?;
     let mutates = command.mutates;
+    // A command runs EITHER an embedded Luau `handler` (PER-56) or a shell `run`
+    // template — EXACTLY ONE, enforced at install by validate_manifest. Decide
+    // which here; for a handler, load the plugin's Luau source up front (a cheap
+    // registry + guarded file read, same inline-lookup shape as find_command
+    // above) so the blocking body just runs it.
+    let handler = command.handler.filter(|h| !h.trim().is_empty());
     let run = command.run;
+    let lua_src = match &handler {
+        Some(_) => Some(crate::plugin_registry::plugin_lua_source(&app, &plugin_id)?),
+        None => None,
+    };
     crate::blocking::run_blocking(move || {
         // A command the plugin DECLARED as mutating gets a safety snapshot first,
         // so its change is covered by global Undo. We FAIL CLOSED: if the
         // snapshot can't be taken, the command does not run (never mutate what we
         // couldn't back up). A `mutates: false` command is trusted read-only and
-        // takes no snapshot. See [`snapshot_before_mutation`].
+        // takes no snapshot. See [`snapshot_before_mutation`]. This applies
+        // equally to a Luau handler and a shell `run` (a handler that calls
+        // `git`-mutating operations must declare `mutates`, same as a shell one).
         if mutates {
             snapshot_before_mutation(&cwd)?;
         }
-        run_template(&run, &cwd, &ctx)
+        match handler {
+            // Luau path: run the named handler in the sandboxed VM. An Ok means
+            // the handler ran (its CommandOutput carries the captured output); an
+            // Err (compile/runtime/timeout) surfaces as the command failing.
+            Some(h) => {
+                let src = lua_src.expect("a handler command loads its Luau source above");
+                crate::plugin_lua::run_lua_handler(&src, &h, &ctx, &cwd)
+            }
+            // Shell path (unchanged): expand + run the `run` template.
+            None => run_template(run.as_deref().unwrap_or_default(), &cwd, &ctx),
+        }
     })
     .await
 }
@@ -488,6 +510,16 @@ pub struct HookRun {
     pub plugin_id: String,
     pub event: crate::plugin_registry::PluginEvent,
     pub output: CommandOutput,
+}
+
+/// How one matched hook runs (PER-56): a shell `run` template, or an embedded
+/// Luau `handler` plus the plugin's `dir`/`lua` needed to load its script. Built
+/// while the registry is held (inline) so the blocking pool only does the work.
+enum HookAction {
+    /// Expand + run this shell `run` template (the pre-PER-56 path).
+    Shell(String),
+    /// Load the plugin's Luau script (from `dir`/`lua`) and call `handler`.
+    Lua { handler: String, dir: Option<String>, lua: Option<String> },
 }
 
 /// Run every ENABLED plugin's hook(s) registered for `event`, in the repo at
@@ -524,22 +556,32 @@ pub async fn run_hooks(
         .filter(|p| !p.trim().is_empty())
         .ok_or_else(|| "No repository path was provided for plugin hooks.".to_string())?;
     let plugins = crate::plugin_registry::load_plugins(&app)?;
-    // (plugin_id, run-template, mutates) for every enabled plugin's hook matching
-    // `event`.
-    let jobs: Vec<(String, String, bool)> = plugins
-        .into_iter()
-        .filter(|p| p.enabled)
-        .flat_map(|p| {
-            let pid = p.id;
-            p.hooks.into_iter().filter(|h| h.event == event).map(move |h| (pid.clone(), h.run, h.mutates))
-        })
-        .collect();
+    // One job per enabled plugin's hook matching `event`: its action (a shell
+    // `run` template, or a Luau `handler` plus the plugin's dir/lua) and whether
+    // it's declared mutating. validate_manifest guarantees exactly one of
+    // run/handler is present; the `else continue` is defensive.
+    let mut jobs: Vec<(String, HookAction, bool)> = Vec::new();
+    for p in plugins.into_iter().filter(|p| p.enabled) {
+        for h in &p.hooks {
+            if h.event != event {
+                continue;
+            }
+            let action = if let Some(handler) = h.handler.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                HookAction::Lua { handler: handler.to_string(), dir: p.dir.clone(), lua: p.lua.clone() }
+            } else if let Some(run) = h.run.clone() {
+                HookAction::Shell(run)
+            } else {
+                continue;
+            };
+            jobs.push((p.id.clone(), action, h.mutates));
+        }
+    }
     if jobs.is_empty() {
         return Ok(Vec::new());
     }
     crate::blocking::run_blocking(move || {
         let mut out = Vec::with_capacity(jobs.len());
-        for (plugin_id, run, mutates) in jobs {
+        for (plugin_id, action, mutates) in jobs {
             // A declared-mutating hook is snapshotted first so its change enters
             // global Undo. Best-effort (an observer must never stall the event or
             // its siblings): if the snapshot fails, log and SKIP this one hook.
@@ -551,9 +593,23 @@ pub async fn run_hooks(
                     continue;
                 }
             }
-            // Skip a hook that can't even launch — it must never stall the event
-            // or the sibling hooks. A non-zero exit is a normal, returned result.
-            if let Ok(output) = run_template_with_timeout(&run, &cwd, &ctx, HOOK_TIMEOUT) {
+            // Run the hook. Any Err — a shell that can't even launch, or a Luau
+            // script that can't be loaded / fails to compile / errors / times out
+            // — is best-effort SKIPPED so a broken hook never stalls the event or
+            // its siblings. A shell non-zero exit is a normal returned result and
+            // IS pushed. (A Luau hook is bounded by run_lua_handler's own internal
+            // time/memory limits; the shorter shell HOOK_TIMEOUT applies only to
+            // the shell path, since the in-process VM takes no timeout argument.)
+            let result = match action {
+                HookAction::Shell(run) => run_template_with_timeout(&run, &cwd, &ctx, HOOK_TIMEOUT),
+                HookAction::Lua { handler, dir, lua } => {
+                    match crate::plugin_registry::read_plugin_lua(dir.as_deref(), lua.as_deref()) {
+                        Ok(src) => crate::plugin_lua::run_lua_handler(&src, &handler, &ctx, &cwd),
+                        Err(e) => Err(e),
+                    }
+                }
+            };
+            if let Ok(output) = result {
                 out.push(HookRun { plugin_id, event, output });
             }
         }

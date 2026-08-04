@@ -3922,6 +3922,18 @@ panels?: PluginPanel[];
  */
 tama?: PluginTama | null; 
 /**
+ * The plugin's main Luau SCRIPT (PER-56) — a path, RELATIVE to the plugin's
+ * own [`dir`](Plugin::dir), to a `.lua` file that `return`s a table of named
+ * handler functions. A command/hook names one of those functions via its
+ * `handler` field. `#[serde(default)]` + `Option` so every non-scripting
+ * (pre-PER-56) manifest still loads (absent => no Luau). [`validate_manifest`]
+ * REQUIRES this whenever any command/hook declares a `handler`; the source is
+ * loaded — behind the SAME canonicalizing path-containment guard the Tama skin
+ * loader uses (see [`read_plugin_lua`]/[`asset_is_within_dir`]) — only from
+ * strictly inside the plugin dir.
+ */
+lua?: string | null; 
+/**
  * The plugin's on-disk SOURCE directory (the canonicalized PARENT of its
  * `plugin.json`), captured at install time so a later skin load knows
  * where to resolve relative asset paths. `#[serde(default)]` + `Option`:
@@ -3932,19 +3944,33 @@ tama?: PluginTama | null;
  */
 dir?: string | null }
 /**
- * One user-invokable command a plugin contributes. `run` is an external
- * command TEMPLATE (user-authored shell text — see the module doc's trust
- * note); the executor expands its placeholders and runs it. `context`/
- * `placement` both `#[serde(default)]` so a minimal manifest command needs
- * only `id`/`label`/`run`.
+ * One user-invokable command a plugin contributes. A command runs EITHER an
+ * external shell `run` TEMPLATE (user-authored shell text — see the module
+ * doc's trust note; the executor expands its placeholders and runs it) OR an
+ * embedded Luau `handler` (PER-56: a named function in the plugin's main `.lua`
+ * file, run in a sandboxed VM). Exactly one of the two is declared — see
+ * [`validate_manifest`]. `context`/`placement` both `#[serde(default)]` so a
+ * minimal manifest command needs only `id`/`label` plus its `run`/`handler`.
  */
 export type PluginCommand = { id: string; label: string; 
 /**
- * External command TEMPLATE. Validated non-empty at install time (see
- * [`validate_manifest`]); NOT otherwise sanitized — same trust boundary
- * as `tool_settings.rs`'s diff/merge `cmd`.
+ * External command TEMPLATE (the shell path). `Option` + `#[serde(default)]`
+ * so a `handler`-based (Luau) command may omit it; [`validate_manifest`]
+ * enforces that EXACTLY ONE of a non-empty `run` or a non-empty `handler` is
+ * present. NOT otherwise sanitized — same trust boundary as
+ * `tool_settings.rs`'s diff/merge `cmd`.
  */
-run: string; context?: PluginContext; placement?: PluginPlacement; 
+run?: string | null; 
+/**
+ * The name of a Luau handler function (the scripting path, PER-56) exported
+ * by the plugin's main `.lua` file (see [`Plugin::lua`]). `Option` +
+ * `#[serde(default)]`: a shell `run` command omits it, and exactly one of
+ * `run`/`handler` must be declared. A command with a `handler` requires the
+ * plugin to declare a `lua` file (both enforced in [`validate_manifest`]).
+ * The executor loads the script and calls this function via
+ * `plugin_lua::run_lua_handler`.
+ */
+handler?: string | null; context?: PluginContext; placement?: PluginPlacement; 
 /**
  * Does this command CHANGE the repository? A plugin DECLARES `true` for a
  * command that mutates (checks out, resets, commits, deletes files, …).
@@ -3988,10 +4014,25 @@ export type PluginContext =
  */
 export type PluginEvent = "repo-opened" | "repo-switched" | "pre-mutation" | "post-mutation" | "commit-created" | "undo"
 /**
- * One lifecycle hook: run `run` (an external command TEMPLATE, same trust
- * boundary as [`PluginCommand::run`]) when `event` fires.
+ * One lifecycle hook fired when `event` occurs. Like a [`PluginCommand`], a
+ * hook runs EITHER an external shell `run` TEMPLATE (same trust boundary as
+ * [`PluginCommand::run`]) OR an embedded Luau `handler` (PER-56). Exactly one
+ * of the two is declared — see [`validate_manifest`].
  */
-export type PluginHook = { event: PluginEvent; run: string; 
+export type PluginHook = { event: PluginEvent; 
+/**
+ * External command TEMPLATE (the shell path). `Option` + `#[serde(default)]`;
+ * exactly one of a non-empty `run` or a non-empty `handler` must be present
+ * (see [`validate_manifest`]).
+ */
+run?: string | null; 
+/**
+ * The name of a Luau handler function (PER-56) exported by the plugin's main
+ * `.lua` file (see [`Plugin::lua`]). `Option` + `#[serde(default)]`; a hook
+ * declaring a `handler` requires the plugin to declare a `lua` file. Run via
+ * `plugin_lua::run_lua_handler` on the hook timeout.
+ */
+handler?: string | null; 
 /**
  * Does this hook CHANGE the repository? Same semantics as
  * [`PluginCommand::mutates`] (default `false` => pure observer, no

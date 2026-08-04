@@ -61,6 +61,7 @@ A manifest is a small JSON document. Here's a complete, annotated example:
 | `commands` | — | array | Zero or more [commands](#commands). Defaults to `[]`. |
 | `hooks` | — | array | Zero or more [hooks](#hooks). Defaults to `[]`. |
 | `tama` | — | object | Optional [Tama skin](#tama-skins) — an alternate look and voice for the mascot (poses, a greeting, a voice pitch). |
+| `lua` | — | string | Optional path (relative to the plugin folder) to a main Luau script — required only if any command/hook uses a `handler`. See [Scripting with Luau](#scripting-with-luau). |
 
 A manifest must be a regular file no larger than **256 KB** (a `plugin.json` is tiny by design).
 
@@ -72,7 +73,8 @@ Each entry in `commands[]` contributes one invocable action.
 | --- | --- | --- |
 | `id` | ✅ | Unique within the plugin. Combined with the plugin `id` to address the command. |
 | `label` | ✅ | The text shown in ⌘K. |
-| `run` | ✅ | The external command [template](#placeholders). Must be non-empty. |
+| `run` | ✳️ | The external command [template](#placeholders). **Declare exactly one of `run` or `handler`.** |
+| `handler` | ✳️ | The name of a [Luau handler](#scripting-with-luau) function instead of a shell `run`. Requires the plugin to declare a top-level `lua` script. **Declare exactly one of `run` or `handler`.** |
 | `context` | — | What selection the command needs. Default `"none"`. |
 | `placement` | — | Where the command surfaces. Default `"palette"`. |
 | `mutates` | — | Set `true` if the command changes the repository. Default `false`. See [Mutating actions & Undo](#mutating-actions-undo). |
@@ -146,7 +148,7 @@ Practically: **write `run` lines for a POSIX shell.** Windows plugins should tar
 
 ## Hooks
 
-Each entry in `hooks[]` runs a `run` command (same template grammar and execution as a command) when a lifecycle event fires.
+Each entry in `hooks[]` runs a `run` command (same template grammar and execution as a command) — or, instead, a Luau `handler` (see [Scripting with Luau](#scripting-with-luau)) — when a lifecycle event fires. Just like a command, a hook must declare **exactly one** of `run` or `handler`.
 
 ```json
 "hooks": [
@@ -193,6 +195,103 @@ A command or hook can nudge Tama's mood straight from its **stdout**, without an
 The `<message>` is trimmed and capped at ~160 characters. The directive line itself is stripped from the output Tama shows — so `printf '::gitcat.tama ok Done!'` makes Tama celebrate and say "Done!" without echoing the raw control line. If a command prints several directives, the **last valid one wins**. With no directive at all, GitCat surfaces the command's output as usual.
 
 **A plugin can never spoof a safety warning.** The four tokens above are the *only* path from plugin stdout to a Tama pose, and every target is benign or informational. GitCat's safety-critical poses (the alarmed "danger" face, the rewrite/undo warnings) are reachable **only** when GitCat itself flagged a destructive action — no `<reaction>` maps to them. Any other token (`danger`, `warn`, `undo`, or arbitrary garbage) is silently **ignored**: it changes nothing and can't even win the "last valid line" race against a real `ok`.
+
+## Scripting with Luau {#scripting-with-luau}
+
+A `run` string is a single shell command. When you need real logic — branch on
+`git` output, loop over files, build a message — a command or hook can instead
+run a **handler function written in [Luau](https://luau.org)** (a fast, safe Lua
+dialect) inside a locked-down sandbox. This is still AI-agnostic and offline:
+the script's only reach outward is a `git()` function.
+
+### The two manifest fields
+
+- **`lua`** (top-level) — a path, relative to the plugin folder, to your main
+  script (e.g. `"lua": "main.lua"`). The file must be a real `.lua` file inside
+  the plugin folder (no `..`, no symlink escaping the folder), at most 256 KB.
+- **`handler`** (on a command or hook) — the **name** of a function your script
+  exports. A command/hook declares **exactly one** of `run` (shell) or `handler`
+  (Luau); declaring both, or neither, is rejected at install. Any `handler`
+  requires the plugin to declare a `lua` script.
+
+```jsonc
+{
+  "id": "my-scripted-plugin",
+  "name": "My Scripted Plugin",
+  "version": "1.0.0",
+  "lua": "main.lua",
+  "commands": [
+    { "id": "hello", "label": "Say hello", "handler": "hello", "context": "repo" }
+  ]
+}
+```
+
+### The script returns a table of handlers
+
+Your main file **`return`s a table** mapping handler names to functions. Each
+handler is called with a single **`ctx`** argument:
+
+```lua
+-- main.lua
+local M = {}
+
+function M.hello(ctx)
+  local head = git({ "rev-parse", "--short", "HEAD" })
+  if head.ok then
+    local sha = (head.stdout:gsub("%s+$", ""))
+    print("HEAD is at " .. sha)          -- captured as the command's output
+    tama.react("ok", "Hello — HEAD is " .. sha)
+    return "done at " .. sha              -- a returned string is appended too
+  end
+  tama.react("problem", "could not read HEAD")
+end
+
+return M                                  -- the command's `handler: "hello"` calls M.hello
+```
+
+### The host API — the entire outside-world surface
+
+A handler sees exactly four things (nothing else — see [the sandbox](#the-luau-sandbox)):
+
+| Name | What it is |
+| --- | --- |
+| `ctx` | A **read-only** table mirroring the [placeholders](#placeholders): `ctx.repo`, `ctx.sha`, `ctx.file`, `ctx.files` (an array), `ctx.diff`, `ctx.branch`, `ctx.ref`. Absent fields are `nil`. (Populated from the UI exactly like the shell tokens — today `ctx.repo` always, plus `ctx.sha` for a `commit`-context command.) Also passed as the handler's argument. |
+| `git(args)` | Run `git` with `args` (an **array of strings**) in the repo — `git({ "log", "-1", "--format=%s" })`. Returns a table `{ stdout, stderr, code, ok }` (`ok` is `true` on a zero exit; `code` is the exit code, or `nil` if signal-killed). **No shell is involved**, so an arg is inert literal data — there is nothing to inject into, unlike the shell `run` path. |
+| `tama.react(kind, msg)` | Nudge Tama's mood. `kind` must be one of `info`, `busy`, `ok`, `problem` (the same [safe allowlist](#tama-reactions) as the `::gitcat.tama` stdout protocol) — any other value is ignored. A script can **never** reach a safety-critical pose. |
+| `print(...)` | Append to the command's captured output (there is no console). Arguments are `tostring`'d and tab-joined, like Lua's `print`. |
+
+The command's output is everything `print`ed, plus any `tama.react` lines, plus
+(if the handler returns a string) that string.
+
+### The Luau sandbox {#the-luau-sandbox}
+
+Handlers run in a fresh, isolated Luau VM built for **untrusted code**:
+
+- **Only safe libraries** are loaded — `string`, `math`, `table`, and Luau's
+  base library (`print`, `pairs`, `pcall`, `tostring`, …). There is **no `os`,
+  no `io`, no network**, and **no `require` / `load` / `loadstring` / `dofile`**
+  — a script cannot touch the filesystem, spawn processes (except through
+  `git()`), open sockets, or load more code.
+- **Hard limits**: a ~64 MB memory ceiling (an allocation past it aborts the
+  script) and a wall-clock time budget of a few seconds (a runaway loop is
+  killed). Either limit, any Lua compile/runtime error, or a missing/ill-typed
+  handler surfaces as the command **failing** — GitCat reports the error.
+- Each invocation gets a **fresh VM**; no state leaks between runs.
+
+> The sandbox constrains what a script *can reach*, but `git()` can still read
+> **and write** the repo — the same trust boundary as a shell `run`. Install a
+> scripted plugin only if you'd run its code yourself.
+
+### Mutating handlers must set `mutates`
+
+Just like a shell command, a Luau handler that **changes the repository** (any
+`git()` call that writes — `commit`, `reset`, `checkout`, `restore`, …) must set
+**`"mutates": true`** on its command/hook. GitCat then takes a safety snapshot
+before running it, so the change is covered by global **Undo** (and a mutating
+command that can't be snapshotted is refused rather than run unprotected). GitCat
+can't infer this from your script, so **always declare it** — a mutating handler
+that omits `mutates` runs **outside** Undo. See
+[Mutating actions & Undo](#mutating-actions-undo).
 
 ## Tama skins {#tama-skins}
 

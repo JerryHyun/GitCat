@@ -46,6 +46,12 @@ const SCHEMA_VERSION: u32 = 1;
 /// handing them to the JSON parser.
 const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
 
+/// Hard cap on a plugin's main `.lua` script (PER-56). Like a `plugin.json`, a
+/// Luau handler file is a small hand-authored source document; anything past a
+/// quarter-megabyte is not a legitimate plugin script, so [`read_plugin_lua`]
+/// rejects it before reading the bytes into memory to hand to the Luau VM.
+const MAX_LUA_BYTES: u64 = 256 * 1024;
+
 /// The eight built-in Tama pose keys — an EXACT mirror of the frontend's
 /// `TAMA_IMG` map (`src/legacy/main.ts`). A plugin skin may only OVERRIDE one
 /// of these poses; any other key is rejected at [`validate_manifest`] time
@@ -117,20 +123,34 @@ pub enum PluginEvent {
     Undo,
 }
 
-/// One user-invokable command a plugin contributes. `run` is an external
-/// command TEMPLATE (user-authored shell text — see the module doc's trust
-/// note); the executor expands its placeholders and runs it. `context`/
-/// `placement` both `#[serde(default)]` so a minimal manifest command needs
-/// only `id`/`label`/`run`.
+/// One user-invokable command a plugin contributes. A command runs EITHER an
+/// external shell `run` TEMPLATE (user-authored shell text — see the module
+/// doc's trust note; the executor expands its placeholders and runs it) OR an
+/// embedded Luau `handler` (PER-56: a named function in the plugin's main `.lua`
+/// file, run in a sandboxed VM). Exactly one of the two is declared — see
+/// [`validate_manifest`]. `context`/`placement` both `#[serde(default)]` so a
+/// minimal manifest command needs only `id`/`label` plus its `run`/`handler`.
 #[derive(Serialize, Deserialize, Clone, Debug, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginCommand {
     pub id: String,
     pub label: String,
-    /// External command TEMPLATE. Validated non-empty at install time (see
-    /// [`validate_manifest`]); NOT otherwise sanitized — same trust boundary
-    /// as `tool_settings.rs`'s diff/merge `cmd`.
-    pub run: String,
+    /// External command TEMPLATE (the shell path). `Option` + `#[serde(default)]`
+    /// so a `handler`-based (Luau) command may omit it; [`validate_manifest`]
+    /// enforces that EXACTLY ONE of a non-empty `run` or a non-empty `handler` is
+    /// present. NOT otherwise sanitized — same trust boundary as
+    /// `tool_settings.rs`'s diff/merge `cmd`.
+    #[serde(default)]
+    pub run: Option<String>,
+    /// The name of a Luau handler function (the scripting path, PER-56) exported
+    /// by the plugin's main `.lua` file (see [`Plugin::lua`]). `Option` +
+    /// `#[serde(default)]`: a shell `run` command omits it, and exactly one of
+    /// `run`/`handler` must be declared. A command with a `handler` requires the
+    /// plugin to declare a `lua` file (both enforced in [`validate_manifest`]).
+    /// The executor loads the script and calls this function via
+    /// `plugin_lua::run_lua_handler`.
+    #[serde(default)]
+    pub handler: Option<String>,
     #[serde(default)]
     pub context: PluginContext,
     #[serde(default)]
@@ -150,13 +170,25 @@ pub struct PluginCommand {
     pub mutates: bool,
 }
 
-/// One lifecycle hook: run `run` (an external command TEMPLATE, same trust
-/// boundary as [`PluginCommand::run`]) when `event` fires.
+/// One lifecycle hook fired when `event` occurs. Like a [`PluginCommand`], a
+/// hook runs EITHER an external shell `run` TEMPLATE (same trust boundary as
+/// [`PluginCommand::run`]) OR an embedded Luau `handler` (PER-56). Exactly one
+/// of the two is declared — see [`validate_manifest`].
 #[derive(Serialize, Deserialize, Clone, Debug, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginHook {
     pub event: PluginEvent,
-    pub run: String,
+    /// External command TEMPLATE (the shell path). `Option` + `#[serde(default)]`;
+    /// exactly one of a non-empty `run` or a non-empty `handler` must be present
+    /// (see [`validate_manifest`]).
+    #[serde(default)]
+    pub run: Option<String>,
+    /// The name of a Luau handler function (PER-56) exported by the plugin's main
+    /// `.lua` file (see [`Plugin::lua`]). `Option` + `#[serde(default)]`; a hook
+    /// declaring a `handler` requires the plugin to declare a `lua` file. Run via
+    /// `plugin_lua::run_lua_handler` on the hook timeout.
+    #[serde(default)]
+    pub handler: Option<String>,
     /// Does this hook CHANGE the repository? Same semantics as
     /// [`PluginCommand::mutates`] (default `false` => pure observer, no
     /// snapshot). A `mutates: true` hook is snapshotted before it runs so its
@@ -274,6 +306,17 @@ pub struct Plugin {
     /// still loads (absent => no skin). See [`PluginTama`].
     #[serde(default)]
     pub tama: Option<PluginTama>,
+    /// The plugin's main Luau SCRIPT (PER-56) — a path, RELATIVE to the plugin's
+    /// own [`dir`](Plugin::dir), to a `.lua` file that `return`s a table of named
+    /// handler functions. A command/hook names one of those functions via its
+    /// `handler` field. `#[serde(default)]` + `Option` so every non-scripting
+    /// (pre-PER-56) manifest still loads (absent => no Luau). [`validate_manifest`]
+    /// REQUIRES this whenever any command/hook declares a `handler`; the source is
+    /// loaded — behind the SAME canonicalizing path-containment guard the Tama skin
+    /// loader uses (see [`read_plugin_lua`]/[`asset_is_within_dir`]) — only from
+    /// strictly inside the plugin dir.
+    #[serde(default)]
+    pub lua: Option<String>,
     /// The plugin's on-disk SOURCE directory (the canonicalized PARENT of its
     /// `plugin.json`), captured at install time so a later skin load knows
     /// where to resolve relative asset paths. `#[serde(default)]` + `Option`:
@@ -388,9 +431,10 @@ fn is_valid_id(id: &str) -> bool {
 }
 
 /// Validate a parsed manifest's well-formedness: valid `id` charset, non-empty
-/// name/version, and every command's `run` non-empty. Does NOT check id
-/// uniqueness (that needs the registry — see [`install_from`]). `pub` so the
-/// tests exercise it directly.
+/// name/version, and every command/hook declaring EXACTLY ONE of a non-empty
+/// shell `run` or a non-empty Luau `handler` (PER-56) — plus a `lua` file
+/// whenever any `handler` is used. Does NOT check id uniqueness (that needs the
+/// registry — see [`install_from`]). `pub` so the tests exercise it directly.
 pub fn validate_manifest(plugin: &Plugin) -> Result<(), String> {
     if !is_valid_id(&plugin.id) {
         return Err(format!(
@@ -404,9 +448,44 @@ pub fn validate_manifest(plugin: &Plugin) -> Result<(), String> {
     if plugin.version.trim().is_empty() {
         return Err("Plugin manifest is missing a non-empty version.".into());
     }
+    // Each command/hook must declare EXACTLY ONE of a non-empty shell `run` or a
+    // non-empty Luau `handler` (PER-56) — never neither, never both. A `handler`
+    // additionally requires the plugin to ship a `lua` file for it to live in.
+    // `has_lua` gates that requirement once for the whole manifest.
+    let has_lua = plugin.lua.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+    let non_empty = |o: &Option<String>| o.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
     for cmd in &plugin.commands {
-        if cmd.run.trim().is_empty() {
-            return Err(format!("Plugin command {:?} has an empty run command.", cmd.id));
+        let has_run = non_empty(&cmd.run);
+        let has_handler = non_empty(&cmd.handler);
+        if has_run == has_handler {
+            return Err(format!(
+                "Plugin command {:?} must declare exactly one of a non-empty `run` (shell) or a non-empty `handler` (Luau) — {}.",
+                cmd.id,
+                if has_run { "it declares both" } else { "it declares neither" }
+            ));
+        }
+        if has_handler && !has_lua {
+            return Err(format!(
+                "Plugin command {:?} declares a Luau `handler` but the plugin declares no `lua` script file.",
+                cmd.id
+            ));
+        }
+    }
+    for hook in &plugin.hooks {
+        let has_run = non_empty(&hook.run);
+        let has_handler = non_empty(&hook.handler);
+        if has_run == has_handler {
+            return Err(format!(
+                "Plugin hook for event {:?} must declare exactly one of a non-empty `run` (shell) or a non-empty `handler` (Luau) — {}.",
+                hook.event,
+                if has_run { "it declares both" } else { "it declares neither" }
+            ));
+        }
+        if has_handler && !has_lua {
+            return Err(format!(
+                "Plugin hook for event {:?} declares a Luau `handler` but the plugin declares no `lua` script file.",
+                hook.event
+            ));
         }
     }
     // Tama skin (PER-47): every pose key must be a built-in pose, and every
@@ -618,6 +697,97 @@ pub fn find_command(app: &AppHandle<Wry>, plugin_id: &str, command_id: &str) -> 
         .into_iter()
         .find(|p| p.id == plugin_id)
         .and_then(|p| p.commands.into_iter().find(|c| c.id == command_id)))
+}
+
+// ---------------------------------------------------------------------------
+// Luau script loading (PER-56)
+// ---------------------------------------------------------------------------
+
+/// Read a plugin's main Luau script (its [`Plugin::lua`] path, resolved against
+/// its canonicalized [`Plugin::dir`]) behind the SAME canonicalizing path-
+/// containment guard the Tama skin loader uses ([`asset_is_within_dir`]): the
+/// resolved file must canonicalize to somewhere strictly INSIDE the plugin dir
+/// (blocking `..` traversal AND symlink escape), carry a `.lua` extension, be a
+/// regular file, and stay within [`MAX_LUA_BYTES`]. Returns the source string.
+///
+/// Split from [`load_plugin_lua_source`] on `(dir, lua)` rather than a whole
+/// `&Plugin` so the hook executor — which already holds a plugin's dir/lua while
+/// building its job list — can call it without reconstructing a `Plugin`. Every
+/// failure is an `Err` the dispatcher surfaces as the command/hook failing (a
+/// handler with no loadable script cannot run).
+pub fn read_plugin_lua(dir: Option<&str>, lua: Option<&str>) -> Result<String, String> {
+    let dir = dir.ok_or_else(|| "Plugin has no resolvable source directory for its Luau script.".to_string())?;
+    let rel = lua
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Plugin declares no `lua` script file.".to_string())?;
+
+    // String-level safety first (mirrors build_skin): reject an absolute path or
+    // any `..` before touching the filesystem, and require the `.lua` extension.
+    let rel_path = Path::new(rel);
+    if rel_path.is_absolute() || rel.contains("..") {
+        return Err(format!(
+            "Plugin `lua` path {rel:?} is unsafe — it must be a relative path inside the plugin dir (no leading '/' and no '..')."
+        ));
+    }
+    if rel_path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() != Some("lua") {
+        return Err(format!("Plugin `lua` path {rel:?} must name a `.lua` file."));
+    }
+
+    // Canonicalize the dir and the resolved file, then enforce containment — the
+    // single SECURITY-CRITICAL check (see asset_is_within_dir's doc) that catches
+    // both traversal and a symlink pointing outside the plugin dir.
+    let canonical_dir = std::fs::canonicalize(dir)
+        .map_err(|e| format!("Cannot resolve plugin source dir {dir:?}: {e}"))?;
+    let resolved = canonical_dir.join(rel_path);
+    let canonical_file = std::fs::canonicalize(&resolved)
+        .map_err(|e| format!("Cannot read plugin Luau script {}: {e}", resolved.display()))?;
+    if !asset_is_within_dir(&canonical_dir, &canonical_file) {
+        return Err(format!("Plugin Luau script {rel:?} escapes the plugin directory — refusing to load it."));
+    }
+
+    let meta = std::fs::metadata(&canonical_file)
+        .map_err(|e| format!("Cannot read plugin Luau script {}: {e}", canonical_file.display()))?;
+    if !meta.is_file() {
+        return Err(format!("Plugin Luau script {} is not a regular file.", canonical_file.display()));
+    }
+    if meta.len() > MAX_LUA_BYTES {
+        return Err(format!(
+            "Plugin Luau script {} is too large ({} bytes; the limit is {MAX_LUA_BYTES} bytes).",
+            canonical_file.display(),
+            meta.len()
+        ));
+    }
+    // Read through a hard byte cap (belt-and-suspenders against a TOCTOU grow),
+    // exactly like read_and_validate_manifest.
+    use std::io::Read;
+    let file = std::fs::File::open(&canonical_file)
+        .map_err(|e| format!("Cannot read plugin Luau script {}: {e}", canonical_file.display()))?;
+    let mut src = String::new();
+    file.take(MAX_LUA_BYTES + 1)
+        .read_to_string(&mut src)
+        .map_err(|e| format!("Cannot read plugin Luau script {}: {e}", canonical_file.display()))?;
+    if src.len() as u64 > MAX_LUA_BYTES {
+        return Err(format!("Plugin Luau script {} is too large (limit {MAX_LUA_BYTES} bytes).", canonical_file.display()));
+    }
+    Ok(src)
+}
+
+/// Convenience wrapper over [`read_plugin_lua`] taking a whole [`Plugin`]. `pub`
+/// for direct unit testing and for the executor's command path.
+pub fn load_plugin_lua_source(plugin: &Plugin) -> Result<String, String> {
+    read_plugin_lua(plugin.dir.as_deref(), plugin.lua.as_deref())
+}
+
+/// Load the main Luau script of the plugin with `plugin_id` from the registry —
+/// the executor's command path uses this to fetch the source for a `handler`
+/// command. Errors if the plugin is missing or its script can't be safely read.
+pub fn plugin_lua_source(app: &AppHandle<Wry>, plugin_id: &str) -> Result<String, String> {
+    let plugin = load_plugins(app)?
+        .into_iter()
+        .find(|p| p.id == plugin_id)
+        .ok_or_else(|| format!("No plugin with id {plugin_id:?} is installed."))?;
+    load_plugin_lua_source(&plugin)
 }
 
 // ---------------------------------------------------------------------------
@@ -859,14 +1029,21 @@ mod tests {
             commands: vec![PluginCommand {
                 id: "greet".into(),
                 label: "Greet".into(),
-                run: "echo hi".into(),
+                run: Some("echo hi".into()),
+                handler: None,
                 context: PluginContext::Commit,
                 placement: PluginPlacement::Both,
                 mutates: false,
             }],
-            hooks: vec![PluginHook { event: PluginEvent::PostMutation, run: "echo done".into(), mutates: false }],
+            hooks: vec![PluginHook {
+                event: PluginEvent::PostMutation,
+                run: Some("echo done".into()),
+                handler: None,
+                mutates: false,
+            }],
             panels: vec![],
             tama: None,
+            lua: None,
             dir: None,
         }
     }
@@ -1005,7 +1182,8 @@ mod tests {
         assert!(validate_manifest(&p).unwrap_err().contains("version"));
 
         let mut p = sample_plugin("ok");
-        p.commands[0].run = "  ".into();
+        p.commands[0].run = Some("  ".into());
+        // An empty run with no handler => "neither" branch of the exactly-one rule.
         assert!(validate_manifest(&p).unwrap_err().contains("run"));
     }
 
@@ -1637,6 +1815,161 @@ mod tests {
         }];
         let err = validate_manifest(&p).unwrap_err();
         assert!(err.contains("empty label"), "got: {err}");
+    }
+
+    // -- Luau scripting (PER-56) ---------------------------------------------
+
+    #[test]
+    fn command_and_hook_must_declare_exactly_one_of_run_or_handler() {
+        // A command declaring NEITHER run nor handler => rejected ("neither").
+        let mut p = sample_plugin("lua");
+        p.commands[0].run = None;
+        p.commands[0].handler = None;
+        let err = validate_manifest(&p).unwrap_err();
+        assert!(err.contains("exactly one") && err.contains("neither"), "got: {err}");
+
+        // A command declaring BOTH => rejected ("both"). (lua present so the
+        // handler-requires-lua rule isn't what trips it.)
+        let mut p = sample_plugin("lua");
+        p.lua = Some("main.lua".into());
+        p.commands[0].run = Some("echo hi".into());
+        p.commands[0].handler = Some("greet".into());
+        let err = validate_manifest(&p).unwrap_err();
+        assert!(err.contains("exactly one") && err.contains("both"), "got: {err}");
+
+        // A HOOK declaring both is rejected the same way.
+        let mut p = sample_plugin("lua");
+        p.lua = Some("main.lua".into());
+        p.hooks[0].run = Some("echo done".into());
+        p.hooks[0].handler = Some("onEvent".into());
+        let err = validate_manifest(&p).unwrap_err();
+        assert!(err.contains("exactly one") && err.contains("both"), "got: {err}");
+
+        // The valid shapes: a pure-run command (the sample default) and a
+        // pure-handler command backed by a lua file both pass.
+        let p = sample_plugin("lua");
+        validate_manifest(&p).expect("a pure-run command must validate");
+
+        let mut p = sample_plugin("lua");
+        p.lua = Some("main.lua".into());
+        p.commands[0].run = None;
+        p.commands[0].handler = Some("greet".into());
+        p.hooks[0].run = None;
+        p.hooks[0].handler = Some("onEvent".into());
+        validate_manifest(&p).expect("pure-handler command+hook with a lua file must validate");
+    }
+
+    #[test]
+    fn a_handler_without_a_lua_file_is_rejected() {
+        // A command with a handler but the plugin declares no `lua` => rejected.
+        let mut p = sample_plugin("lua");
+        p.lua = None;
+        p.commands[0].run = None;
+        p.commands[0].handler = Some("greet".into());
+        let err = validate_manifest(&p).unwrap_err();
+        assert!(err.contains("handler") && err.contains("no `lua`"), "got: {err}");
+
+        // Same for a hook.
+        let mut p = sample_plugin("lua");
+        p.lua = None;
+        p.hooks[0].run = None;
+        p.hooks[0].handler = Some("onEvent".into());
+        let err = validate_manifest(&p).unwrap_err();
+        assert!(err.contains("handler") && err.contains("no `lua`"), "got: {err}");
+    }
+
+    #[test]
+    fn manifest_with_a_lua_handler_parses_validates_and_round_trips() {
+        // A scripting manifest (a `lua` file + a handler command, no run) must
+        // deserialize, validate, and round-trip through save/load intact; a
+        // pre-PER-56 manifest (run present, no lua/handler) must still load with
+        // run=Some/handler=None/lua=None (back-compat).
+        let dir = temp_dir("lua-manifest");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE_NAME);
+        std::fs::write(
+            &path,
+            r#"{"version":1,"plugins":[
+                {"id":"scripted","name":"Scripted","version":"1.0.0","lua":"main.lua",
+                 "commands":[{"id":"go","label":"Go","handler":"onGo"}],
+                 "hooks":[{"event":"repo-opened","handler":"onOpen"}]},
+                {"id":"classic","name":"Classic","version":"1.0.0",
+                 "commands":[{"id":"sh","label":"Sh","run":"echo hi"}]}
+            ]}"#,
+        )
+        .unwrap();
+
+        let loaded = load_from(&path).expect("a lua-handler manifest must deserialize");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].lua.as_deref(), Some("main.lua"));
+        assert_eq!(loaded[0].commands[0].handler.as_deref(), Some("onGo"));
+        assert!(loaded[0].commands[0].run.is_none(), "a handler command omits run");
+        assert_eq!(loaded[0].hooks[0].handler.as_deref(), Some("onOpen"));
+        validate_manifest(&loaded[0]).expect("a valid scripting manifest must validate");
+
+        // Back-compat: the classic run-only plugin loads with run=Some, handler/lua None.
+        assert_eq!(loaded[1].lua, None);
+        assert_eq!(loaded[1].commands[0].run.as_deref(), Some("echo hi"));
+        assert!(loaded[1].commands[0].handler.is_none());
+        validate_manifest(&loaded[1]).expect("a classic run-only manifest must still validate");
+
+        // Round-trip preserves the scripting fields.
+        save_to(&path, &loaded).unwrap();
+        let again = load_from(&path).expect("round-trip load");
+        assert_eq!(again[0].lua.as_deref(), Some("main.lua"));
+        assert_eq!(again[0].commands[0].handler.as_deref(), Some("onGo"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_plugin_lua_reads_inside_and_rejects_escape_and_bad_extension() {
+        let base = temp_dir("read-lua");
+        let plugin_dir = base.join("plugin");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(plugin_dir.join("main.lua"), b"return { go = function() end }").unwrap();
+        // A secret file OUTSIDE the plugin dir, for the escape checks.
+        std::fs::write(base.join("secret.lua"), b"return {}").unwrap();
+        let canon = std::fs::canonicalize(&plugin_dir).unwrap().to_string_lossy().into_owned();
+
+        // Inside => the source is returned.
+        let src = read_plugin_lua(Some(&canon), Some("main.lua")).expect("an in-dir .lua must load");
+        assert!(src.contains("go = function"), "unexpected source: {src}");
+
+        // A `..` traversal is rejected at the string level (before any FS touch).
+        let err = read_plugin_lua(Some(&canon), Some("../secret.lua")).unwrap_err();
+        assert!(err.contains("unsafe"), "a .. path must be rejected, got: {err}");
+
+        // A non-.lua extension is rejected.
+        std::fs::write(plugin_dir.join("main.txt"), b"nope").unwrap();
+        let err = read_plugin_lua(Some(&canon), Some("main.txt")).unwrap_err();
+        assert!(err.contains(".lua"), "a non-.lua file must be rejected, got: {err}");
+
+        // No dir / no lua => descriptive errors, never a panic.
+        assert!(read_plugin_lua(None, Some("main.lua")).is_err());
+        assert!(read_plugin_lua(Some(&canon), None).is_err());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_plugin_lua_rejects_a_symlink_escaping_the_plugin_dir() {
+        // A symlink INSIDE the plugin dir pointing at a .lua OUTSIDE it passes the
+        // string checks but must be rejected by the canonicalizing containment
+        // guard — nothing outside the dir is ever read.
+        let base = temp_dir("read-lua-symlink");
+        let plugin_dir = base.join("plugin");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        let secret = base.join("secret.lua");
+        std::fs::write(&secret, b"return {}").unwrap();
+        std::os::unix::fs::symlink(&secret, plugin_dir.join("escape.lua")).unwrap();
+        let canon = std::fs::canonicalize(&plugin_dir).unwrap().to_string_lossy().into_owned();
+
+        let err = read_plugin_lua(Some(&canon), Some("escape.lua")).unwrap_err();
+        assert!(err.contains("escapes"), "a symlink escaping the dir must be rejected, got: {err}");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
 

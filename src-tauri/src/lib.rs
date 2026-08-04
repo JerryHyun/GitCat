@@ -38,6 +38,7 @@ pub mod safety; // provided by the Safety-Manager component (exposes snapshot(&R
 pub mod submodule; // M1 status (read-only) + M2 init/update + M3 add/sync + M4 deinit/remove
 pub mod terminal; // "Open Terminal": a real PTY-backed shell embedded in GitCat's own UI
 pub mod plugin_exec; // PER-40: plugin command executor + placeholder grammar (declarative, external-process plugins)
+pub mod plugin_lua; // PER-56: embedded Luau plugin scripting runtime (sandboxed, curated host API)
 pub mod plugin_registry; // PER-39: app-level plugin registry (plugins.json under app_config_dir) + install/enable/remove CRUD
 pub mod tool_settings; // backlog #12: external diff/merge tool settings + delegate entirely to `git difftool`/`git mergetool`
 pub mod trust; // auto-trust WSL/UNC-path repos libgit2 refuses as "dubious ownership"
