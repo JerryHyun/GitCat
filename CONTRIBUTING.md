@@ -36,6 +36,14 @@ If you're about to touch one of these files and it looks unfamiliar or sprawling
 
 This project is also very young — every commit so far is from July 2026 — so "history" here means days, not years. The technique still holds; there's just less of it yet.
 
+One setup step keeps `git blame` honest: this repo lists its non-semantic bulk commits (a line-ending normalization, for instance) in `.git-blame-ignore-revs`, so blame can point at whoever actually wrote a line instead of at the commit that reformatted it. GitHub applies that file to its own blame view automatically — nothing to set up for the web view. Locally, opt in once per clone:
+
+```bash
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
+One catch worth knowing before you set it: the config is repo-wide, but the file is only present on commits that have it. Check out anything older — an earlier tag, a bisect step, a long-lived branch cut before it landed — and every `git blame` in that worktree fails outright with `fatal: could not open object name list: .git-blame-ignore-revs` rather than falling back. If that happens, `git config --unset blame.ignoreRevsFile` restores plain blame immediately.
+
 ## Where things live
 
 - `src-tauri/src/` — Rust core. `git2` for reads, the `git` CLI for writes (every mutation snapshots first via the Safety Manager). One file per feature area (`git_bisect.rs`, `submodule.rs`, `tool_settings.rs`, …), each with its own module-doc comment explaining its own design decisions.

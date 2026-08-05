@@ -1,0 +1,26 @@
+# Commits that touched a lot of lines without changing any code — so that
+# `git blame` keeps pointing at whoever actually wrote each line.
+#
+# GitHub reads this file automatically in its own blame view. To get the same
+# locally, once per clone:
+#
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Only add a commit here if it is genuinely non-semantic (a reformat, a line-
+# ending normalization, a bulk rename). Never a behaviour change.
+#
+# Two things to know before editing, both verified against this repo:
+#
+#   * FULL 40-character sha only. An abbreviated one makes blame fail outright
+#     ("fatal: invalid object name"), for everyone who has the config above set.
+#
+#   * A sha that isn't in the repo is silently ignored — no warning, blame just
+#     quietly stops skipping that commit. So if an entry below ever gets
+#     rewritten (a squash or rebase merge gives it a new sha), this file goes
+#     back to doing nothing and nothing tells you. Re-point it.
+
+# Normalize line endings to LF (introduced .gitattributes). Rewrote every line
+# of the Rust files under src-tauri/ that had been committed with CRLF, by
+# stripping CRs and nothing else, so it would otherwise have taken over blame
+# for all of them.
+4d2d8266026b77e39c9570dd576fefdc359d5e8f
