@@ -192,8 +192,6 @@ jobs:
       # to `pnpm store path` to locate what to cache (same as ci.yml).
       - name: Install pnpm
         uses: pnpm/action-setup@v6
-        with:
-          version: 10
 
       - name: Install Node
         uses: actions/setup-node@v6
