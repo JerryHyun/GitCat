@@ -21,3 +21,10 @@
 *.icns binary
 *.mp4  binary
 *.webm binary
+
+# src/ipc/bindings.ts is written by tauri-specta and never hand-edited (see
+# CONTRIBUTING.md), so GitHub collapses it by default in review diffs — a
+# regeneration then can't bury the real changes under it. The same flag also
+# drops the file from the repo's language statistics and from GitHub code
+# search, which is the price. To git itself it stays a normal text file.
+src/ipc/bindings.ts linguist-generated=true
