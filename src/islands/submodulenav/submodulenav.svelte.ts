@@ -119,11 +119,22 @@ class SubmoduleNavState {
   // Rebuild the breadcrumb + sibling tabs for wherever the app currently is.
   // openRepo() calls this after it has set NAV_STACK (from git's superproject
   // chain), so it always reflects the real location — never on a timer.
-  async refresh(repo: string): Promise<void> {
+  //
+  // `repo` is nullable because this can be called before any repo is open —
+  // priming the strip at mount is a legitimate reason to call it with nothing.
+  // There is nothing to navigate then, so it resets to the empty strip, the same
+  // state `reset()` leaves it in when a repo is closed.
+  async refresh(repo: string | null): Promise<void> {
     if (!IN_TAURI) {
       // Design-mode preview: a superproject sitting on three demo submodules.
       this.path = [{ name: "gitcat", absolutePath: "/demo/gitcat", current: true }];
       this.siblings = DEMO_SIBLINGS;
+      return;
+    }
+    // Below the design-mode branch on purpose: there is never a repo in design
+    // mode, so guarding first would empty the browser preview.
+    if (!repo) {
+      this.reset();
       return;
     }
     const stack = this.stack().slice();

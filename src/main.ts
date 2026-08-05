@@ -136,10 +136,16 @@ mount(Sidebar, { target: document.getElementById("sidebarRefs")! });
 sidebarCtrl.refresh(bridge.CUR_REPO as unknown as string);
 
 // Submodule navigator strip (grid row under the topbar). legacy/main.ts's boot
-// open / navigateToRepo / pickRepo call submoduleNavCtrl.refresh() themselves,
-// but seed it here too for the case a repo is already open at mount time.
+// open / navigateToRepo / pickRepo each call submoduleNavCtrl.refresh()
+// themselves; this seed only puts the strip in a defined state before the first
+// of those lands.
 mount(SubmoduleNav, { target: document.getElementById("submoduleNavMount")! });
-submoduleNavCtrl.refresh(bridge.CUR_REPO as unknown as string);
+// Handed over as-is rather than cast to `string` like the CUR_REPO reads
+// elsewhere in this file: mount runs before any repo is open (legacy/main.ts
+// starts openRepo() without awaiting it, and openRepo awaits before it assigns
+// CUR_REPO), so on a real launch this reads null. refresh() takes
+// `string | null` and resets to the empty strip for it.
+submoduleNavCtrl.refresh(bridge.CUR_REPO);
 
 // Reflog/Rerere/Plumbing: on-demand modals now (Tools menu / ⌘K — see
 // menu.rs / cmdk.svelte.ts), each opened via its own controller's show()
