@@ -420,6 +420,44 @@ if (IN_TAURI) {
   }, AUTO_FETCH_CHECK_MS);
 }
 
+// Background git maintenance (Settings ▸ General ▸ "Run git maintenance … when
+// idle", default OFF). Unlike auto-fetch above, this is IDLE-gated, not on a
+// fixed cadence: it only fires once the user has left the app alone for a while,
+// and at most once an hour, so it never competes with active work. `git
+// maintenance run --auto` (see maintenance.rs) is cheap when nothing is due,
+// touches no remote/credential, and changes no history — purely object-database
+// housekeeping (commit-graph/gc/repack) that keeps the graph walk + status fast.
+// Silent + best-effort like the auto-fetch/poll loops: a failure (e.g. a
+// concurrent git process holding the lock) is logged and simply retried later.
+const MAINTENANCE_CHECK_MS = 120_000; // re-evaluate every 2 min
+const MAINTENANCE_IDLE_MS = 5 * 60_000; // "idle" = no real user input for 5 min
+const MAINTENANCE_MIN_INTERVAL_MS = 60 * 60_000; // at most once an hour
+let lastUserActivityAt = Date.now();
+let lastMaintenanceAt = 0;
+// Any real user input resets the idle clock. Passive + capture so it never costs
+// anything on the input path and still counts input handled inside the islands.
+for (const ev of ["pointerdown", "keydown", "wheel", "pointermove"] as const) {
+  window.addEventListener(ev, () => (lastUserActivityAt = Date.now()), { passive: true, capture: true });
+}
+if (IN_TAURI) {
+  setInterval(async () => {
+    const path = bridge.CUR_REPO as unknown as string | null;
+    if (!path) return;
+    const s = loadSettings();
+    if (!s.autoMaintenanceEnabled) return;
+    const now = Date.now();
+    if (now - lastUserActivityAt < MAINTENANCE_IDLE_MS) return; // still active — leave the repo alone
+    if (now - lastMaintenanceAt < MAINTENANCE_MIN_INTERVAL_MS) return; // ran recently
+    lastMaintenanceAt = now;
+    try {
+      const res = await commands.runGitMaintenance(path);
+      if (res.status !== "ok") console.warn("git maintenance:", res.error);
+    } catch (e) {
+      console.error("git maintenance failed unexpectedly", e);
+    }
+  }, MAINTENANCE_CHECK_MS);
+}
+
 // Manual refresh (topbar button) — the explicit escape hatch for exactly
 // the gap the fix above closes: if a user ever suspects the graph is out
 // of sync with the repo on disk, this forces the same full resync

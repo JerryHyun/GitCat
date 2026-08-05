@@ -23,6 +23,7 @@ pub mod git_rebase; // M6 (stage 2): linear rebase onto a target + continue / sk
 pub mod git_revert; // M6 (stage 3): revert a single commit onto HEAD + continue / abort
 pub mod identity; // Setup wizard: repo-local git identity (user.name/user.email) check + fix
 pub mod layout;
+pub mod maintenance; // optional background `git maintenance run --auto`, triggered by the frontend's idle timer (opt-in, off by default)
 pub mod menu; // native app menu (File/Edit/View/Window/Help)
 pub mod model;
 pub mod patch; // format-patch export + git am --3way apply (with am's own continue/skip/abort)
@@ -117,6 +118,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
         // calls it.
         git_remote::fetch,
         git_remote::pull,
+        // Optional background repo housekeeping (`git maintenance run --auto`),
+        // fired by the frontend's idle timer when autoMaintenanceEnabled is on.
+        maintenance::run_git_maintenance,
         // Streaming twins of fetch/pull: same behaviour, but force git
         // --progress and emit "sync-progress" events so the topbar/menu
         // Fetch/Pull can show a live progress modal (see doFetch/doPull).
