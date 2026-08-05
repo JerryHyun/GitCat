@@ -1,14 +1,18 @@
 <script lang="ts">
-  import { sidebarCtrl, submoduleAction, submoduleCanOpen, SUBMODULES_ALL, SUBMODULES_SYNC_ALL, buildRefRows, refFolderPaths, stripRemote } from "./sidebar.svelte.ts";
+  import { sidebarCtrl, submoduleAction, submoduleCanOpen, SUBMODULES_ALL, SUBMODULES_SYNC_ALL, buildRefRows, remoteHead, compareRefLabels } from "./sidebar.svelte.ts";
+  import type { RefSection } from "./sidebar.svelte.ts";
   import { remotesCtrl } from "../remotes/remotes.svelte.ts";
   import { dashboardCtrl } from "../dashboard/dashboard.svelte.ts";
   import { forcePushCtrl } from "../forcepush/forcepush.svelte.ts";
   import { snapshotPreviewCtrl } from "../snapshotpreview/snapshotpreview.svelte.ts";
   import * as bridge from "../../legacy/bridge";
-  import type { SimpleRef, SubmoduleInfo } from "../../ipc/bindings";
+  import type { SubmoduleInfo } from "../../ipc/bindings";
   import Folder from "@lucide/svelte/icons/folder";
   import Zap from "@lucide/svelte/icons/zap";
   import Clipboard from "@lucide/svelte/icons/clipboard";
+  import ChevronsDownUp from "@lucide/svelte/icons/chevrons-down-up";
+  import ChevronsUpDown from "@lucide/svelte/icons/chevrons-up-down";
+  import Cloud from "@lucide/svelte/icons/cloud";
 
   let menuEl: HTMLDivElement | undefined = $state();
   let newBranchEl: HTMLInputElement | undefined = $state();
@@ -35,9 +39,9 @@
     }
     // A tree leaf renders only its own last segment (see buildRefRows), so its
     // full ref lives in data-fullname — show the tip whenever that differs from
-    // what's on screen, not just when the text is ellipsized. Without this, the
-    // folder grouping would have quietly removed the only way to read a
-    // branch's full name (a feature the README calls out explicitly).
+    // what's on screen, not just when the text is ellipsized. Without this the
+    // folder grouping would have left no way at all to read a ref's full name
+    // from the sidebar.
     const full = el.dataset.fullname ?? "";
     const shown = (el.textContent ?? "").trim();
     const ellipsized = el.scrollWidth > el.clientWidth + 1;
@@ -151,26 +155,44 @@
   // tree springs back exactly as it was once the box is emptied.
   const filterActive = $derived(sidebarCtrl.filter.trim() !== "");
 
+  // Each section's folder paths, derived ONCE per ref-list change. Both the
+  // collapse-all button's presence and its direction need this list, and
+  // recomputing it inline in the markup would re-split every ref name on every
+  // render of the summary row — cheap per ref, but the remote list is as long as
+  // the repo has remote-tracking branches.
+  const localFolderPaths = $derived(sidebarCtrl.folderPaths("local"));
+  const remoteFolderPaths = $derived(sidebarCtrl.folderPaths("remote"));
+  const tagFolderPaths = $derived(sidebarCtrl.folderPaths("tag"));
+
   // Whether EVERY folder of a section is currently folded — drives the
   // collapse-all button's direction and label, so one control does both jobs
   // instead of two competing buttons.
-  function allFolded(paths: string[], section: "local" | "remote"): boolean {
+  //
+  // Read alongside `filterActive`: a typed filter force-expands every folder for
+  // rendering WITHOUT touching the stored state, so while one is active this
+  // predicate describes something the screen isn't showing. That's why the
+  // collapse-all buttons hide entirely while filtering — offering "Expand all"
+  // over an already-expanded tree would be a lie, and clicking it would quietly
+  // overwrite the collapse state the user gets back when they clear the box.
+  function allFolded(paths: string[], section: RefSection): boolean {
     return paths.length > 0 && paths.every((p) => sidebarCtrl.isFolderCollapsed(section, p));
   }
-  const localAllFolded = $derived(allFolded(refFolderPaths(sidebarCtrl.locals, (b) => b.name), "local"));
-  const remoteAllFolded = $derived(allFolded(refFolderPaths(sidebarCtrl.remotes, (r) => stripRemote(r.name)), "remote"));
+  const localAllFolded = $derived(allFolded(localFolderPaths, "local"));
+  const remoteAllFolded = $derived(allFolded(remoteFolderPaths, "remote"));
+  const tagAllFolded = $derived(allFolded(tagFolderPaths, "tag"));
 
-  // Group remotes by their prefix before the first "/" (mirrors the legacy
-  // remote-head divider: a new header whenever the top-level name changes).
-  function remoteGroups(remotes: SimpleRef[]): { head: string; items: SimpleRef[] }[] {
-    const out: { head: string; items: SimpleRef[] }[] = [];
-    for (const r of remotes) {
-      const head = r.name.split("/")[0];
-      const last = out[out.length - 1];
-      if (last && last.head === head) last.items.push(r);
-      else out.push({ head, items: [r] });
-    }
-    return out;
+  // Lane colour for a remote branch's dot, keyed by WHICH REMOTE it belongs to,
+  // so every `origin/*` row shares one colour and every `upstream/*` row
+  // another. Derived from the ref's own name against the remotes sorted the same
+  // way the tree renders them, so colour order and display order agree whatever
+  // order the backend enumerated them in.
+  const remoteHeads = $derived(
+    [...new Set(sidebarCtrl.remotes.map((r) => remoteHead(r.name)).filter((h): h is string => h !== null))].sort(compareRefLabels),
+  );
+  function remoteColorIndex(name: string): number {
+    const head = remoteHead(name);
+    const i = head === null ? -1 : remoteHeads.indexOf(head);
+    return (i < 0 ? 0 : i) % 7;
   }
 
   // "not-initialized" -> "not initialized" — display the raw backend status
@@ -242,7 +264,7 @@
   <details class="ref-group">
     <summary
       ><span class="tw">&#9656;</span>Local<span class="count" id="cntLocal">{sidebarCtrl.locals.length}</span>
-      {#if sidebarCtrl.hasFolders("local")}
+      {#if localFolderPaths.length > 0 && !filterActive}
         <!-- Fold/unfold every branch folder at once. Mirrors the ⋮ manage-btn's
              placement/look on the Remotes summary: preventDefault stops the
              click from also toggling this <details> open/closed. -->
@@ -254,7 +276,7 @@
             e.preventDefault();
             e.stopPropagation();
             sidebarCtrl.setAllFoldersCollapsed("local", !localAllFolded);
-          }}>{localAllFolded ? "⮩" : "⮧"}</button
+          }}>{#if localAllFolded}<ChevronsUpDown class="ico" size={12} aria-hidden="true" />{:else}<ChevronsDownUp class="ico" size={12} aria-hidden="true" />{/if}</button
         >
       {/if}</summary
     >
@@ -388,7 +410,7 @@
   </details>
   <details class="ref-group">
     <summary
-      ><span class="tw">&#9656;</span>Remote<span class="count" id="cntRemote">{sidebarCtrl.remotes.length}</span>{#if sidebarCtrl.hasFolders("remote")}<button
+      ><span class="tw">&#9656;</span>Remote<span class="count" id="cntRemote">{sidebarCtrl.remotes.length}</span>{#if remoteFolderPaths.length > 0 && !filterActive}<button
           class="manage-btn fold-btn"
           title={remoteAllFolded ? "Expand all branch folders" : "Collapse all branch folders"}
           aria-label={remoteAllFolded ? "Expand all branch folders" : "Collapse all branch folders"}
@@ -396,7 +418,7 @@
             e.preventDefault();
             e.stopPropagation();
             sidebarCtrl.setAllFoldersCollapsed("remote", !remoteAllFolded);
-          }}>{remoteAllFolded ? "⮩" : "⮧"}</button
+          }}>{#if remoteAllFolded}<ChevronsUpDown class="ico" size={12} aria-hidden="true" />{:else}<ChevronsDownUp class="ico" size={12} aria-hidden="true" />{/if}</button
         >{/if}<button
         class="manage-btn"
         title="Manage remotes&#8230;"
@@ -409,14 +431,13 @@
       ></summary
     >
     <div class="ref-list" id="refRemote">
-      {#each remoteGroups(sidebarCtrl.remotes.filter((r) => matches(r.name))) as g, gi (g.head + gi)}
-        <div class="remote-head">&#9729; {g.head}</div>
-        <!-- Grouped by the ref with its remote name stripped (stripRemote), so
-             `origin/feature/x` lands in a `feature` folder rather than a
-             redundant `origin` one nested under the `origin` header above.
-             Folder paths are therefore keyed the same stripped way — see
-             setAllFoldersCollapsed's own remote branch. -->
-        {#each buildRefRows(g.items, (r) => stripRemote(r.name), (p) => sidebarCtrl.isFolderCollapsed("remote", p), filterActive) as row (row.kind + row.path)}
+      <!-- Grouped on the FULL ref name, so a remote is itself the outermost
+           folder and its branches nest under it: `origin` > `feature` >
+           `knotAlg`. Indentation therefore matches containment, and a folder
+           path is `origin/feature` from the start — which is what keeps
+           `feature/` under two different remotes from sharing one collapse
+           state. -->
+      {#each buildRefRows(sidebarCtrl.remotes.filter((r) => matches(r.name)), (r) => r.name, (p) => sidebarCtrl.isFolderCollapsed("remote", p), filterActive) as row (row.kind + row.path)}
           {#if row.kind === "folder"}
             <div
               class="ref-folder"
@@ -428,8 +449,13 @@
               onclick={() => sidebarCtrl.toggleFolder("remote", row.path)}
               onkeydown={(e) => (e.key === "Enter" || e.key === " ") && sidebarCtrl.toggleFolder("remote", row.path)}
             >
-              <span class="tw">&#9656;</span><Folder class="ico" size={12} aria-hidden="true" /><span class="rname">{row.label}</span
-              ><span class="count">{row.count}</span>
+              <!-- A depth-0 folder IS a remote, so it gets the cloud rather than
+                   a generic folder icon. -->
+              <span class="tw">&#9656;</span>{#if row.depth === 0}<Cloud class="ico" size={12} aria-hidden="true" />{:else}<Folder
+                  class="ico"
+                  size={12}
+                  aria-hidden="true"
+                />{/if}<span class="rname">{row.label}</span><span class="count">{row.count}</span>
             </div>
           {:else}
           {@const r = row.item}
@@ -439,7 +465,6 @@
             style="--depth:{row.depth}"
             role="button"
             tabindex="0"
-            data-tip={r.name}
             onclick={(e) => {
               if (sidebarCtrl.busy) return;
               const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -461,7 +486,7 @@
                 sidebarCtrl.toggleBranchVisible(bridge.CUR_REPO as unknown as string, "remote", r.name);
               }}
             />
-            <span class="dot" style="background:var(--l{gi % 7})"></span><span class="rname" data-fullname={r.name}>{row.label}</span>
+            <span class="dot" style="background:var(--l{remoteColorIndex(r.name)})"></span><span class="rname" data-fullname={r.name}>{row.label}</span>
             <button
               class="copy-name"
               title={sidebarCtrl.copiedBranch === r.name ? "Copied!" : "Copy branch name"}
@@ -475,16 +500,47 @@
           </div>
           {/if}
         {/each}
-      {/each}
     </div>
   </details>
   <details class="ref-group">
-    <summary><span class="tw">&#9656;</span>Tags<span class="count" id="cntTags">{sidebarCtrl.tags.length}</span></summary>
+    <summary
+      ><span class="tw">&#9656;</span>Tags<span class="count" id="cntTags">{sidebarCtrl.tags.length}</span>{#if tagFolderPaths.length > 0 && !filterActive}<button
+          class="manage-btn fold-btn"
+          title={tagAllFolded ? "Expand all tag folders" : "Collapse all tag folders"}
+          aria-label={tagAllFolded ? "Expand all tag folders" : "Collapse all tag folders"}
+          onclick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            sidebarCtrl.setAllFoldersCollapsed("tag", !tagAllFolded);
+          }}>{#if tagAllFolded}<ChevronsUpDown class="ico" size={12} aria-hidden="true" />{:else}<ChevronsDownUp class="ico" size={12} aria-hidden="true" />{/if}</button
+        >{/if}</summary
+    >
     <div class="ref-list" id="refTags">
-      {#each sidebarCtrl.tags.filter((t) => matches(t.name)) as t (t.name)}
+      <!-- Same "/"-segmented grouping as the branch lists: tags are just as
+           conventionally path-like (`v1/rc1`, `release/2026-08`), and a repo
+           with a few hundred of them is exactly where a flat list stops being
+           readable. -->
+      {#each buildRefRows(sidebarCtrl.tags.filter((t) => matches(t.name)), (t) => t.name, (p) => sidebarCtrl.isFolderCollapsed("tag", p), filterActive) as row (row.kind + row.path)}
+        {#if row.kind === "folder"}
+          <div
+            class="ref-folder"
+            class:collapsed={row.collapsed}
+            style="--depth:{row.depth}"
+            role="button"
+            tabindex="0"
+            aria-expanded={!row.collapsed}
+            onclick={() => sidebarCtrl.toggleFolder("tag", row.path)}
+            onkeydown={(e) => (e.key === "Enter" || e.key === " ") && sidebarCtrl.toggleFolder("tag", row.path)}
+          >
+            <span class="tw">&#9656;</span><Folder class="ico" size={12} aria-hidden="true" /><span class="rname">{row.label}</span
+            ><span class="count">{row.count}</span>
+          </div>
+        {:else}
+        {@const t = row.item}
         <div
           class="ref-item"
           class:busy={sidebarCtrl.busy}
+          style="--depth:{row.depth}"
           data-tag={t.name}
           role="button"
           tabindex="0"
@@ -494,7 +550,7 @@
             if (!sidebarCtrl.busy) sidebarCtrl.openTagMenu(t.name, e.currentTarget as HTMLElement);
           }}
         >
-          <span class="rname">{t.name}</span>
+          <span class="rname" data-fullname={t.name}>{row.label}</span>
           {#if sidebarCtrl.busyTarget === t.name}
             <span class="spinner"></span>
           {/if}
@@ -509,6 +565,7 @@
             }}>&#8942;</button
           >
         </div>
+        {/if}
       {/each}
       {#if sidebarCtrl.newTagOpen}
         <div class="nb-form" class:busy={sidebarCtrl.busy} bind:this={newTagFormEl}>

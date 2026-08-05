@@ -77,7 +77,7 @@ import {
   SUBMODULES_SYNC_ALL,
   buildRefRows,
   refFolderPaths,
-  stripRemote,
+  remoteHead,
 } from "./sidebar.svelte.ts";
 
 function ok<T>(data: T): { status: "ok"; data: T } {
@@ -88,6 +88,7 @@ function err(error: string): { status: "error"; error: string } {
 }
 
 function resetAll() {
+  sidebarCtrl.folderOpen = {};
   sidebarCtrl.locals = [];
   sidebarCtrl.remotes = [];
   sidebarCtrl.tags = [];
@@ -2218,22 +2219,18 @@ describe("copyBranchName", () => {
 });
 
 // ── ref folder tree (Git-Fork-style "/"-segmented hierarchy) ────────────────
-// buildRefRows/refFolderPaths/stripRemote are pure module-level functions, so
+// buildRefRows/refFolderPaths/remoteHead are pure module-level functions, so
 // these drive them directly with plain string fixtures — no controller state,
 // no DOM, no mocked commands.
 
-describe("stripRemote", () => {
-  it("drops the leading remote name", () => {
-    expect(stripRemote("origin/feature/x")).toBe("feature/x");
-    expect(stripRemote("origin/main")).toBe("main");
+describe("remoteHead", () => {
+  it("takes the remote name off the front", () => {
+    expect(remoteHead("origin/feature/x")).toBe("origin");
+    expect(remoteHead("upstream/main")).toBe("upstream");
   });
 
-  it("leaves a ref with no slash untouched rather than emptying it", () => {
-    expect(stripRemote("main")).toBe("main");
-  });
-
-  it("only strips the FIRST segment, so a nested path survives intact", () => {
-    expect(stripRemote("upstream/release/1.0/hotfix")).toBe("release/1.0/hotfix");
+  it("returns null for a name with no remote prefix, rather than guessing one", () => {
+    expect(remoteHead("main")).toBeNull();
   });
 });
 
@@ -2259,10 +2256,10 @@ describe("buildRefRows", () => {
   });
 
   it("keeps the leaf's FULL name in path so row hooks (data-branch, checkout) still address the real ref", () => {
-    const rows = buildRefRows(["feature/PER-53"], id, never);
+    const rows = buildRefRows(["feature/some-work"], id, never);
     const leaf = rows.find((r) => r.kind === "leaf")!;
-    expect(leaf.path).toBe("feature/PER-53");
-    expect(leaf.label).toBe("PER-53");
+    expect(leaf.path).toBe("feature/some-work");
+    expect(leaf.label).toBe("some-work");
   });
 
   it("nests arbitrarily deep, one folder per segment", () => {
@@ -2388,58 +2385,148 @@ describe("refFolderPaths", () => {
 
 describe("sidebar folder collapse state", () => {
   beforeEach(() => {
-    sidebarCtrl.collapsedFolders = [];
+    sidebarCtrl.folderOpen = {};
     sidebarCtrl.locals = [];
     sidebarCtrl.remotes = [];
+    sidebarCtrl.tags = [];
+    sidebarCtrl.head = null;
   });
 
-  it("toggles a folder closed then open again", () => {
+  it("starts every folder CLOSED with no interaction at all", () => {
+    expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(true);
+    expect(sidebarCtrl.isFolderCollapsed("remote", "origin/feature")).toBe(true);
+    expect(sidebarCtrl.isFolderCollapsed("tag", "v1")).toBe(true);
+  });
+
+  it("but a REMOTE's own node starts OPEN, so opening the section shows branches", () => {
+    // The Remotes section is a <details> that's already shut until clicked;
+    // leaving the remotes shut too would mean two clicks before one branch
+    // appears. Only the remote itself — folders nested inside it stay closed.
+    expect(sidebarCtrl.isFolderCollapsed("remote", "origin")).toBe(false);
+    expect(sidebarCtrl.isFolderCollapsed("remote", "origin/feature")).toBe(true);
+    expect(sidebarCtrl.isFolderCollapsed("remote", "origin/feature/win")).toBe(true);
+  });
+
+  it("an explicit collapse of a remote sticks, overriding its open-by-default", () => {
+    sidebarCtrl.toggleFolder("remote", "origin");
+    expect(sidebarCtrl.isFolderCollapsed("remote", "origin")).toBe(true);
+  });
+
+  it("toggles a folder open then closed again", () => {
+    sidebarCtrl.toggleFolder("local", "feature");
     expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(false);
     sidebarCtrl.toggleFolder("local", "feature");
     expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(true);
+  });
+
+  it("keys by section, so the same folder name under Local/Remotes/Tags folds independently", () => {
     sidebarCtrl.toggleFolder("local", "feature");
     expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(false);
+    expect(sidebarCtrl.isFolderCollapsed("remote", "origin/feature")).toBe(true);
+    expect(sidebarCtrl.isFolderCollapsed("tag", "feature")).toBe(true);
   });
 
-  it("keys by section, so the same folder name under Local and Remotes collapses independently", () => {
+  it("keeps the folders leading to the CURRENT branch open by default", () => {
+    // Collapsing everything by default is the point, but the "you are here"
+    // marker on HEAD is a headline orientation feature — burying it on every
+    // launch would trade clutter for disorientation.
+    sidebarCtrl.head = "feature/win/mine";
+    expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(false);
+    expect(sidebarCtrl.isFolderCollapsed("local", "feature/win")).toBe(false);
+    expect(sidebarCtrl.isFolderCollapsed("local", "other")).toBe(true);
+  });
+
+  it("does not treat a folder whose name merely PREFIXES the current branch as on its path", () => {
+    sidebarCtrl.head = "featureful";
+    expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(true);
+  });
+
+  it("applies the HEAD exception only to Local — remotes and tags have no current of their own", () => {
+    sidebarCtrl.head = "feature/x";
+    expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(false);
+    expect(sidebarCtrl.isFolderCollapsed("remote", "origin/feature")).toBe(true);
+    expect(sidebarCtrl.isFolderCollapsed("tag", "feature")).toBe(true);
+  });
+
+  it("lets an explicit collapse of the HEAD folder stick, overriding the default", () => {
+    sidebarCtrl.head = "feature/x";
     sidebarCtrl.toggleFolder("local", "feature");
     expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(true);
-    expect(sidebarCtrl.isFolderCollapsed("remote", "feature")).toBe(false);
   });
 
-  it("collapse-all folds every nested folder of one section, leaving the other section untouched", () => {
+  it("collapse-all folds every nested folder of one section, leaving other sections untouched", () => {
     sidebarCtrl.locals = [
       { name: "feature/win/a", sha: "1", ahead: null, behind: null, upstream: null, lastCommitTime: NOW },
       { name: "main", sha: "2", ahead: null, behind: null, upstream: null, lastCommitTime: NOW },
     ];
-    sidebarCtrl.toggleFolder("remote", "keepme");
+    sidebarCtrl.toggleFolder("remote", "origin/keepme"); // explicitly OPENED
 
     sidebarCtrl.setAllFoldersCollapsed("local", true);
     expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(true);
     expect(sidebarCtrl.isFolderCollapsed("local", "feature/win")).toBe(true);
-    expect(sidebarCtrl.isFolderCollapsed("remote", "keepme")).toBe(true); // other section survives
+    expect(sidebarCtrl.isFolderCollapsed("remote", "origin/keepme")).toBe(false); // other section survives
   });
 
-  it("expand-all drops only this section's keys", () => {
-    sidebarCtrl.toggleFolder("local", "feature");
-    sidebarCtrl.toggleFolder("remote", "feature");
+  it("collapse-all also overrides the HEAD default, rather than leaving that one folder open", () => {
+    sidebarCtrl.head = "feature/x";
+    sidebarCtrl.locals = [{ name: "feature/x", sha: "1", ahead: null, behind: null, upstream: null, lastCommitTime: NOW }];
+    sidebarCtrl.setAllFoldersCollapsed("local", true);
+    expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(true);
+  });
+
+  it("expand-all opens every folder of this section only", () => {
+    sidebarCtrl.locals = [{ name: "feature/win/a", sha: "1", ahead: null, behind: null, upstream: null, lastCommitTime: NOW }];
+    sidebarCtrl.remotes = [{ name: "origin/other/y", sha: "1" }];
     sidebarCtrl.setAllFoldersCollapsed("local", false);
     expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(false);
-    expect(sidebarCtrl.isFolderCollapsed("remote", "feature")).toBe(true);
+    expect(sidebarCtrl.isFolderCollapsed("local", "feature/win")).toBe(false);
+    expect(sidebarCtrl.isFolderCollapsed("remote", "origin/other")).toBe(true); // untouched
   });
 
-  it("remote collapse-all keys folders by the remote-STRIPPED path the rows actually render with", () => {
-    sidebarCtrl.remotes = [{ name: "origin/feature/x", sha: "1" }];
-    sidebarCtrl.setAllFoldersCollapsed("remote", true);
-    expect(sidebarCtrl.isFolderCollapsed("remote", "feature")).toBe(true);
+  it("makes each remote its own outermost folder, so two remotes' same-named folders fold apart", () => {
+    // REGRESSION: remote rows once grouped on the ref with its remote stripped,
+    // which gave both of these a folder path of just `feature` — folding either
+    // one silently folded the other.
+    sidebarCtrl.remotes = [
+      { name: "origin/feature/x", sha: "1" },
+      { name: "upstream/feature/y", sha: "2" },
+    ];
+    expect(sidebarCtrl.folderPaths("remote")).toEqual(["origin", "origin/feature", "upstream", "upstream/feature"]);
+
+    sidebarCtrl.toggleFolder("remote", "origin/feature");
     expect(sidebarCtrl.isFolderCollapsed("remote", "origin/feature")).toBe(false);
+    expect(sidebarCtrl.isFolderCollapsed("remote", "upstream/feature")).toBe(true);
   });
 
-  it("hasFolders reports whether a collapse-all control is worth showing", () => {
-    expect(sidebarCtrl.hasFolders("local")).toBe(false);
+  it("remote collapse-all reaches every remote and every folder inside it", () => {
+    sidebarCtrl.remotes = [
+      { name: "origin/feature/x", sha: "1" },
+      { name: "upstream/feature/y", sha: "2" },
+    ];
+    sidebarCtrl.setAllFoldersCollapsed("remote", false);
+    for (const p of ["origin", "origin/feature", "upstream", "upstream/feature"]) {
+      expect(sidebarCtrl.isFolderCollapsed("remote", p)).toBe(false);
+    }
+  });
+
+  it("a remote ref with no remote prefix at all yields no folder", () => {
+    sidebarCtrl.remotes = [{ name: "weird", sha: "1" }];
+    expect(sidebarCtrl.folderPaths("remote")).toEqual([]);
+  });
+
+  it("folderPaths is empty until a ref actually has a folder — the collapse-all control hides on that", () => {
+    expect(sidebarCtrl.folderPaths("local")).toEqual([]);
     sidebarCtrl.locals = [{ name: "main", sha: "1", ahead: null, behind: null, upstream: null, lastCommitTime: NOW }];
-    expect(sidebarCtrl.hasFolders("local")).toBe(false);
+    expect(sidebarCtrl.folderPaths("local")).toEqual([]);
     sidebarCtrl.locals = [{ name: "feature/a", sha: "1", ahead: null, behind: null, upstream: null, lastCommitTime: NOW }];
-    expect(sidebarCtrl.hasFolders("local")).toBe(true);
+    expect(sidebarCtrl.folderPaths("local")).toEqual(["feature"]);
+  });
+
+  it("folderPaths covers Tags too", () => {
+    expect(sidebarCtrl.folderPaths("tag")).toEqual([]);
+    sidebarCtrl.tags = [{ name: "v1.0", sha: "1" }];
+    expect(sidebarCtrl.folderPaths("tag")).toEqual([]);
+    sidebarCtrl.tags = [{ name: "v1/rc1", sha: "1" }];
+    expect(sidebarCtrl.folderPaths("tag")).toEqual(["v1"]);
   });
 });
