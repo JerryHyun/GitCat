@@ -1,0 +1,23 @@
+# Line endings: LF everywhere, in the repository AND in the working tree.
+#
+# `eol=lf` pins the WORKING TREE too, not just the blobs. That half matters on
+# Windows, where `core.autocrlf=true` would otherwise check source files out as
+# CRLF: any tool that rewrites one with LF endings then leaves that file looking
+# modified while `git diff` shows nothing at all. Several generators in this repo
+# can produce exactly that, and it is a genuinely confusing state to debug.
+#
+# `text=auto` leaves git's own binary detection in charge, so committed binary
+# assets are unaffected by the rule above.
+* text=auto eol=lf
+
+# Belt-and-braces for the binary asset types committed here: never normalize,
+# never diff as text, whatever the heuristics decide. Add to this list when a new
+# kind of binary asset lands. (Not .svg — that one is XML, and normalizing it is
+# both correct and what you want.)
+*.webp binary
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.icns binary
+*.mp4  binary
+*.webm binary
