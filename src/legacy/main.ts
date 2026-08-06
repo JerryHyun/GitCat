@@ -202,6 +202,19 @@ function generateGraph(N){
   // the setting OFF still shows exactly one chip there, matching a fresh repo).
   const allRefs=refs.map(r=>r?[r]:[]);
   if(refs[40]) allRefs[40]=[refs[40],{label:"v0.2.9-rc1",kind:"tag"}];
+  // Design-mode showcase rows for the chip forms: a synced head (main +
+  // origin/main merge into one [🖥☁ main] chip), a synced plain branch, and a
+  // DIVERGED pair (local and origin tips on different commits, two rows apart)
+  // so the local-vs-remote distinction is visible without a real repo. Rows
+  // 0/12/20/26 sit below the first generated tag (r=40) and below the first
+  // generated branch (r%223===0), so they never collide with generated refs.
+  if(N>30){
+    allRefs[0]=[...allRefs[0],{label:"origin/main",kind:"remote"}];
+    allRefs[12]=[{label:"release/2.1",kind:"branch"},{label:"origin/release/2.1",kind:"remote"}];
+    refs[12]=allRefs[12][0];
+    allRefs[20]=[{label:"feat/inline-labels",kind:"branch"}]; refs[20]=allRefs[20][0];
+    allRefs[26]=[{label:"origin/feat/inline-labels",kind:"remote"}]; refs[26]=allRefs[26][0];
+  }
   const snapRows=[]; const snapTs={};
   for(let r=6;r<N;r+=38+((r*97)%46)){snapRows.push(r);snapTs[r]=fakeAgo(r);}
   // High-water mark of lane slots ever allocated — slotColor's length only
