@@ -2454,6 +2454,49 @@ describe("sidebar folder collapse state", () => {
     expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(true);
   });
 
+  // The two halves of refreshRefs' repo-change guard, exercised THROUGH
+  // refresh() — poking folderOpen directly would keep passing with the guard
+  // deleted, which is exactly the regression these exist to catch. Paths like
+  // `local:feature` recur in every repo, so a fold carried across a switch
+  // would silently apply one repo's folds to the next.
+  it("switching repos through refresh() clears folder state left by the previous repo", async () => {
+    mockInTauri = true;
+    const refs = ok({
+      head: "main",
+      locals: [{ name: "feature/x", sha: "1", ahead: null, behind: null, upstream: null, lastCommitTime: NOW }],
+      remotes: [],
+      tags: [],
+    });
+    vi.mocked(commands.listRefs).mockResolvedValue(refs);
+
+    await sidebarCtrl.refresh("/repo-a");
+    sidebarCtrl.toggleFolder("local", "feature"); // explicitly OPENED in repo-a
+    expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(false);
+
+    await sidebarCtrl.refresh("/repo-b");
+    expect(sidebarCtrl.folderOpen).toEqual({});
+    expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(true); // back to the default
+  });
+
+  it("re-refreshing the SAME repo preserves the user's folds (the guard clears on change only)", async () => {
+    mockInTauri = true;
+    const refs = ok({
+      head: "main",
+      locals: [{ name: "feature/x", sha: "1", ahead: null, behind: null, upstream: null, lastCommitTime: NOW }],
+      remotes: [],
+      tags: [],
+    });
+    vi.mocked(commands.listRefs).mockResolvedValue(refs);
+
+    await sidebarCtrl.refresh("/repo-a");
+    sidebarCtrl.toggleFolder("local", "feature");
+
+    // Every mutation path ends in another refresh of the same repo — a
+    // checkout or commit must not snap the tree shut.
+    await sidebarCtrl.refresh("/repo-a");
+    expect(sidebarCtrl.isFolderCollapsed("local", "feature")).toBe(false);
+  });
+
   it("collapse-all folds every nested folder of one section, leaving other sections untouched", () => {
     sidebarCtrl.locals = [
       { name: "feature/win/a", sha: "1", ahead: null, behind: null, upstream: null, lastCommitTime: NOW },

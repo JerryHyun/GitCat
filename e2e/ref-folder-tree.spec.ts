@@ -47,8 +47,13 @@ async function openSidebar(page: Page): Promise<void> {
   // is the app's own way out — it reveals what's already underneath.
   await page.keyboard.press("Escape");
   await expect(page.locator("#setupWizardScrim")).not.toHaveClass(/\bon\b/);
+  // Open-idempotent on purpose: which sections default open is the app's
+  // business (Local does, since 8a73662), and a blind summary click on an
+  // already-open <details> COLLAPSES it. Only click the ones actually shut.
   for (const section of ["Local", "Remote", "Tags"]) {
-    await page.locator(".ref-group > summary", { hasText: section }).first().click();
+    const summary = page.locator(".ref-group > summary", { hasText: section }).first();
+    const isOpen = await summary.evaluate((el) => (el.parentElement as HTMLDetailsElement).open);
+    if (!isOpen) await summary.click();
   }
   await expect(page.locator("#refLocal .ref-folder").first()).toBeVisible();
 }

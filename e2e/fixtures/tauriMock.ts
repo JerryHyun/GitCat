@@ -177,9 +177,79 @@ function commitDetail(repo: TempRepo, sha: string) {
   };
 }
 
+// The repositories dashboard is the only way into a repo now: the topbar chip,
+// the empty hero and the sidebar all funnel through it (see legacy/main.ts's
+// `.repo-pick` handler), and its "+ Add repository…" picker opens whatever it
+// adds. So driving a real open means standing in for its persisted
+// tracked_repos.json too — one list per test, in memory, no file involved.
+function dashboardRepoStatus(repo: TempRepo) {
+  const branch = repo.git("symbolic-ref", "-q", "--short", "HEAD").trim() || null;
+  const porcelain = repo.git("status", "--porcelain=v1");
+  return {
+    branch,
+    detached: branch === null,
+    ahead: null,
+    behind: null,
+    dirty: porcelain.length > 0,
+    conflicted: 0,
+    headSha: repo.git("rev-parse", "HEAD"),
+    lastSubject: repo.git("log", "-1", "--format=%s"),
+    lastCommitTime: Number(repo.git("log", "-1", "--format=%ct")),
+  };
+}
+
 function makeInvokeHandler(repo: TempRepo) {
+  // Starts EMPTY on purpose: a test that means to open a repo has to go through
+  // the picker like a user does, rather than finding its repo pre-tracked.
+  const tracked: { path: string; lastOpenedAt: number | null }[] = [];
+  const trackedList = () => tracked.map((t) => ({ ...t }));
+
   return async (cmd: string, args: any): Promise<unknown> => {
     switch (cmd) {
+      // @tauri-apps/plugin-dialog's open() — the islands' folder picker. Goes
+      // over invoke, unlike legacy/main.ts's raw window.__TAURI__.dialog.open
+      // (stubbed separately in installTauriMock below); both have to answer.
+      case "plugin:dialog|open":
+        return repo.dir;
+      case "list_tracked_repos":
+        return trackedList();
+      case "add_tracked_repo":
+        if (!tracked.some((t) => t.path === args.path)) tracked.push({ path: args.path, lastOpenedAt: null });
+        return trackedList();
+      case "track_repo_opened": {
+        const row = tracked.find((t) => t.path === args.path);
+        // Seconds, matching the Rust side's unix-seconds field.
+        if (row) row.lastOpenedAt = Math.floor(Date.now() / 1000);
+        return trackedList();
+      }
+      case "dashboard_repo_status":
+        return dashboardRepoStatus(repo);
+      // The rest of what openRepo() fans out to. Each is a real command whose
+      // FAILURE this harness would otherwise be asserting against by accident:
+      // every one of these callers catches and console.errors, so a missing
+      // handler doesn't fail a test, it just quietly leaves the UI in a state no
+      // real repo produces. Answering "nothing to report" keeps the open path
+      // honest without reimplementing any of them.
+      case "conflict_status":
+        return { inProgress: false, op: "", files: [] };
+      case "get_visible_branches":
+        return { local: null, remote: null, auto: false }; // no filter — show every branch
+      case "submodule_superproject_chain":
+        return []; // not a submodule, so no ancestors
+      case "bisect_status":
+        return {
+          ok: true, inProgress: false, current: null, badRef: null, goodRefs: [],
+          remainingRevs: 0, estSteps: 0, firstBad: null, log: [], message: "", backupRef: null,
+        };
+      // false = "already claimed", which suppresses the one-time Repository
+      // Summary modal. It would otherwise cover the UI on the first open of
+      // every fixture repo, since each one IS a first open.
+      case "claim_repo_summary_first_open":
+        return false;
+      case "run_hooks":
+        return []; // no plugins installed in a fixture repo
+      case "branch_merge_status":
+        return { defaultBranch: "main", merged: [] };
       case "get_app_info":
         return {
           name: "GitCat",

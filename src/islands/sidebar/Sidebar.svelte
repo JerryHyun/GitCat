@@ -291,7 +291,11 @@
             tabindex="0"
             aria-expanded={!row.collapsed}
             onclick={() => sidebarCtrl.toggleFolder("local", row.path)}
-            onkeydown={(e) => (e.key === "Enter" || e.key === " ") && sidebarCtrl.toggleFolder("local", row.path)}
+            onkeydown={(e) => {
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.preventDefault(); // Space would otherwise ALSO scroll the ref list
+              sidebarCtrl.toggleFolder("local", row.path);
+            }}
           >
             <span class="tw">&#9656;</span><Folder class="ico" size={12} aria-hidden="true" /><span class="rname">{row.label}</span
             ><span class="count">{row.count}</span>
@@ -447,7 +451,11 @@
               tabindex="0"
               aria-expanded={!row.collapsed}
               onclick={() => sidebarCtrl.toggleFolder("remote", row.path)}
-              onkeydown={(e) => (e.key === "Enter" || e.key === " ") && sidebarCtrl.toggleFolder("remote", row.path)}
+              onkeydown={(e) => {
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.preventDefault(); // Space would otherwise ALSO scroll the ref list
+              sidebarCtrl.toggleFolder("remote", row.path);
+            }}
             >
               <!-- A depth-0 folder IS a remote, so it gets the cloud rather than
                    a generic folder icon. -->
@@ -530,7 +538,11 @@
             tabindex="0"
             aria-expanded={!row.collapsed}
             onclick={() => sidebarCtrl.toggleFolder("tag", row.path)}
-            onkeydown={(e) => (e.key === "Enter" || e.key === " ") && sidebarCtrl.toggleFolder("tag", row.path)}
+            onkeydown={(e) => {
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.preventDefault(); // Space would otherwise ALSO scroll the ref list
+              sidebarCtrl.toggleFolder("tag", row.path);
+            }}
           >
             <span class="tw">&#9656;</span><Folder class="ico" size={12} aria-hidden="true" /><span class="rname">{row.label}</span
             ><span class="count">{row.count}</span>
