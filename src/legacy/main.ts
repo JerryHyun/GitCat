@@ -538,14 +538,13 @@ function renderContent(st, rowLo, rowHi, strip){
     if(r===headRow){ ctx.save(); ctx.shadowColor=theme.accent; ctx.shadowBlur=7; ctx.beginPath(); ctx.arc(x,y,dotR+4.5,0,TAU); ctx.strokeStyle=theme.accent; ctx.lineWidth=2.6; ctx.stroke(); ctx.restore(); }
     let cx=bcw>0?tx+MSG_TEXT_PAD:tx; ctx.font=layout.chipFont;
     // Ref labels — drawGutterChips lays them out in display order (priority +
-    // per-commit rotation), tinted in column mode to THIS row's branch colour so
-    // the label matches the row's band, and adds a "+N" pill when they don't all
-    // fit. In column mode (bcw>0) they live in the left BRANCH/TAG gutter and the
-    // subject stays put at tx; when the window is too narrow for a column
-    // (bcw===0) they fall back to inline chips, advancing cx so the subject
-    // follows past whatever was drawn (chips + any pill).
+    // per-commit rotation), tinted to THIS row's lane colour in BOTH layouts so
+    // the label matches the lane lines beside it, and adds a "+N" pill when
+    // they don't all fit. In column mode (bcw>0) they live in the left
+    // BRANCH/TAG gutter and the subject stays put at tx; inline (bcw===0) they
+    // sit before the subject, advancing cx past whatever was drawn.
     const bcol=LANE_COLORS[G.commitColor[r]];
-    if(bcw>0){ drawGutterChips(r,BRANCH_PAD_L,bcw-6,y,bcol,6,bcol); }
+    if(bcw>0){ drawGutterChips(r,BRANCH_PAD_L,bcw-6,y,bcol,6); }
     else {
       // Same breathing room after the last chip that a column-mode message gets
       // after the divider (MSG_TEXT_PAD) — drawGutterChips returns the last
@@ -553,7 +552,7 @@ function renderContent(st, rowLo, rowHi, strip){
       // the chip border. Only when something was drawn: an unlabelled row's
       // subject must stay exactly at tx.
       const cx0=cx;
-      cx=drawGutterChips(r,cx,W-AUTHOR_GUTTER-MIN_SUBJECT_W,y,null,8,bcol);
+      cx=drawGutterChips(r,cx,W-AUTHOR_GUTTER-MIN_SUBJECT_W,y,bcol,8);
       if(cx>cx0) cx+=MSG_TEXT_PAD;
     }
     // Skip the per-row message/author/sha text while scrolling FAST (fastScroll):
@@ -766,12 +765,14 @@ function measureChip(entry, maxWidth) {
 // glyph per `entry.local`/`entry.remote` (see reforder.ts::mergeRefChips) so a
 // folded local+remote pair reads as one chip with both icons, not two chips
 // with the same label.
-function paintChip(x, y, text, w, entry, colorOverride, rowColor) {
-  // Kind colour, except: a plain branch chip inline (no override) takes its
-  // ROW's lane colour so the chip matches the lanes beside it; head keeps its
-  // solid accent (the "you are here" cue outranks the colour system).
+function paintChip(x, y, text, w, entry, rowColor) {
+  // Every chip tints to its ROW's lane colour, in both layouts, so the label
+  // always matches the lane lines it sits beside — one colour story for the
+  // whole row. What KIND of ref it is no longer rides on colour at all: the
+  // monitor/cloud glyphs carry local/remote, and head's solid fill (below)
+  // carries "you are here".
   const kind = entry.kind;
-  const col = colorOverride || (kind === "branch" && rowColor ? rowColor : refKindColor(kind));
+  const col = rowColor || refKindColor(kind);
   ctx.font = layout.chipFont;
   const h = Math.round(16.5 * Math.min(1.25, layout.zoom));
   ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y - h / 2, w, h, 4); else ctx.rect(x, y - h / 2, w, h);
@@ -839,15 +840,15 @@ function fitChips(list,cap,x0,xLimit,gap){
 // Draw a row's ref chips into the gutter (or inline before the subject), plus a
 // "+N" pill when some don't fit — recording that pill's x-span in overflowHit so
 // a click there cycles the row (see endPointer). Returns the x just past the
-// last thing drawn (inline mode advances the subject past it). `colorOverride`
-// is the row's branch colour in column mode, null inline (in which case
-// `rowColor` still tints a plain branch chip — see paintChip). Reserved room
-// for the pill (RESERVE) is generous enough for a two-digit count so it always
-// fits. Also records every placed chip's x-span in chipHit (row -> spans) for
-// chipEntryAt's hover-tooltip (labelAt) and label-context-menu targeting
-// (the contextmenu handler below), exactly like overflowHit below.
+// last thing drawn (inline mode advances the subject past it). `rowColor` is
+// the row's lane colour — every chip tints to it in both layouts (see
+// paintChip). Reserved room for the pill (RESERVE) is generous enough for a
+// two-digit count so it always fits. Also records every placed chip's x-span
+// in chipHit (row -> spans) for chipEntryAt's hover-tooltip (labelAt) and
+// label-context-menu targeting (the contextmenu handler below), exactly like
+// overflowHit below.
 const PLUS_RESERVE=34;
-function drawGutterChips(row,x0,xLimit,y,colorOverride,gap,rowColor){
+function drawGutterChips(row,x0,xLimit,y,rowColor,gap){
   overflowHit.delete(row); chipHit.delete(row);
   const list=displayChipsFor(row);
   if(!list.length) return x0;
@@ -861,7 +862,7 @@ function drawGutterChips(row,x0,xLimit,y,colorOverride,gap,rowColor){
     overflow=list.length-placed.length;
   }
   let endX=x0;
-  for(const c of placed){ paintChip(c.x,y,c.text,c.w,c.entry,colorOverride,rowColor); endX=c.x+c.w; }
+  for(const c of placed){ paintChip(c.x,y,c.text,c.w,c.entry,rowColor); endX=c.x+c.w; }
   chipHit.set(row, placed.map(c=>({x0:c.x, x1:c.x+c.w, entry:c.entry})));
   if(overflow>0){
     const px=placed.length?endX+gap:x0;
