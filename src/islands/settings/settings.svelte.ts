@@ -210,6 +210,13 @@ export interface PersistedSettings {
   // Whole minutes between auto-fetch attempts while enabled — see
   // AUTO_FETCH_INTERVAL_OPTIONS below for the exact choices offered.
   autoFetchIntervalMinutes: number;
+  // Optional background `git maintenance run --auto` while the app sits IDLE —
+  // keeps the object database tidy (commit-graph, gc, incremental-repack) so
+  // everyday reads stay fast, without the user running it by hand. Off by
+  // default and even lighter-touch than auto-fetch: `--auto` means git only does
+  // work that's actually due, it touches no remote/credential, and it never
+  // changes history or the working tree. The idle gate + timer live in main.ts.
+  autoMaintenanceEnabled: boolean;
   // Safety-Manager snapshot retention. Every history-changing op pins a backup
   // ref under refs/gitgui/backup/*; with no cleanup they accumulate forever.
   // The mode picks the auto-prune policy, run on repo-open:
@@ -290,6 +297,7 @@ const DEFAULTS: PersistedSettings = {
   graphLabelPriority: "tag",
   autoFetchEnabled: false,
   autoFetchIntervalMinutes: 15,
+  autoMaintenanceEnabled: false,
   snapshotRetentionMode: "off",
   snapshotRetentionCount: 25,
   snapshotRetentionDays: 14,
@@ -461,6 +469,7 @@ class SettingsState {
   graphLabelPriority = $state<GraphLabelPriority>(DEFAULTS.graphLabelPriority);
   autoFetchEnabled = $state(DEFAULTS.autoFetchEnabled);
   autoFetchIntervalMinutes = $state(DEFAULTS.autoFetchIntervalMinutes);
+  autoMaintenanceEnabled = $state(DEFAULTS.autoMaintenanceEnabled);
   snapshotRetentionMode = $state<SnapshotRetentionMode>(DEFAULTS.snapshotRetentionMode);
   snapshotRetentionCount = $state(DEFAULTS.snapshotRetentionCount);
   snapshotRetentionDays = $state(DEFAULTS.snapshotRetentionDays);
@@ -768,6 +777,7 @@ class SettingsState {
     this.graphLabelPriority = s.graphLabelPriority;
     this.autoFetchEnabled = s.autoFetchEnabled;
     this.autoFetchIntervalMinutes = s.autoFetchIntervalMinutes;
+    this.autoMaintenanceEnabled = s.autoMaintenanceEnabled;
     this.snapshotRetentionMode = s.snapshotRetentionMode;
     this.snapshotRetentionCount = s.snapshotRetentionCount;
     this.snapshotRetentionDays = s.snapshotRetentionDays;
@@ -857,6 +867,11 @@ class SettingsState {
   setAutoFetchIntervalMinutes(v: number): void {
     this.autoFetchIntervalMinutes = v;
     saveSettings({ autoFetchIntervalMinutes: v });
+  }
+
+  setAutoMaintenanceEnabled(v: boolean): void {
+    this.autoMaintenanceEnabled = v;
+    saveSettings({ autoMaintenanceEnabled: v });
   }
 
   setSnapshotRetentionMode(v: SnapshotRetentionMode): void {

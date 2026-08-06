@@ -23,17 +23,21 @@ test("opening a repo populates the sidebar from the real fixture repo's refs", a
   // transient text instead of actually asserting the real chip updated.
   await expect(page.locator(".repo-pick .repo-name")).toHaveText(repoName);
 
-  // Every sidebar section is a <details> with no `open` attribute, so its rows
-  // render into the DOM but stay HIDDEN until the group is expanded. Asserting
-  // visibility without this click is how the rest of this spec quietly went
-  // stale: the rows were there, so a debug dump looked right, while every
-  // toBeVisible on them could only ever fail.
-  await page.locator(".ref-group", { has: page.locator("#refLocal") }).locator("summary").click();
-
-  // The count chip is the folder-shape-independent half of "list_refs was read":
-  // it reports how many local branches came back, whatever the tree does with
-  // them, so it holds for a flat list and for a grouped one alike.
+  // The count chip is the folder-shape-independent half of "list_refs was
+  // read": it reports how many local branches came back, whatever the tree
+  // does with them. (The Local <details> defaults open, so its rows render.)
   await expect(page.locator("#cntLocal")).toHaveText("2");
-  // `main` is never inside a folder, so it is a top-level row in either shape.
+  // `main` is a loose branch, so it's a top-level row straight away.
   await expect(page.locator('#refLocal [data-branch="main"]')).toBeVisible();
+
+  // `feature/widget` lives under a `feature` folder, and folders start closed —
+  // `repo.branch()` runs `git branch` without checking out, so HEAD is still
+  // `main` and the open-by-default-on-the-HEAD-path rule doesn't apply here.
+  // A closed folder renders no rows for its children at all, so open it first.
+  const featureFolder = page
+    .locator("#refLocal .ref-folder")
+    .filter({ has: page.locator(".rname", { hasText: /^feature$/ }) });
+  await expect(featureFolder).toBeVisible();
+  await featureFolder.click();
+  await expect(page.locator('#refLocal [data-branch="feature/widget"]')).toBeVisible();
 });

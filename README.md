@@ -107,7 +107,15 @@ Download the installer for your platform from the [Releases page](https://github
 
 ## Development
 
-Requires [Rust](https://www.rust-lang.org/tools/install), [Node](https://nodejs.org) 22+, and [pnpm](https://pnpm.io). On Linux, Tauri also needs WebKitGTK/GTK3 dev headers at build time — see `.github/workflows/*.yml` for the apt packages, or on NixOS run `nix develop` to drop into a shell with everything (Rust, Node, pnpm, WebKitGTK, and friends) already wired up via `flake.nix`.
+Requires [Rust](https://www.rust-lang.org/tools/install), [Node](https://nodejs.org) 22+, and [pnpm](https://pnpm.io) 10. On Linux, Tauri also needs WebKitGTK/GTK3 dev headers at build time — see `.github/workflows/*.yml` for the apt packages, or on NixOS run `nix develop` to drop into a shell with everything (Rust, Node, pnpm, WebKitGTK, and friends) already wired up via `flake.nix`.
+
+The exact pnpm version lives in `package.json`'s `packageManager` field, which is what keeps `pnpm-lock.yaml` from being rewritten by whichever pnpm you happen to have. Any pnpm 10 honours it on its own. Older pnpm does not — it will run as itself and fail here — so if you have pnpm 9 or none at all, let corepack (bundled with Node) handle it:
+
+```bash
+corepack enable pnpm
+```
+
+Then, from the repo root:
 
 ```bash
 pnpm install

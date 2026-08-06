@@ -137,8 +137,6 @@ jobs:
           ref: ${{ needs.gate.outputs.sha }} # the EXACT commit the gate captured + versioned, not the moving dev tip
       - name: Install pnpm
         uses: pnpm/action-setup@v6
-        with:
-          version: 10
       - name: Install Node
         uses: actions/setup-node@v6
         with:
@@ -205,8 +203,6 @@ jobs:
           ref: ${{ needs.gate.outputs.sha }} # the EXACT commit the gate captured + versioned, not the moving dev tip
       - name: Install pnpm
         uses: pnpm/action-setup@v6
-        with:
-          version: 10
       - name: Install Node
         uses: actions/setup-node@v6
         with:

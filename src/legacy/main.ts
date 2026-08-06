@@ -2506,6 +2506,15 @@ function onGraphBatch(payload){
     // "is this commit loaded?", so a truncated load forces full reloads).
     graphStreamComplete=true;
     lastLoadTruncated=!!payload.truncated;
+    // The `ancestor`/dimming bit is no longer computed during the stream — that
+    // needed an up-front full HEAD-ancestor revwalk that delayed the very first
+    // frame (see commands.rs `stream_graph_core`). Now that the whole set is
+    // loaded, fill the dimming in OFF the critical path via the same positional
+    // recompute a checkout already uses. Skipped on a walk error: a partial graph
+    // would otherwise trip recomputeAncestorsAsync's n-guard into a resync reload
+    // of an already-degraded load. (On success/truncated, BACKEND.n is final and
+    // head_ancestor_flags honours the same cap, so the counts line up.)
+    if(!payload.error) recomputeAncestorsAsync();
     dlog("graph", "stream DONE gen", payload.generation, "—", BACKEND.n, "commits in", payload.elapsedMs.toFixed(0)+"ms", payload.truncated?"(truncated)":"", payload.error?("error: "+payload.error):"");
     // Establish the fast-refresh baseline (seed tips / HEAD oid / ref signature)
     // for THIS load, generation-guarded so a newer load's baseline can't be
