@@ -545,21 +545,31 @@ function renderContent(st, rowLo, rowHi, strip){
     // "where am I" pops even in a busy graph. Drawn last so it sits over the other
     // rings; kept undimmed by the ancestor overlay (which skips headRow).
     if(r===headRow){ ctx.save(); ctx.shadowColor=theme.accent; ctx.shadowBlur=7; ctx.beginPath(); ctx.arc(x,y,dotR+4.5,0,TAU); ctx.strokeStyle=theme.accent; ctx.lineWidth=2.6; ctx.stroke(); ctx.restore(); }
-    let cx=bcw>0?tx+MSG_TEXT_PAD:tx; ctx.font=layout.chipFont;
+    // Inline chips start MSG_TEXT_PAD past tx unconditionally — same inset
+    // column mode's message text gets after ITS divider (bcw). Also, not
+    // incidentally, clears dividerAt's COL_HANDLE (5px) grab zone around
+    // lastTx (11>5): chips used to start flush AT tx, so the first chip's own
+    // left edge sat inside the graph|message divider's hit zone — a click
+    // meant to select/open that chip could instead start a colDrag (and any
+    // hand-tremor pixel of movement would persist a `colW.graph` override on
+    // release). Every inline row's text column starts here now, labelled or
+    // not — there's no more "stays exactly at tx" case.
+    let cx=tx+MSG_TEXT_PAD; ctx.font=layout.chipFont;
     // Ref labels — drawGutterChips lays them out in display order (priority +
     // per-commit rotation), tinted to THIS row's lane colour in BOTH layouts so
     // the label matches the lane lines beside it, and adds a "+N" pill when
     // they don't all fit. In column mode (bcw>0) they live in the left
-    // BRANCH/TAG gutter and the subject stays put at tx; inline (bcw===0) they
+    // BRANCH/TAG gutter and the subject stays put at cx; inline (bcw===0) they
     // sit before the subject, advancing cx past whatever was drawn.
     const bcol=LANE_COLORS[G.commitColor[r]];
     if(bcw>0){ drawGutterChips(r,BRANCH_PAD_L,bcw-6,y,bcol,6); }
     else {
-      // Same breathing room after the last chip that a column-mode message gets
-      // after the divider (MSG_TEXT_PAD) — drawGutterChips returns the right
-      // edge of the last thing it actually drew (a chip, or the "+N" pill), so
-      // without this the subject starts flush against that border. Only when
-      // something was drawn: an unlabelled row's subject must stay exactly at tx.
+      // Same breathing room after the last chip that column mode's message
+      // gets after ITS divider (MSG_TEXT_PAD, applied above to cx already) —
+      // drawGutterChips returns the right edge of the last thing it actually
+      // drew (a chip, or the "+N" pill), so without this the subject starts
+      // flush against that border. Only when something was drawn: an
+      // unlabelled row's subject stays exactly at cx (tx+MSG_TEXT_PAD).
       const cx0=cx;
       cx=drawGutterChips(r,cx,W-AUTHOR_GUTTER-MIN_SUBJECT_W,y,bcol,8);
       if(cx>cx0) cx+=MSG_TEXT_PAD;
