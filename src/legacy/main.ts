@@ -546,7 +546,16 @@ function renderContent(st, rowLo, rowHi, strip){
     // follows past whatever was drawn (chips + any pill).
     const bcol=LANE_COLORS[G.commitColor[r]];
     if(bcw>0){ drawGutterChips(r,BRANCH_PAD_L,bcw-6,y,bcol,6,bcol); }
-    else { cx=drawGutterChips(r,cx,W-AUTHOR_GUTTER-MIN_SUBJECT_W,y,null,8,bcol); }
+    else {
+      // Same breathing room after the last chip that a column-mode message gets
+      // after the divider (MSG_TEXT_PAD) — drawGutterChips returns the last
+      // chip's right EDGE, so without this the subject starts flush against
+      // the chip border. Only when something was drawn: an unlabelled row's
+      // subject must stay exactly at tx.
+      const cx0=cx;
+      cx=drawGutterChips(r,cx,W-AUTHOR_GUTTER-MIN_SUBJECT_W,y,null,8,bcol);
+      if(cx>cx0) cx+=MSG_TEXT_PAD;
+    }
     // Skip the per-row message/author/sha text while scrolling FAST (fastScroll):
     // glyph rasterisation is the single biggest per-frame cost on a software-
     // rendered canvas, and at this speed the text is an unreadable blur anyway
