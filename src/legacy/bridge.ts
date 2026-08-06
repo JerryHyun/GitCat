@@ -112,6 +112,10 @@ export {
   // Settings island's "label priority" (Tags-first / Branches-first) — reorders
   // the gutter ref chips live, same live-re-export safety as setGraphShowAllTags.
   setGraphLabelPriority,
+  // Settings island's "label layout" (Inline / Left column) — flips
+  // branchColW live via recomputeLayout(), same live-re-export safety as
+  // setGraphLabelPriority above.
+  setGraphLabelLayout,
   // Settings island's "Tama" visibility toggle — applies the `.tama-off` CSS
   // class immediately, same live-re-export safety as applyThemeMode/
   // setGraphShowAllTags above (hoisted `function`, no TDZ risk).

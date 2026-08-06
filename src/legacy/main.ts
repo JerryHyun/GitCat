@@ -290,9 +290,11 @@ function recomputeLayout(){
   // never so wide that the graph lanes + subject lose their room — collapses to 0
   // (inline chips, the pre-column behaviour) when the window is too narrow.
   const autoB=Math.round(Math.min(BRANCH_COL_MAX,Math.max(BRANCH_COL_MIN,view.cssW*0.14)));
-  let bcw=colW.branch!=null?Math.round(colW.branch):autoB;
-  bcw=Math.max(BRANCH_COL_MIN,Math.min(bcw,Math.round(view.cssW*0.45)));
-  if(bcw>view.cssW-AUTHOR_GUTTER-MIN_SUBJECT_W-MIN_GRAPH_W) bcw=0;
+  let bcw=graphLabelInline?0:(colW.branch!=null?Math.round(colW.branch):autoB);
+  if(bcw>0){
+    bcw=Math.max(BRANCH_COL_MIN,Math.min(bcw,Math.round(view.cssW*0.45)));
+    if(bcw>view.cssW-AUTHOR_GUTTER-MIN_SUBJECT_W-MIN_GRAPH_W) bcw=0;
+  }
   layout.branchColW=(G&&G.N&&view.cssW>0)?bcw:0;
   layout.contentH=(G?G.N:0)*layout.rowH;
   // +bandH(): the pinned header steals bandH() px of on-screen vertical
@@ -611,7 +613,7 @@ function draw(){
 // tick() forces a FULL. `bufferG` (G's object identity, reassigned on every data
 // change) is compared separately in tick().
 function bufferKeyNow(){
-  return view.renderDpr+"|"+Math.round(state.panX*100)+"|"+layout.zoom+"|"+cv.width+"|"+cv.height+"|"+bandH()+"|"+colW.graph+"|"+colW.branch+"|"+(showAllTags?1:0)+"|"+(graphTagsFirst?1:0)+"|"+refRotEpoch+"|"+themeEpoch+"|"+(bisectDrawerCtrl.active()?1:0)+"|"+bisectDrawerCtrl.cur+"|"+(state.drag?1:0)+"|"+state.selectedRow+"|"+state.hoverRow;
+  return view.renderDpr+"|"+Math.round(state.panX*100)+"|"+layout.zoom+"|"+cv.width+"|"+cv.height+"|"+bandH()+"|"+colW.graph+"|"+colW.branch+"|"+(showAllTags?1:0)+"|"+(graphTagsFirst?1:0)+"|"+graphLabelInline+"|"+refRotEpoch+"|"+themeEpoch+"|"+(bisectDrawerCtrl.active()?1:0)+"|"+bisectDrawerCtrl.cur+"|"+(state.drag?1:0)+"|"+state.selectedRow+"|"+state.hoverRow;
 }
 // True when the row-highlight fades have reached their targets — a blit copies
 // baked pixels, so a mid-animation alpha (fading a selection/hover tint in/out)
@@ -1844,6 +1846,13 @@ function setGraphShowAllTags(v){ showAllTags=v; dirty=true; }
 // updated live by the setter — same idiom as setGraphShowAllTags above.
 let graphTagsFirst=true;
 function setGraphLabelPriority(v){ graphTagsFirst=(v!=="branch"); dirty=true; }
+// Where ref labels live (settings.svelte.ts's graphLabelLayout): inline before
+// the subject (Fork-style; the default), or the resizable left column. Inline
+// simply forces branchColW to 0 — the layout the narrow-window collapse below
+// already produces — so every downstream consumer (laneX, dividers, gutter vs
+// inline chips) follows from that one width with no second flag to consult.
+let graphLabelInline=true;
+function setGraphLabelLayout(v){ graphLabelInline=(v!=="column"); recomputeLayout(); dirty=true; }
 // Per-commit ref rotation for the "+N" overflow chip: sha -> how many places the
 // row's ref list has been spun left (see cycleRefs / drawGutterChips). Keyed by
 // sha so it survives a streaming re-layout; cleared when a fresh graph loads.
@@ -3130,6 +3139,7 @@ $(".repo-pick").addEventListener("click", ()=>dashboardCtrl.show());
 applyThemeMode(loadSettings().themeMode);
 setGraphShowAllTags(loadSettings().showAllCommitTags);
 setGraphLabelPriority(loadSettings().graphLabelPriority);
+setGraphLabelLayout(loadSettings().graphLabelLayout);
 setTamaEnabled(loadSettings().tamaEnabled);
 // PER-47: re-apply a persisted Tama skin at boot. Fire-and-forget + self-gates
 // on IN_TAURI internally; if the skin's plugin was removed/disabled or its load
@@ -3172,7 +3182,7 @@ function requestRedraw(){ dirty=true; }
 export { reloadGraph, cheer, highlight, Tama, TAMA_IMG, requestRedraw,
   G, BACKEND, state, layout, view, cv, clampScroll, select, selectWorkdir, goToUncommitted, goToHead, openHelpPage, toggleFocusMode, hhex, msgOf, AUTHORS,
   fakeAgo, relTime, absTime, pickRepo, closeRepo, armDanger, updateBranchPill,
-  openRepo, doFetch, doPull, doPush, bandH, applyThemeMode, setGraphShowAllTags, setGraphLabelPriority, setTamaEnabled, onGraphBatch,
+  openRepo, doFetch, doPull, doPush, bandH, applyThemeMode, setGraphShowAllTags, setGraphLabelPriority, setGraphLabelLayout, setTamaEnabled, onGraphBatch,
   // submodule navigation (see the "12a) SUBMODULE NAVIGATION STACK" section
   // above for the full design) — enterSubmodule/navigateToRepo are hoisted
   // `function` declarations, so no TDZ risk (same reasoning as
