@@ -216,6 +216,23 @@
         </div>
       {/if}
 
+      <h4 class="d-lab">Maintenance</h4>
+      <label
+        class="set-toggle"
+        style="margin-bottom:8px"
+        title="Runs 'git maintenance run --auto' in the background while GitCat is idle, keeping the repo's object database tidy (commit-graph, gc, repack) so the graph and status stay fast. --auto only does work that's actually due; it never changes history, the working tree, or touches a remote."
+      >
+        <input
+          type="checkbox"
+          checked={settingsCtrl.autoMaintenanceEnabled}
+          onchange={(e) => settingsCtrl.setAutoMaintenanceEnabled((e.target as HTMLInputElement).checked)}
+        />
+        Run git maintenance in the background when idle
+      </label>
+      <div class="mut" style="font-size:11.5px;margin:0 0 14px 26px;line-height:1.5">
+        Keeps the repository's object database tidy (commit-graph, gc, repack) so everyday operations stay fast — only while the app sits idle, and only the work git decides is actually due. Off by default.
+      </div>
+
       <h4 class="d-lab">Snapshots</h4>
       <p class="mut" style="font-size:11.5px;margin:0 0 8px">
         Every history-changing action pins a recoverable backup — this is what powers &#8984;Z Undo and the Snapshots ribbon. Without cleanup they build up over time. Auto-cleanup prunes old ones each time a repo opens; the single most recent snapshot is always kept.

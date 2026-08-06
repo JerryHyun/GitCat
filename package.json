@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "license": "GPL-3.0-or-later",
   "type": "module",
+  "packageManager": "pnpm@10.34.5",
   "scripts": {
     "dev": "vite",
     "build": "svelte-check --tsconfig ./tsconfig.json && vite build",

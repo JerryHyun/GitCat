@@ -867,6 +867,20 @@ async pull(path: string) : Promise<RemoteResult> {
     return await TAURI_INVOKE("pull", { path });
 },
 /**
+ * Run `git maintenance run --auto` in `path`, off-thread. `Ok(())` on success;
+ * `Err(git's stderr)` otherwise (the caller logs it and simply tries again on a
+ * later idle tick). `--auto` keeps this safe to call on a timer — git decides
+ * which tasks, if any, are due.
+ */
+async runGitMaintenance(path: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("run_git_maintenance", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Streaming twin of [`fetch`]: identical behaviour (same validation, args,
  * success message, and `git_error_message` failure path), but forces
  * `--progress` so git writes transfer progress to stderr, reads it live via
