@@ -66,7 +66,7 @@ const PADX=18, ROW_H_BASE=26, LANE_W_BASE=14, DOT_R_BASE=4.6;
 // darkened vs the message column; DIVIDER_ALPHA = the hairline between them.
 // All four are read straight by draw() — tweak the look here.
 const BRANCH_BAR_W=3, BRANCH_WASH_ALPHA=0.17, BRANCH_BAR_ALPHA=0.95, GRAPH_CHANNEL_ALPHA=0.20, GRAPH_DIVIDER_ALPHA=0.6, BRANCH_ROW_GAP=3;
-// Dedicated left BRANCH / TAG column (GitKraken-style), the opt-in alternative
+// Dedicated left BRANCH / TAG column, the opt-in alternative
 // to the default inline-before-the-subject layout (graphLabelLayout setting —
 // see setGraphLabelLayout): ref labels live in a fixed left gutter
 // [0,branchColW) instead of inline, so the message column stays clean and
@@ -1965,7 +1965,7 @@ function setGraphShowAllTags(v){ showAllTags=v; dirty=true; }
 let graphTagsFirst=true;
 function setGraphLabelPriority(v){ graphTagsFirst=(v!=="branch"); dirty=true; }
 // Where ref labels live (settings.svelte.ts's graphLabelLayout): inline before
-// the subject (Fork-style; the default), or the resizable left column. Inline
+// the subject (the default), or the resizable left column. Inline
 // simply forces branchColW to 0 — the layout the narrow-window collapse below
 // already produces — so every downstream consumer (laneX, dividers, gutter vs
 // inline chips) follows from that one width with no second flag to consult.
