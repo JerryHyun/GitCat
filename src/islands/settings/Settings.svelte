@@ -106,7 +106,7 @@
       </label>
 
       <p class="mut" style="font-size:11.5px;margin:0 0 8px">
-        When a commit's labels don't all fit the gutter, show this kind first. Click a row's <b>+N</b> chip to cycle the rest into view.
+        When a commit's labels don't all fit, show this kind first. Click a row's <b>+N</b> chip to cycle the rest into view.
       </p>
       <div class="rm-form" style="margin-bottom:14px;max-width:220px">
         <select

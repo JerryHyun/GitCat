@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { orderRefs, mergeRefChips, type Chip } from "./reforder.ts";
+import { orderRefs, mergeRefChips, rotateChips, type Chip } from "./reforder.ts";
 
 // A commit carrying one of every kind, in the backend's own delivered order
 // (tag -> head -> branch -> remote, per git_read.rs::collect_refs).
@@ -134,5 +134,51 @@ describe("mergeRefChips", () => {
 
   it("returns [] for empty input", () => {
     expect(mergeRefChips([])).toEqual([]);
+  });
+
+  it("a remote appearing BEFORE its matching local still folds into the local's entry — the merged entry's position follows the LOCAL's appearance, not the remote's", () => {
+    const out = mergeRefChips([
+      { label: "origin/main", kind: "remote" },
+      { label: "main", kind: "head" },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ label: "main", kind: "head", local: true, remote: true });
+    expect(out[0].refs.map((r) => r.label)).toEqual(["main", "origin/main"]);
+  });
+});
+
+describe("rotateChips", () => {
+  it("returns [] for empty input regardless of rot", () => {
+    expect(rotateChips([], 0)).toEqual([]);
+    expect(rotateChips([], 5)).toEqual([]);
+    expect(rotateChips([], -3)).toEqual([]);
+  });
+
+  it("rot 0 returns the list in its original order", () => {
+    expect(rotateChips(["a", "b", "c"], 0)).toEqual(["a", "b", "c"]);
+  });
+
+  it("wraps a negative rot around the length", () => {
+    expect(rotateChips(["a", "b", "c"], -1)).toEqual(["c", "a", "b"]);
+  });
+
+  it("wraps an overflowing rot around the length", () => {
+    expect(rotateChips(["a", "b", "c"], 4)).toEqual(["b", "c", "a"]);
+  });
+
+  it("rotates a mergeRefChips display list (merged entries), not raw refs", () => {
+    const merged = mergeRefChips([
+      { label: "main", kind: "head" },
+      { label: "origin/main", kind: "remote" },
+      { label: "wip", kind: "branch" },
+    ]);
+    expect(merged.map((c) => c.label)).toEqual(["main", "wip"]);
+    expect(rotateChips(merged, 1).map((c) => c.label)).toEqual(["wip", "main"]);
+  });
+
+  it("does not mutate the input array", () => {
+    const input = ["a", "b", "c"];
+    rotateChips(input, 1);
+    expect(input).toEqual(["a", "b", "c"]);
   });
 });

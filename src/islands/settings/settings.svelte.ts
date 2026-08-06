@@ -206,6 +206,11 @@ export interface PersistedSettings {
   graphLabelPriority: GraphLabelPriority;
   // Where ref labels are drawn: inline before the subject (this app's
   // default) or in the resizable left column (this app's original layout).
+  // Inline is the default because the label column reserves roughly 14% of
+  // the canvas width that sits empty on most rows, and Fork/GitKraken/Tower
+  // all label inline too; existing users who prefer the column can restore it
+  // with one Settings select. A deliberate, user-confirmed spec decision —
+  // not an unexamined leftover default.
   graphLabelLayout: GraphLabelLayout;
   // Periodically `git fetch --all --prune` while a repo is open, so
   // ahead/behind counts and incoming remote changes stay current without a

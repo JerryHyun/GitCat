@@ -67,6 +67,14 @@ export interface MergedChip {
 // first appearance in the input, so the caller's priority sort (orderRefs)
 // still decides what leads. Pure: never mutates the input.
 export function mergeRefChips<T extends Chip>(refs: readonly T[]): MergedChip[] {
+  // Empty in, empty out — this runs per visible row on every frame, and most
+  // rows have no refs, so skip the Map/array allocations below entirely.
+  if (!refs.length) return [];
+  // Index every local (branch/head) ref by name in its OWN full pass first,
+  // before the fold-remotes-in pass below — so a remote that appears EARLIER
+  // in the input than its matching local (e.g. backend order happens to list
+  // `origin/main` before `main`) still finds it: pairing must not depend on
+  // input order.
   const localByName = new Map<string, MergedChip>();
   for (const r of refs) {
     if (r.kind === "branch" || r.kind === "head") {
@@ -91,4 +99,19 @@ export function mergeRefChips<T extends Chip>(refs: readonly T[]): MergedChip[] 
     merged.push({ label: r.label, kind: r.kind, local: false, remote: r.kind === "remote", refs: [r] });
   }
   return merged;
+}
+
+// Rotate `list` left by `rot` places (any integer; negative and out-of-range
+// values wrap into [0, n)). Empty in, empty out. Never mutates the argument.
+//
+// Lives here rather than inline in main.ts's displayChipsFor because rotation
+// must walk the MERGED display list (what's actually painted — a local+remote
+// pair folded into one chip counts once), never the raw per-commit ref list;
+// keeping the math next to mergeRefChips makes that dependency obvious and
+// lets both be exercised by the same unit tests.
+export function rotateChips<T>(list: readonly T[], rot: number): T[] {
+  const n = list.length;
+  if (n === 0) return [];
+  const k = ((rot % n) + n) % n;
+  return k === 0 ? list.slice() : list.slice(k).concat(list.slice(0, k));
 }

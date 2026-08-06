@@ -11,7 +11,7 @@ import { commitMenuCtrl } from "../islands/commitmenu/commitmenu.svelte.ts";
 import { snapshotPreviewCtrl } from "../islands/snapshotpreview/snapshotpreview.svelte.ts";
 import { submoduleNavCtrl } from "../islands/submodulenav/submodulenav.svelte.ts";
 import { ribbonTickFracs, RIBBON_TOP_FRAC, RIBBON_BOT_FRAC, RIBBON_MIN_TICK_PX } from "./ribbon.ts";
-import { orderRefs, mergeRefChips } from "./reforder.ts";
+import { orderRefs, mergeRefChips, rotateChips } from "./reforder.ts";
 import { LruCache } from "./graphcache.ts";
 import { dashboardCtrl } from "../islands/dashboard/dashboard.svelte.ts";
 import { repoSummaryCtrl } from "../islands/reposummary/reposummary.svelte.ts";
@@ -835,7 +835,8 @@ function fitChips(list,cap,x0,xLimit,gap){
 // `rowColor` still tints a plain branch chip — see paintChip). Reserved room
 // for the pill (RESERVE) is generous enough for a two-digit count so it always
 // fits. Also records every placed chip's x-span in chipHit (row -> spans) for
-// later tasks' click/hover targeting, exactly like overflowHit below.
+// chipEntryAt's hover-tooltip (labelAt) and label-context-menu targeting
+// (the contextmenu handler below), exactly like overflowHit below.
 const PLUS_RESERVE=34;
 function drawGutterChips(row,x0,xLimit,y,colorOverride,gap,rowColor){
   overflowHit.delete(row); chipHit.delete(row);
@@ -972,10 +973,12 @@ function chipEntryAt(mx,row){
 }
 // The ref chip(s) at screen-x `mx` in `row`'s BRANCH/TAG gutter (column mode) or
 // under a painted chip (inline mode), or null when mx isn't over a labelled
-// surface — the hover-tooltip + right-click-checkout target. Returns the whole
-// ref list IN DISPLAY ORDER (so the tooltip lists every co-located ref, top one
-// = what's currently shown) regardless of the show-all-tags mode, since the
-// tooltip is exactly where you read the ones the gutter couldn't fit.
+// surface — the hover-tooltip + right-click-checkout target. Column mode
+// returns the whole ref list IN DISPLAY ORDER (so the tooltip lists every
+// co-located ref, top one = what's currently shown) regardless of the
+// show-all-tags mode, since the tooltip is exactly where you read the ones the
+// gutter couldn't fit. Inline mode instead returns just the HOVERED chip's own
+// refs — see the comment down in that branch for why.
 function labelAt(mx,row){
   if(!G||row<0) return null;
   if(layout.branchColW>0){
@@ -983,9 +986,14 @@ function labelAt(mx,row){
     const l=orderedRefsFor(row); return l.length?l:null;
   }
   // Inline: only over an actual chip — the subject text to its right is not a
-  // label surface, and hovering it must not grow a tooltip.
-  if(!chipEntryAt(mx,row)) return null;
-  const l=orderedRefsFor(row); return l.length?l:null;
+  // label surface, and hovering it must not grow a tooltip. Return the
+  // HOVERED chip's own refs (not orderedRefsFor's raw row list): hover and
+  // right-click must describe the SAME chip, and refRot indexes two
+  // different-length lists (the raw per-commit ref list vs the merged display
+  // list) — reusing the raw list here could bold the wrong "current" ref once
+  // a "+N" cycle has rotated past a folded local+remote pair.
+  const e=chipEntryAt(mx,row);
+  return e?e.refs:null;
 }
 // The hover tooltip: one ref per line, each with a kind-coloured dot and a muted
 // kind label, the current (top) one bolded. Built from DOM nodes (textContent,
@@ -1144,7 +1152,7 @@ cv.addEventListener("contextmenu",(e)=>{
   // the cursor, reusing it verbatim. Anywhere else on the row (the commit dot or
   // message) → the commit menu below, unchanged. kind "head" = the current branch
   // (isCurrent); "branch" = another local branch; tags/remotes fall through.
-  const rowRefs=(G&&G.allRefs&&G.allRefs[row])||(G&&G.refs&&G.refs[row]?[G.refs[row]]:[]);
+  const rowRefs=rowRefsOf(row);
   const inGutter=layout.branchColW>0&&p.x<layout.branchColW;
   const chip=layout.branchColW>0?null:chipEntryAt(p.x,row);
   if(inGutter||chip){
@@ -1905,27 +1913,35 @@ const refRot=new Map();
 let refRotEpoch=0;
 const overflowHit=new Map();
 // Every rendered row's PAINTED chip x-spans (CSS px, scroll-independent),
-// entry included — later tasks' hover/click use this instead of re-deriving
-// layout. Rebuilt per row exactly like overflowHit above.
+// entry included — chipEntryAt reads this to answer "which MergedChip is
+// under this x", which feeds both the hover tooltip (labelAt) and the
+// label-context-menu's chip targeting, instead of either re-deriving layout.
+// Rebuilt per row exactly like overflowHit above.
 const chipHit=new Map();
 function rowSha(row){ return (BACKEND&&BACKEND.rows[row]&&BACKEND.rows[row].sha)||("r"+row); }
+// This row's refs exactly as the backend delivered them (no priority sort, no
+// rotation): the FULL list when available (allRefs), else the single primary
+// ref (refs[row]) wrapped in an array, else []. Shared by the contextmenu
+// handler's rowRefs, orderedRefsFor and displayChipsFor below so this fallback
+// chain lives in one place instead of three copies that could drift apart.
+function rowRefsOf(row){
+  return (G&&G.allRefs&&G.allRefs[row])||(G&&G.refs&&G.refs[row]?[G.refs[row]]:[]);
+}
 // This row's ref chips in display order: priority-sorted then rotated. Uses the
 // FULL list (allRefs) so rotation can reach every ref even when only the primary
 // (refs[0]) would otherwise show.
 function orderedRefsFor(row){
-  const list=(G&&G.allRefs&&G.allRefs[row])||(G&&G.refs&&G.refs[row]?[G.refs[row]]:[]);
+  const list=rowRefsOf(row);
   return orderRefs(list, graphTagsFirst, refRot.get(rowSha(row))||0);
 }
 // The row's DISPLAY chips: priority-sorted refs, folded local+remote (see
-// reforder.ts::mergeRefChips), THEN rotated — rotation must walk what's on
-// screen (merged entries), not raw refs, or "+N" cycling would need two clicks
-// to move past a merged pair.
+// reforder.ts::mergeRefChips), THEN rotated via reforder.ts::rotateChips —
+// rotation must walk what's on screen (merged entries), not raw refs, or "+N"
+// cycling would need two clicks to move past a merged pair.
 function displayChipsFor(row){
-  const list=(G&&G.allRefs&&G.allRefs[row])||(G&&G.refs&&G.refs[row]?[G.refs[row]]:[]);
+  const list=rowRefsOf(row);
   const merged=mergeRefChips(orderRefs(list, graphTagsFirst, 0));
-  const n=merged.length; if(n<2) return merged;
-  const k=((refRot.get(rowSha(row))||0)%n+n)%n;
-  return k===0?merged:merged.slice(k).concat(merged.slice(0,k));
+  return rotateChips(merged, refRot.get(rowSha(row))||0);
 }
 // Spin this row's labels one place left, bringing the next hidden ref to the
 // front — the "+N" chip's click action. No-op with fewer than two refs.
@@ -2448,7 +2464,7 @@ function restoreGraphFromCache(path){
   loadedSeedTips=c.seedTips; loadedHeadOid=c.headOid; lastRefSig=c.refSig;
   graphStreamComplete=true; lastLoadTruncated=false;
   refRot.clear(); for(const [k,v] of c.refRot) refRot.set(k,v);
-  overflowHit.clear(); bufferValid=false;
+  overflowHit.clear(); chipHit.clear(); bufferValid=false;
   recomputeLayout();                                  // rebuild scroll bounds for this G.N
   state.scrollTop=state.scrollTarget=clampScroll(c.scrollTarget); // land back at the same place
   // Selection resets to none, exactly like a fresh load (loadGraph) would — the
@@ -2485,7 +2501,7 @@ async function startGraphStream(path){
   BACKEND = { n:0, oids:[], lane:[], color:[], merge:[], gapStart:[0], gapTop:[], gapBot:[], gapColor:[], rows:[], refs:[], allRefs:[], ncol:7, laneCount:0 };
   // A fresh graph (repo switch or refresh) invalidates any per-commit label
   // rotation the user had spun up — the ref set itself may have changed.
-  refRot.clear(); overflowHit.clear();
+  refRot.clear(); overflowHit.clear(); chipHit.clear();
   // A fresh stream: the incremental-refresh baseline is now stale until this
   // load finishes. loadedOids is rebuilt from scratch as batches arrive; the
   // fast path (see reloadGraph) is disabled until `done` sets graphStreamComplete.
