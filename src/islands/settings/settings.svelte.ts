@@ -103,9 +103,10 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
 
 // Safety-Manager snapshot auto-cleanup policy — see PersistedSettings below.
 export type SnapshotRetentionMode = "off" | "count" | "age" | "hybrid";
-// Which ref chip wins the front of a commit's gutter labels when the graph is
-// too narrow to show them all. "tag" is the backend's own order (a tag beats the
-// branch); "branch" promotes the checked-out/local branch ahead of tags.
+// Which ref chip wins the front of a commit's ref labels when more than one
+// can't all be shown (showAllCommitTags off — see that setting). "tag" is the
+// backend's own order (a tag beats the branch); "branch" promotes the
+// checked-out/local branch ahead of tags.
 export type GraphLabelPriority = "tag" | "branch";
 // Where ref labels sit relative to a commit's subject: "inline" draws them
 // immediately before the subject text (Fork-style, and the default); "column"
@@ -200,8 +201,8 @@ export interface PersistedSettings {
   // row is a real layout change existing users haven't opted into, unlike
   // the other toggles here which don't affect the graph's own rendering.
   showAllCommitTags: boolean;
-  // Which kind of ref wins the front of a commit's gutter labels when the graph
-  // can't fit them all (and thus which one the "+N" cycle starts from). "tag"
+  // Which kind of ref wins the front of a commit's ref labels when it can't
+  // show them all (and thus which one the "+N" cycle starts from). "tag"
   // keeps the app's original tag-first order; "branch" puts the branch first.
   graphLabelPriority: GraphLabelPriority;
   // Where ref labels are drawn: inline before the subject (this app's
@@ -868,7 +869,7 @@ class SettingsState {
   setGraphLabelPriority(v: GraphLabelPriority): void {
     this.graphLabelPriority = v;
     saveSettings({ graphLabelPriority: v });
-    bridge.setGraphLabelPriority(v); // reorders the gutter chips live — see legacy/main.ts
+    bridge.setGraphLabelPriority(v); // reorders the graph's ref labels live — see legacy/main.ts
   }
 
   setGraphLabelLayout(v: GraphLabelLayout): void {

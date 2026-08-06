@@ -66,17 +66,22 @@ const PADX=18, ROW_H_BASE=26, LANE_W_BASE=14, DOT_R_BASE=4.6;
 // darkened vs the message column; DIVIDER_ALPHA = the hairline between them.
 // All four are read straight by draw() — tweak the look here.
 const BRANCH_BAR_W=3, BRANCH_WASH_ALPHA=0.17, BRANCH_BAR_ALPHA=0.95, GRAPH_CHANNEL_ALPHA=0.20, GRAPH_DIVIDER_ALPHA=0.6, BRANCH_ROW_GAP=3;
-// Dedicated left BRANCH / TAG column (GitKraken-style): ref labels live in a
-// fixed left gutter [0,branchColW) instead of inline before the subject, so the
-// message column stays clean and branch names align in one scannable strip. Width
-// is ~19% of the graph, clamped to [MIN,MAX]; it collapses to 0 (falling back to
-// inline chips) when the window is too narrow to spare a column. BRANCH_PAD_L is
-// the label's left inset inside the gutter.
+// Dedicated left BRANCH / TAG column (GitKraken-style), the opt-in alternative
+// to the default inline-before-the-subject layout (graphLabelLayout setting —
+// see setGraphLabelLayout): ref labels live in a fixed left gutter
+// [0,branchColW) instead of inline, so the message column stays clean and
+// branch names align in one scannable strip. Width is ~14% of the graph,
+// clamped to [MIN,MAX]; like the inline layout, it still collapses to 0 when
+// the window is too narrow to spare a column. BRANCH_PAD_L is the label's left
+// inset inside the gutter.
 const BRANCH_COL_MIN=96, BRANCH_COL_MAX=260, BRANCH_PAD_L=12, COL_HANDLE=5, MIN_GRAPH_W=32;
 // The branch-colour bar that marks each row's branch just inside the message
 // column: RBAR_INSET px right of the graph|message divider, then MSG_TEXT_PAD px
 // in total before the message text begins — so the bar reads as separated from
-// both the graph and the text (see draw()'s tag pass).
+// both the graph and the text (see draw()'s tag pass). MSG_TEXT_PAD does double
+// duty in inline layout: it's also the gap left after the last inline chip (or
+// its "+N" pill) before the subject starts, same breathing room the bar gets
+// in column layout (see draw()'s inline chip pass).
 const RBAR_INSET=2, MSG_TEXT_PAD=11;
 // Hard length caps against pathological input. Line/commit COUNT is capped
 // upstream, but a single string's LENGTH is not: a commit summary can be an
@@ -206,8 +211,11 @@ function generateGraph(N){
   // origin/main merge into one [🖥☁ main] chip), a synced plain branch, and a
   // DIVERGED pair (local and origin tips on different commits, two rows apart)
   // so the local-vs-remote distinction is visible without a real repo. Rows
-  // 0/12/20/26 sit below the first generated tag (r=40) and below the first
-  // generated branch (r%223===0), so they never collide with generated refs.
+  // 12/20/26 sit below the first generated tag (r=40) and below the first
+  // generated branch (r%223===0), so they avoid colliding with generated refs.
+  // Row 0 is the opposite: it deliberately RIDES the generated head ref
+  // (refs[0] above) rather than dodging it, so main + origin/main demo the
+  // merged head chip on the one row that's guaranteed to carry "head".
   if(N>30){
     allRefs[0]=[...allRefs[0],{label:"origin/main",kind:"remote"}];
     allRefs[12]=[{label:"release/2.1",kind:"branch"},{label:"origin/release/2.1",kind:"remote"}];
@@ -299,9 +307,10 @@ function recomputeLayout(){
   layout.laneW=LANE_W_BASE*(0.85+0.15*z);
   layout.dotR=DOT_R_BASE*(0.85+0.15*z);
   layout.chipFont="600 "+Math.round(11.5*Math.min(1.3,z))+"px "+FONT_UI;
-  // Left branch/tag column width: ~19% of the graph, clamped to [MIN,MAX], but
-  // never so wide that the graph lanes + subject lose their room — collapses to 0
-  // (inline chips, the pre-column behaviour) when the window is too narrow.
+  // Left branch/tag column width (column layout only): ~14% of the graph,
+  // clamped to [MIN,MAX], but never so wide that the graph lanes + subject
+  // lose their room — collapses to 0 (falls back to the same rendering path
+  // inline layout always uses) when the window is too narrow.
   const autoB=Math.round(Math.min(BRANCH_COL_MAX,Math.max(BRANCH_COL_MIN,view.cssW*0.14)));
   // Gate on the layout MODE, not on the resulting width: column mode's clamp
   // must run unconditionally, exactly as it did pre-inline, since a divider
@@ -441,7 +450,7 @@ function renderContent(st, rowLo, rowHi, strip){
   // into the message and there's no need to clip; panning still reaches lanes
   // wider than the column. lastTx is cached for the divider-drag hit test.
   const contentTx=Math.min(laneX(maxLane)+dotR+14,W-AUTHOR_GUTTER-MIN_SUBJECT_W);
-  const tx=strip?lastTx:((bcw>0&&colW.graph!=null)
+  const tx=strip?lastTx:(colW.graph!=null
     ? Math.min(Math.max(contentTx,bcw+Math.round(colW.graph)),W-AUTHOR_GUTTER-MIN_SUBJECT_W)
     : contentTx);
   if(!strip) lastTx=tx;
@@ -547,10 +556,10 @@ function renderContent(st, rowLo, rowHi, strip){
     if(bcw>0){ drawGutterChips(r,BRANCH_PAD_L,bcw-6,y,bcol,6); }
     else {
       // Same breathing room after the last chip that a column-mode message gets
-      // after the divider (MSG_TEXT_PAD) — drawGutterChips returns the last
-      // chip's right EDGE, so without this the subject starts flush against
-      // the chip border. Only when something was drawn: an unlabelled row's
-      // subject must stay exactly at tx.
+      // after the divider (MSG_TEXT_PAD) — drawGutterChips returns the right
+      // edge of the last thing it actually drew (a chip, or the "+N" pill), so
+      // without this the subject starts flush against that border. Only when
+      // something was drawn: an unlabelled row's subject must stay exactly at tx.
       const cx0=cx;
       cx=drawGutterChips(r,cx,W-AUTHOR_GUTTER-MIN_SUBJECT_W,y,bcol,8);
       if(cx>cx0) cx+=MSG_TEXT_PAD;
@@ -761,6 +770,25 @@ function measureChip(entry, maxWidth) {
   }
   return { text, w: ctx.measureText(text).width + CHIP_PAD * 2 + iconsW };
 }
+// Pick black-or-white text for a solid fill colour, via the WCAG relative
+// luminance the "black text" vs "white text" contrast ratio is itself built
+// on (gamma-corrected sRGB, not a raw-channel luma average) — a naive
+// (0.299R+0.587G+0.114B) luma threshold picks the LOSING colour for several of
+// our saturated lane hexes (e.g. light theme's teal/orange/blue lanes read as
+// "dark" under that formula but actually contrast better with black text), so
+// this compares against the real crossover point (~0.179) instead of
+// guessing one. `hex` is #rgb or #rrggbb; anything else (a stray CSS
+// variable, an empty string before the theme's first read) falls back to
+// white rather than throwing.
+function fgForFill(hex) {
+  let h = String(hex || "").replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const r = parseInt(h.slice(0, 2), 16) / 255, g = parseInt(h.slice(2, 4), 16) / 255, b = parseInt(h.slice(4, 6), 16) / 255;
+  if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return "#ffffff";
+  const lin = (c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+  const L = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  return L > 0.179 ? "#111417" : "#ffffff";
+}
 // Paint a pre-measured chip (see measureChip), leading with a monitor/cloud
 // glyph per `entry.local`/`entry.remote` (see reforder.ts::mergeRefChips) so a
 // folded local+remote pair reads as one chip with both icons, not two chips
@@ -770,7 +798,9 @@ function paintChip(x, y, text, w, entry, rowColor) {
   // always matches the lane lines it sits beside — one colour story for the
   // whole row. What KIND of ref it is no longer rides on colour at all: the
   // monitor/cloud glyphs carry local/remote, and head's solid fill (below)
-  // carries "you are here".
+  // carries "you are here". `|| refKindColor(kind)` is defensive-only: both
+  // call sites (drawGutterChips, in both layouts) always pass a real lane
+  // colour as rowColor.
   const kind = entry.kind;
   const col = rowColor || refKindColor(kind);
   ctx.font = layout.chipFont;
@@ -780,9 +810,14 @@ function paintChip(x, y, text, w, entry, rowColor) {
   ctx.lineWidth = 1; ctx.strokeStyle = col; ctx.stroke();
   // Non-head labels draw their text (and glyphs) in the bright theme.text (NOT
   // the branch colour on a same-colour tint, which read as low-contrast/
-  // blurry) — the colour identity stays in the border + fill tint. head stays
-  // dark-on-solid, glyphs included so they read as part of the label.
-  const fg = kind === "head" ? theme.bg : theme.text;
+  // blurry) — the colour identity stays in the border + fill tint. head sits
+  // on a near-opaque (0.95-alpha) fill of `col` itself, so its text/glyphs
+  // pick black or white via fgForFill(col) above instead of a fixed
+  // theme.bg — a fixed colour reads fine on dark theme's light pastel lanes
+  // (theme.bg is dark there) but fails WCAG on several of light theme's
+  // darker/saturated lanes (theme.bg is white there, so it was always the
+  // "white text" choice, regardless of what the lane actually needed).
+  const fg = kind === "head" ? fgForFill(col) : theme.text;
   const s = chipIconSize(h);
   let ix = x + CHIP_PAD;
   if (entry.local) { paintChipIcon(CHIP_ICON_MONITOR, ix, y, s, fg); ix += s + CHIP_ICON_GAP; }
@@ -806,8 +841,10 @@ function paintPlus(x,y,n){
 // Chip glyphs — the SAME lucide icons the sidebar renders as Svelte components
 // (@lucide/svelte v1.24.0, ISC: `monitor`, `cloud`), here as raw path data in a
 // Path2D because a canvas can't host a component and emoji render differently
-// per webview. Stroked in the chip's own colour at chip scale; lucide draws in
-// a 24×24 box with stroke-width 2, so scaling the box scales the stroke too.
+// per webview. Stroked in the label's own TEXT colour (paintChip's `fg`), at
+// chip scale, so the glyphs read as part of the label, not a separate colour
+// story; lucide draws in a 24×24 box with stroke-width 2, so scaling the box
+// scales the stroke too.
 const CHIP_ICON_CLOUD = new Path2D("M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z");
 const CHIP_ICON_MONITOR = new Path2D(
   "M4 3h16a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2H4a2 2 0 0 1 -2 -2V5a2 2 0 0 1 2 -2Z M8 21h8 M12 17v4",
@@ -967,11 +1004,14 @@ function zoomAt(cy,dir){
 
 let down=null, sbDrag=null, colDrag=null;
 // Which resizable column divider (if any) sits under screen-x `x`: the
-// branch|graph divider at bcw, or the graph|message divider at the last-drawn tx.
-// A COL_HANDLE-px grab zone each side. Null when no branch column is shown.
-function dividerAt(x){ const bcw=layout.branchColW; if(bcw<=0) return null;
-  if(Math.abs(x-bcw)<=COL_HANDLE) return "branch";
-  if(lastTx>bcw+COL_HANDLE&&Math.abs(x-lastTx)<=COL_HANDLE) return "graph";
+// branch|graph divider at bcw (column layout only — there's nothing there to
+// grab in inline layout, bcw is 0), or the graph|message divider at the
+// last-drawn tx (both layouts — inline's persisted graph width is real and
+// draggable exactly like column layout's, it's just anchored at 0 instead of
+// bcw). A COL_HANDLE-px grab zone each side.
+function dividerAt(x){ const bcw=layout.branchColW;
+  if(bcw>0&&Math.abs(x-bcw)<=COL_HANDLE) return "branch";
+  if(lastTx>COL_HANDLE&&Math.abs(x-lastTx)<=COL_HANDLE) return "graph";
   return null; }
 // The painted chip under screen-x `mx` in `row` (inline mode) — chipHit spans
 // are recorded per rendered row by drawGutterChips, same lifecycle as
@@ -982,28 +1022,31 @@ function chipEntryAt(mx,row){
   return null;
 }
 // The ref chip(s) at screen-x `mx` in `row`'s BRANCH/TAG gutter (column mode) or
-// under a painted chip (inline mode), or null when mx isn't over a labelled
-// surface — the hover-tooltip + right-click-checkout target. Column mode
-// returns the whole ref list IN DISPLAY ORDER (so the tooltip lists every
-// co-located ref, top one = what's currently shown) regardless of the
-// show-all-tags mode, since the tooltip is exactly where you read the ones the
-// gutter couldn't fit. Inline mode instead returns just the HOVERED chip's own
-// refs — see the comment down in that branch for why.
+// under a painted chip / its "+N" pill (inline mode), or null when mx isn't
+// over a labelled surface — the hover-tooltip + right-click-checkout target.
+// Both branches now read off displayChipsFor's single display-ordered list
+// (never a separately-rotated raw ref list), so "top one = what's currently
+// shown" is true in both layouts and stays true mid "+N" cycle. Column mode
+// flattens every display chip's members in order (so the tooltip lists every
+// co-located ref regardless of show-all-tags, same as before). Inline mode
+// returns just the HOVERED chip's own refs so hover/right-click describe the
+// SAME chip — except over the "+N" pill itself, where it returns the full
+// list too, exactly like column mode, since that pill IS the "read what's
+// hidden" affordance.
 function labelAt(mx,row){
   if(!G||row<0) return null;
   if(layout.branchColW>0){
     if(mx>=layout.branchColW) return null;
-    const l=orderedRefsFor(row); return l.length?l:null;
+    const l=displayChipsFor(row).flatMap(e=>e.refs); return l.length?l:null;
   }
-  // Inline: only over an actual chip — the subject text to its right is not a
-  // label surface, and hovering it must not grow a tooltip. Return the
-  // HOVERED chip's own refs (not orderedRefsFor's raw row list): hover and
-  // right-click must describe the SAME chip, and refRot indexes two
-  // different-length lists (the raw per-commit ref list vs the merged display
-  // list) — reusing the raw list here could bold the wrong "current" ref once
-  // a "+N" cycle has rotated past a folded local+remote pair.
+  // Inline: over an actual chip, or over its "+N" overflow pill — the subject
+  // text past either is not a label surface, and hovering it must not grow a
+  // tooltip.
   const e=chipEntryAt(mx,row);
-  return e?e.refs:null;
+  if(e) return e.refs;
+  const oh=overflowHit.get(row);
+  if(oh&&mx>=oh.x0&&mx<=oh.x1){ const l=displayChipsFor(row).flatMap(c=>c.refs); return l.length?l:null; }
+  return null;
 }
 // The hover tooltip: one ref per line, each with a kind-coloured dot and a muted
 // kind label, the current (top) one bolded. Built from DOM nodes (textContent,
@@ -1012,9 +1055,9 @@ function labelAt(mx,row){
 // behind a "+N" pill.
 function showLabelTip(refs,cx,cy){ const t=$("#graphLabelTip"); if(!t) return;
   if(refs&&refs.length){
-    // pointermove fires this every frame over the gutter; only rebuild the child
-    // nodes when the ref set actually changed (a new row / a cycle), otherwise
-    // just reposition — no per-frame DOM churn.
+    // pointermove fires this every frame over a label (either layout); only
+    // rebuild the child nodes when the ref set actually changed (a new row /
+    // a cycle), otherwise just reposition — no per-frame DOM churn.
     const sig=refs.map(r=>r.kind+":"+r.label).join("|");
     if(t.dataset.sig!==sig){
       t.dataset.sig=sig; t.textContent="";
@@ -1079,8 +1122,9 @@ cv.addEventListener("pointermove",(e)=>{
     return;
   }
   const h=hitTest(p.x,p.y), nr=h?h.row:-1; if(nr!==state.hoverRow){state.hoverRow=nr;dirty=true;}
-  // Full branch/tag name tooltip when hovering a label in the BRANCH/TAG gutter,
-  // and a pointer cursor there to hint it's clickable (right-click = checkout).
+  // Full branch/tag name tooltip when hovering a ref label in either layout —
+  // the gutter cell in column mode, a chip or its "+N" pill inline — and a
+  // pointer cursor there to hint it's clickable (right-click = checkout).
   const lbl = h ? labelAt(p.x, h.row) : null;
   showLabelTip(lbl, e.clientX, e.clientY);
   cv.style.cursor=dividerAt(p.x)?"col-resize":(lbl?"pointer":(h&&h.onDot?"grab":"default"));
@@ -1157,11 +1201,14 @@ cv.addEventListener("contextmenu",(e)=>{
   const row=hit.row;
   select(row);
   showLabelTip(null);
-  // Right-click a LOCAL BRANCH label in the left gutter → the sidebar's full
-  // branch-management menu (checkout / push / merge / rebase / reset / delete) at
-  // the cursor, reusing it verbatim. Anywhere else on the row (the commit dot or
-  // message) → the commit menu below, unchanged. kind "head" = the current branch
-  // (isCurrent); "branch" = another local branch; tags/remotes fall through.
+  // Right-click a ref label — the gutter cell in column mode, the clicked chip
+  // inline — opens a menu keyed off what kind of ref is there: a LOCAL BRANCH
+  // label (kind "head" = the current branch (isCurrent), "branch" = another
+  // local branch) opens the sidebar's full branch-management menu (checkout /
+  // push / merge / rebase / reset / delete) at the cursor, reusing it verbatim;
+  // a REMOTE label opens the sidebar's checkout-confirm instead (see below);
+  // tags fall through, same as anywhere else on the row (the commit dot or
+  // message) → the commit menu below, unchanged.
   const rowRefs=rowRefsOf(row);
   const inGutter=layout.branchColW>0&&p.x<layout.branchColW;
   const chip=layout.branchColW>0?null:chipEntryAt(p.x,row);
@@ -1899,10 +1946,12 @@ function applyThemeMode(mode){
 let showAllTags=false;
 function setGraphShowAllTags(v){ showAllTags=v; dirty=true; }
 // Global "label priority" preference (settings.svelte.ts's graphLabelPriority).
-// The backend hands refs tag-first; when a narrow gutter can only show one, that
-// means the tag wins. `graphTagsFirst=false` ("Branches first") promotes the
-// checked-out branch / local branches ahead of tags instead. Seeded on boot,
-// updated live by the setter — same idiom as setGraphShowAllTags above.
+// The backend hands refs tag-first; with showAllTags off (the one-visible-chip
+// cap is driven by that setting, not by how much width a layout happens to
+// have), that means the tag wins the one shown slot. `graphTagsFirst=false`
+// ("Branches first") promotes the checked-out branch / local branches ahead of
+// tags instead. Seeded on boot, updated live by the setter — same idiom as
+// setGraphShowAllTags above.
 let graphTagsFirst=true;
 function setGraphLabelPriority(v){ graphTagsFirst=(v!=="branch"); dirty=true; }
 // Where ref labels live (settings.svelte.ts's graphLabelLayout): inline before
@@ -1932,25 +1981,21 @@ function rowSha(row){ return (BACKEND&&BACKEND.rows[row]&&BACKEND.rows[row].sha)
 // This row's refs exactly as the backend delivered them (no priority sort, no
 // rotation): the FULL list when available (allRefs), else the single primary
 // ref (refs[row]) wrapped in an array, else []. Shared by the contextmenu
-// handler's rowRefs, orderedRefsFor and displayChipsFor below so this fallback
-// chain lives in one place instead of three copies that could drift apart.
+// handler's rowRefs and displayChipsFor below so this fallback chain lives in
+// one place instead of two copies that could drift apart.
 function rowRefsOf(row){
   return (G&&G.allRefs&&G.allRefs[row])||(G&&G.refs&&G.refs[row]?[G.refs[row]]:[]);
-}
-// This row's ref chips in display order: priority-sorted then rotated. Uses the
-// FULL list (allRefs) so rotation can reach every ref even when only the primary
-// (refs[0]) would otherwise show.
-function orderedRefsFor(row){
-  const list=rowRefsOf(row);
-  return orderRefs(list, graphTagsFirst, refRot.get(rowSha(row))||0);
 }
 // The row's DISPLAY chips: priority-sorted refs, folded local+remote (see
 // reforder.ts::mergeRefChips), THEN rotated via reforder.ts::rotateChips —
 // rotation must walk what's on screen (merged entries), not raw refs, or "+N"
-// cycling would need two clicks to move past a merged pair.
+// cycling would need two clicks to move past a merged pair. This is the single
+// source of truth for "what's currently shown": labelAt derives its tooltip
+// list from this (never a separately-rotated raw ref list), so the bolded
+// "current" ref always matches the chip actually on screen mid-cycle.
 function displayChipsFor(row){
   const list=rowRefsOf(row);
-  const merged=mergeRefChips(orderRefs(list, graphTagsFirst, 0));
+  const merged=mergeRefChips(orderRefs(list, graphTagsFirst));
   return rotateChips(merged, refRot.get(rowSha(row))||0);
 }
 // Spin this row's labels one place left, bringing the next hidden ref to the
@@ -1962,8 +2007,11 @@ function cycleRefs(row){
   refRot.set(k,((refRot.get(k)||0)+1)%n);
   refRotEpoch++; bufferValid=false; dirty=true;
 }
-// Chip colour/label per ref kind — shared by paintChip, the "+N" pill and the
-// hover tooltip so the three surfaces stay visually consistent.
+// Chip colour per ref kind — at HEAD this colours only the hover tooltip's
+// per-ref kind dots (showLabelTip). paintChip reaches it only through its
+// `rowColor || refKindColor(kind)` fallback, which both real call sites never
+// hit (they always pass a lane colour); paintPlus (the "+N" pill) doesn't call
+// it at all, it's a fixed muted colour regardless of kind.
 function refKindColor(kind){ return kind==="branch"?LANE_COLORS[0]:kind==="tag"?(theme.accent2||"#7FB6A6"):kind==="remote"?theme.muted:theme.accent; }
 function refKindLabel(kind){ return kind==="head"?"current":kind==="remote"?"remote":kind==="tag"?"tag":"branch"; }
 // "Serious work" mode (settings.svelte.ts's tamaEnabled) — toggles a single

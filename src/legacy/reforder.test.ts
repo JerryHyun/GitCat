@@ -15,7 +15,7 @@ describe("orderRefs", () => {
   it("returns [] for empty/nullish input without throwing", () => {
     expect(orderRefs([], true)).toEqual([]);
     expect(orderRefs(null, true)).toEqual([]);
-    expect(orderRefs(undefined, false, 3)).toEqual([]);
+    expect(orderRefs(undefined, false)).toEqual([]);
   });
 
   it("tagsFirst keeps the backend order (tag, head, branch, remote)", () => {
@@ -24,18 +24,6 @@ describe("orderRefs", () => {
 
   it("branch-first promotes head + local branches ahead of tags, remotes still last", () => {
     expect(labels(orderRefs(MIXED, false))).toEqual(["main", "feature", "v1.2.0", "origin/main"]);
-  });
-
-  it("rotates left by rot AFTER the priority sort", () => {
-    expect(labels(orderRefs(MIXED, true, 1))).toEqual(["main", "feature", "origin/main", "v1.2.0"]);
-    expect(labels(orderRefs(MIXED, true, 2))).toEqual(["feature", "origin/main", "v1.2.0", "main"]);
-  });
-
-  it("wraps rotation around the length (and handles negatives)", () => {
-    // rot === length is a full turn back to the start.
-    expect(labels(orderRefs(MIXED, true, 4))).toEqual(labels(orderRefs(MIXED, true, 0)));
-    expect(labels(orderRefs(MIXED, true, 5))).toEqual(labels(orderRefs(MIXED, true, 1)));
-    expect(labels(orderRefs(MIXED, true, -1))).toEqual(labels(orderRefs(MIXED, true, 3)));
   });
 
   it("is a stable sort — two tags keep their incoming relative order", () => {
@@ -49,7 +37,7 @@ describe("orderRefs", () => {
 
   it("does not mutate the input array", () => {
     const before = labels(MIXED);
-    orderRefs(MIXED, false, 2);
+    orderRefs(MIXED, false);
     expect(labels(MIXED)).toEqual(before);
   });
 
