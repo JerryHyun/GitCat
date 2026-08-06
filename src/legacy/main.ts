@@ -290,8 +290,15 @@ function recomputeLayout(){
   // never so wide that the graph lanes + subject lose their room — collapses to 0
   // (inline chips, the pre-column behaviour) when the window is too narrow.
   const autoB=Math.round(Math.min(BRANCH_COL_MAX,Math.max(BRANCH_COL_MIN,view.cssW*0.14)));
-  let bcw=graphLabelInline?0:(colW.branch!=null?Math.round(colW.branch):autoB);
-  if(bcw>0){
+  // Gate on the layout MODE, not on the resulting width: column mode's clamp
+  // must run unconditionally, exactly as it did pre-inline, since a divider
+  // drag can leave colW.branch negative (the drag handler applies no floor of
+  // its own) — clamping only when bcw>0 would let that negative value skip
+  // straight through to layout.branchColW/laneX() uncorrected.
+  let bcw;
+  if(graphLabelInline) bcw=0;
+  else{
+    bcw=colW.branch!=null?Math.round(colW.branch):autoB;
     bcw=Math.max(BRANCH_COL_MIN,Math.min(bcw,Math.round(view.cssW*0.45)));
     if(bcw>view.cssW-AUTHOR_GUTTER-MIN_SUBJECT_W-MIN_GRAPH_W) bcw=0;
   }
