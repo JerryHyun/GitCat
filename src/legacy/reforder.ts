@@ -44,3 +44,51 @@ export function orderRefs<T extends Chip>(refs: readonly T[] | null | undefined,
   const k = ((rot % n) + n) % n; // normalise into [0, n)
   return k === 0 ? sorted : sorted.slice(k).concat(sorted.slice(0, k));
 }
+
+// One DISPLAY chip, possibly standing for several co-located refs. The graph
+// paints `label` once with a monitor glyph when `local` and a cloud glyph when
+// `remote` — so a local branch sitting exactly on its remote counterpart reads
+// as one "[🖥☁ name]" chip instead of two chips saying the same name twice.
+// `refs` keeps every member (display order) for the hover tooltip and the
+// label context menu, which still act on real refs, never on the merged label.
+export interface MergedChip {
+  label: string;
+  kind: RefKind;
+  local: boolean;
+  remote: boolean;
+  refs: Chip[];
+}
+
+// Fold a commit's ordered ref list into display chips: a remote named
+// `<remote>/<name>` merges into the local branch/head chip labelled `<name>`
+// on the same commit (several remotes fold into that same chip); everything
+// else passes through one-to-one. Matching strips only the FIRST path segment
+// (the remote name) — `origin/feat/x` pairs with local `feat/x`. Entry order is
+// first appearance in the input, so the caller's priority sort (orderRefs)
+// still decides what leads. Pure: never mutates the input.
+export function mergeRefChips<T extends Chip>(refs: readonly T[]): MergedChip[] {
+  const localByName = new Map<string, MergedChip>();
+  for (const r of refs) {
+    if (r.kind === "branch" || r.kind === "head") {
+      const entry: MergedChip = { label: r.label, kind: r.kind, local: true, remote: false, refs: [r] };
+      localByName.set(r.label, entry);
+    }
+  }
+  const merged: MergedChip[] = [];
+  const emitted = new Set<MergedChip>();
+  for (const r of refs) {
+    if (r.kind === "branch" || r.kind === "head") {
+      const entry = localByName.get(r.label)!;
+      if (!emitted.has(entry)) { emitted.add(entry); merged.push(entry); }
+      continue;
+    }
+    if (r.kind === "remote") {
+      const slash = r.label.indexOf("/");
+      const name = slash >= 0 ? r.label.slice(slash + 1) : r.label;
+      const home = localByName.get(name);
+      if (home) { home.remote = true; home.refs.push(r); continue; }
+    }
+    merged.push({ label: r.label, kind: r.kind, local: false, remote: r.kind === "remote", refs: [r] });
+  }
+  return merged;
+}

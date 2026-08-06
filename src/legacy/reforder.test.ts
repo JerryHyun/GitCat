@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { orderRefs, type Chip } from "./reforder.ts";
+import { orderRefs, mergeRefChips, type Chip } from "./reforder.ts";
 
 // A commit carrying one of every kind, in the backend's own delivered order
 // (tag -> head -> branch -> remote, per git_read.rs::collect_refs).
@@ -60,5 +60,79 @@ describe("orderRefs", () => {
     ];
     expect(labels(orderRefs(withMystery, true))).toEqual(["main", "weird"]);
     expect(labels(orderRefs(withMystery, false))).toEqual(["main", "weird"]);
+  });
+});
+
+describe("mergeRefChips", () => {
+  it("folds a local branch and its same-named remote into one entry with both markers", () => {
+    const out = mergeRefChips([
+      { label: "stable", kind: "branch" },
+      { label: "origin/stable", kind: "remote" },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ label: "stable", kind: "branch", local: true, remote: true });
+    expect(out[0].refs.map((r) => r.label)).toEqual(["stable", "origin/stable"]);
+  });
+
+  it("keeps the head kind when the current branch pairs with its remote", () => {
+    const out = mergeRefChips([
+      { label: "main", kind: "head" },
+      { label: "origin/main", kind: "remote" },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].kind).toBe("head");
+    expect(out[0].local && out[0].remote).toBe(true);
+  });
+
+  it("folds several remotes of the same name into the one local entry", () => {
+    const out = mergeRefChips([
+      { label: "main", kind: "head" },
+      { label: "origin/main", kind: "remote" },
+      { label: "upstream/main", kind: "remote" },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].refs.map((r) => r.label)).toEqual(["main", "origin/main", "upstream/main"]);
+  });
+
+  it("an unmatched remote keeps its full remote-qualified label and only the cloud marker", () => {
+    const out = mergeRefChips([{ label: "origin/feature/x", kind: "remote" }]);
+    expect(out).toEqual([
+      { label: "origin/feature/x", kind: "remote", local: false, remote: true, refs: [{ label: "origin/feature/x", kind: "remote" }] },
+    ]);
+  });
+
+  it("an unmatched local gets only the monitor marker; tags get neither", () => {
+    const out = mergeRefChips([
+      { label: "wip", kind: "branch" },
+      { label: "v1.0.0", kind: "tag" },
+    ]);
+    expect(out[0]).toMatchObject({ label: "wip", local: true, remote: false });
+    expect(out[1]).toMatchObject({ label: "v1.0.0", kind: "tag", local: false, remote: false });
+  });
+
+  it("matches on the segment after the FIRST slash only — origin/feat/x pairs with local feat/x", () => {
+    const out = mergeRefChips([
+      { label: "feat/x", kind: "branch" },
+      { label: "origin/feat/x", kind: "remote" },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].label).toBe("feat/x");
+  });
+
+  it("preserves first-appearance order and never mutates its input", () => {
+    const input = [
+      { label: "v2.0.0", kind: "tag" },
+      { label: "main", kind: "head" },
+      { label: "origin/dev", kind: "remote" },
+      { label: "origin/main", kind: "remote" },
+    ] as const;
+    const snapshot = JSON.parse(JSON.stringify(input));
+    const out = mergeRefChips(input);
+    expect(out.map((c) => c.label)).toEqual(["v2.0.0", "main", "origin/dev"]);
+    expect(input).toEqual(snapshot);
+  });
+
+  it("returns [] for empty input", () => {
+    expect(mergeRefChips([])).toEqual([]);
   });
 });
