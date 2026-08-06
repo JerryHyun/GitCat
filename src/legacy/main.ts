@@ -949,14 +949,29 @@ function dividerAt(x){ const bcw=layout.branchColW; if(bcw<=0) return null;
   if(Math.abs(x-bcw)<=COL_HANDLE) return "branch";
   if(lastTx>bcw+COL_HANDLE&&Math.abs(x-lastTx)<=COL_HANDLE) return "graph";
   return null; }
-// The ref chip(s) at screen-x `mx` in `row`'s BRANCH/TAG gutter, or null when mx
-// isn't over a labelled gutter cell — the hover-tooltip + right-click-checkout
-// target. Returns the whole ref list IN DISPLAY ORDER (so the tooltip lists
-// every co-located ref, top one = what's currently shown) regardless of the
-// show-all-tags mode, since the tooltip is exactly where you read the ones the
-// gutter couldn't fit.
+// The painted chip under screen-x `mx` in `row` (inline mode) — chipHit spans
+// are recorded per rendered row by drawGutterChips, same lifecycle as
+// overflowHit. Null over the "+N" pill or plain subject text.
+function chipEntryAt(mx,row){
+  const spans=chipHit.get(row); if(!spans) return null;
+  for(const s of spans) if(mx>=s.x0&&mx<=s.x1) return s.entry;
+  return null;
+}
+// The ref chip(s) at screen-x `mx` in `row`'s BRANCH/TAG gutter (column mode) or
+// under a painted chip (inline mode), or null when mx isn't over a labelled
+// surface — the hover-tooltip + right-click-checkout target. Returns the whole
+// ref list IN DISPLAY ORDER (so the tooltip lists every co-located ref, top one
+// = what's currently shown) regardless of the show-all-tags mode, since the
+// tooltip is exactly where you read the ones the gutter couldn't fit.
 function labelAt(mx,row){
-  if(!G||layout.branchColW<=0||mx>=layout.branchColW||row<0) return null;
+  if(!G||row<0) return null;
+  if(layout.branchColW>0){
+    if(mx>=layout.branchColW) return null;
+    const l=orderedRefsFor(row); return l.length?l:null;
+  }
+  // Inline: only over an actual chip — the subject text to its right is not a
+  // label surface, and hovering it must not grow a tooltip.
+  if(!chipEntryAt(mx,row)) return null;
   const l=orderedRefsFor(row); return l.length?l:null;
 }
 // The hover tooltip: one ref per line, each with a kind-coloured dot and a muted
@@ -1117,13 +1132,19 @@ cv.addEventListener("contextmenu",(e)=>{
   // message) → the commit menu below, unchanged. kind "head" = the current branch
   // (isCurrent); "branch" = another local branch; tags/remotes fall through.
   const rowRefs=(G&&G.allRefs&&G.allRefs[row])||(G&&G.refs&&G.refs[row]?[G.refs[row]]:[]);
-  if(layout.branchColW>0 && p.x<layout.branchColW){
-    const br=rowRefs.find(r=>r&&(r.kind==="branch"||r.kind==="head"));
+  const inGutter=layout.branchColW>0&&p.x<layout.branchColW;
+  const chip=layout.branchColW>0?null:chipEntryAt(p.x,row);
+  if(inGutter||chip){
+    // Column mode keeps its whole-cell behaviour (any local branch on the row);
+    // inline resolves to the CLICKED chip's own member refs, so right-clicking
+    // an unmatched origin/x chip can't open the menu of an unrelated local.
+    const pool=chip?chip.refs:rowRefs;
+    const br=pool.find(r=>r&&(r.kind==="branch"||r.kind==="head"));
     if(br){ sidebarCtrl.openMenuAt(br.label, br.kind==="head", null, e.clientX, e.clientY); return; }
     // A remote-tracking branch label (e.g. origin/main, upstream/3.13) → the
     // sidebar's checkout-confirm, which creates a local branch tracking it —
     // the same action clicking that remote in the sidebar performs.
-    const rem=rowRefs.find(r=>r&&r.kind==="remote");
+    const rem=pool.find(r=>r&&r.kind==="remote");
     if(rem){ sidebarCtrl.openCheckoutConfirm(rem.label, true, e.clientX, e.clientY); return; }
   }
   const sha=(BACKEND&&BACKEND.rows[row])?BACKEND.rows[row].sha:hhex(row);
