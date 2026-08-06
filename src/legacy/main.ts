@@ -11,7 +11,7 @@ import { commitMenuCtrl } from "../islands/commitmenu/commitmenu.svelte.ts";
 import { snapshotPreviewCtrl } from "../islands/snapshotpreview/snapshotpreview.svelte.ts";
 import { submoduleNavCtrl } from "../islands/submodulenav/submodulenav.svelte.ts";
 import { ribbonTickFracs, RIBBON_TOP_FRAC, RIBBON_BOT_FRAC, RIBBON_MIN_TICK_PX } from "./ribbon.ts";
-import { orderRefs } from "./reforder.ts";
+import { orderRefs, mergeRefChips } from "./reforder.ts";
 import { LruCache } from "./graphcache.ts";
 import { dashboardCtrl } from "../islands/dashboard/dashboard.svelte.ts";
 import { repoSummaryCtrl } from "../islands/reposummary/reposummary.svelte.ts";
@@ -523,8 +523,8 @@ function renderContent(st, rowLo, rowHi, strip){
     // (bcw===0) they fall back to inline chips, advancing cx so the subject
     // follows past whatever was drawn (chips + any pill).
     const bcol=LANE_COLORS[G.commitColor[r]];
-    if(bcw>0){ drawGutterChips(r,BRANCH_PAD_L,bcw-6,y,bcol,6); }
-    else { cx=drawGutterChips(r,cx,W-AUTHOR_GUTTER-MIN_SUBJECT_W,y,null,8); }
+    if(bcw>0){ drawGutterChips(r,BRANCH_PAD_L,bcw-6,y,bcol,6,bcol); }
+    else { cx=drawGutterChips(r,cx,W-AUTHOR_GUTTER-MIN_SUBJECT_W,y,null,8,bcol); }
     // Skip the per-row message/author/sha text while scrolling FAST (fastScroll):
     // glyph rasterisation is the single biggest per-frame cost on a software-
     // rendered canvas, and at this speed the text is an unreadable blur anyway
@@ -699,44 +699,64 @@ function drawWorkdirBand(){
   ctx.strokeStyle=theme.border; ctx.lineWidth=1;
   ctx.beginPath(); ctx.moveTo(0,rowH+0.5); ctx.lineTo(W,rowH+0.5); ctx.stroke();
 }
-// `maxWidth`, when given, caps the WHOLE chip (label + padding) — a label
-// that would exceed it is shrunk to fit with a trailing "…", same shrink-one-
-// char-at-a-time-and-remeasure approach the subject/author text below
-// already use. `maxWidth<=pad*2+8` means there's no usable room at all
-// (not even a one-char label plus ellipsis would read as anything but a
-// sliver) — draws nothing and returns `x` unchanged rather than a garbled chip.
+// `maxWidth`, when given, caps the WHOLE chip (label + padding + any leading
+// icons) — a label that would exceed it is shrunk to fit with a trailing "…",
+// same shrink-one-char-at-a-time-and-remeasure approach the subject/author
+// text below already use. `maxWidth<=pad*2+iconsW+8` means there's no usable
+// room at all (not even a one-char label plus ellipsis would read as anything
+// but a sliver) — draws nothing and returns `x` unchanged rather than a
+// garbled chip.
 const CHIP_PAD=6;
+// How much leading width `entry`'s glyphs take inside the chip (0 for a tag).
+function chipIconsW(entry, h) {
+  const s = chipIconSize(h);
+  return (entry.local ? s + CHIP_ICON_GAP : 0) + (entry.remote ? s + CHIP_ICON_GAP : 0);
+}
 // Measure a chip's drawn width, truncating the label to fit `maxWidth` (px). It
 // stays a pure measurement (no drawing) so drawGutterChips can decide fit —
 // including reserving room for a "+N" pill — before committing paint. Returns
 // null when there isn't room for even a minimal chip.
-function measureChip(label,kind,maxWidth){
-  ctx.font=layout.chipFont;
-  if(maxWidth!=null&&maxWidth<=CHIP_PAD*2+8) return null;
-  let text=label.length>LABEL_MAX?label.slice(0,LABEL_MAX):label;
-  if(maxWidth!=null){
-    const textMax=maxWidth-CHIP_PAD*2;
-    if(ctx.measureText(text).width>textMax){
-      while(text.length>1&&ctx.measureText(text+"…").width>textMax) text=text.slice(0,-1);
-      text+="…";
+function measureChip(entry, maxWidth) {
+  ctx.font = layout.chipFont;
+  const h = Math.round(16.5 * Math.min(1.25, layout.zoom));
+  const iconsW = chipIconsW(entry, h);
+  if (maxWidth != null && maxWidth <= CHIP_PAD * 2 + iconsW + 8) return null;
+  let text = entry.label.length > LABEL_MAX ? entry.label.slice(0, LABEL_MAX) : entry.label;
+  if (maxWidth != null) {
+    const textMax = maxWidth - CHIP_PAD * 2 - iconsW;
+    if (ctx.measureText(text).width > textMax) {
+      while (text.length > 1 && ctx.measureText(text + "…").width > textMax) text = text.slice(0, -1);
+      text += "…";
     }
   }
-  return {text, w:ctx.measureText(text).width+CHIP_PAD*2};
+  return { text, w: ctx.measureText(text).width + CHIP_PAD * 2 + iconsW };
 }
-// Paint a pre-measured chip (see measureChip). `colorOverride` tints the whole
-// chip to the row's branch colour in column mode; otherwise the kind colour.
-function paintChip(x,y,text,w,kind,colorOverride){
-  const col=colorOverride||refKindColor(kind);
-  ctx.font=layout.chipFont;
-  const h=Math.round(16.5*Math.min(1.25,layout.zoom));
-  ctx.beginPath(); if(ctx.roundRect)ctx.roundRect(x,y-h/2,w,h,4);else ctx.rect(x,y-h/2,w,h);
-  ctx.fillStyle=col; ctx.globalAlpha=kind==="head"?0.95:0.26; ctx.fill(); ctx.globalAlpha=1;
-  ctx.lineWidth=1; ctx.strokeStyle=col; ctx.stroke();
-  // Non-head labels draw their text in the bright theme.text (NOT the branch
-  // colour on a same-colour tint, which read as low-contrast/blurry) — the colour
-  // identity stays in the border + fill tint. head stays dark-on-solid.
-  ctx.fillStyle=kind==="head"?theme.bg:theme.text; ctx.textAlign="left"; ctx.fillText(text,x+CHIP_PAD,y+0.5);
-  return x+w;
+// Paint a pre-measured chip (see measureChip), leading with a monitor/cloud
+// glyph per `entry.local`/`entry.remote` (see reforder.ts::mergeRefChips) so a
+// folded local+remote pair reads as one chip with both icons, not two chips
+// with the same label.
+function paintChip(x, y, text, w, entry, colorOverride, rowColor) {
+  // Kind colour, except: a plain branch chip inline (no override) takes its
+  // ROW's lane colour so the chip matches the lanes beside it; head keeps its
+  // solid accent (the "you are here" cue outranks the colour system).
+  const kind = entry.kind;
+  const col = colorOverride || (kind === "branch" && rowColor ? rowColor : refKindColor(kind));
+  ctx.font = layout.chipFont;
+  const h = Math.round(16.5 * Math.min(1.25, layout.zoom));
+  ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y - h / 2, w, h, 4); else ctx.rect(x, y - h / 2, w, h);
+  ctx.fillStyle = col; ctx.globalAlpha = kind === "head" ? 0.95 : 0.26; ctx.fill(); ctx.globalAlpha = 1;
+  ctx.lineWidth = 1; ctx.strokeStyle = col; ctx.stroke();
+  // Non-head labels draw their text (and glyphs) in the bright theme.text (NOT
+  // the branch colour on a same-colour tint, which read as low-contrast/
+  // blurry) — the colour identity stays in the border + fill tint. head stays
+  // dark-on-solid, glyphs included so they read as part of the label.
+  const fg = kind === "head" ? theme.bg : theme.text;
+  const s = chipIconSize(h);
+  let ix = x + CHIP_PAD;
+  if (entry.local) { paintChipIcon(CHIP_ICON_MONITOR, ix, y, s, fg); ix += s + CHIP_ICON_GAP; }
+  if (entry.remote) { paintChipIcon(CHIP_ICON_CLOUD, ix, y, s, fg); ix += s + CHIP_ICON_GAP; }
+  ctx.fillStyle = fg; ctx.textAlign = "left"; ctx.fillText(text, ix, y + 0.5);
+  return x + w;
 }
 // The muted "+N" overflow pill telling you N more refs are hidden here and that
 // clicking cycles them into view. Returns its width so the caller can record a
@@ -751,6 +771,26 @@ function paintPlus(x,y,n){
   ctx.fillStyle=theme.muted; ctx.textAlign="left"; ctx.fillText(text,x+CHIP_PAD,y+0.5);
   return w;
 }
+// Chip glyphs — the SAME lucide icons the sidebar renders as Svelte components
+// (@lucide/svelte v1.24.0, ISC: `monitor`, `cloud`), here as raw path data in a
+// Path2D because a canvas can't host a component and emoji render differently
+// per webview. Stroked in the chip's own colour at chip scale; lucide draws in
+// a 24×24 box with stroke-width 2, so scaling the box scales the stroke too.
+const CHIP_ICON_CLOUD = new Path2D("M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z");
+const CHIP_ICON_MONITOR = new Path2D(
+  "M4 3h16a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2H4a2 2 0 0 1 -2 -2V5a2 2 0 0 1 2 -2Z M8 21h8 M12 17v4",
+);
+const CHIP_ICON_GAP = 3;
+function chipIconSize(h) { return Math.max(8, h - 6); }
+// Stroke one glyph with its 24-box scaled to `size` px at (x, yMid-centred).
+function paintChipIcon(path, x, yMid, size, col) {
+  ctx.save();
+  ctx.translate(x, yMid - size / 2);
+  ctx.scale(size / 24, size / 24);
+  ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.strokeStyle = col; ctx.stroke(path);
+  ctx.restore();
+}
 // Greedily lay out up to `cap` chips from `list` starting at x0, each truncated
 // to the room remaining before `xLimit`. Pure layout (measure only) — returns
 // the placed chips with their x/width so the caller paints them after deciding
@@ -758,9 +798,9 @@ function paintPlus(x,y,n){
 function fitChips(list,cap,x0,xLimit,gap){
   const out=[]; let x=x0;
   for(let i=0;i<cap&&i<list.length;i++){
-    const m=measureChip(list[i].label,list[i].kind,xLimit-x);
+    const m=measureChip(list[i],xLimit-x);
     if(!m) break;
-    out.push({label:list[i].label, kind:list[i].kind, text:m.text, x, w:m.w});
+    out.push({entry:list[i], text:m.text, x, w:m.w});
     x+=m.w+gap;
   }
   return out;
@@ -769,12 +809,15 @@ function fitChips(list,cap,x0,xLimit,gap){
 // "+N" pill when some don't fit — recording that pill's x-span in overflowHit so
 // a click there cycles the row (see endPointer). Returns the x just past the
 // last thing drawn (inline mode advances the subject past it). `colorOverride`
-// is the row's branch colour in column mode, null inline. Reserved room for the
-// pill (RESERVE) is generous enough for a two-digit count so it always fits.
+// is the row's branch colour in column mode, null inline (in which case
+// `rowColor` still tints a plain branch chip — see paintChip). Reserved room
+// for the pill (RESERVE) is generous enough for a two-digit count so it always
+// fits. Also records every placed chip's x-span in chipHit (row -> spans) for
+// later tasks' click/hover targeting, exactly like overflowHit below.
 const PLUS_RESERVE=34;
-function drawGutterChips(row,x0,xLimit,y,colorOverride,gap){
-  overflowHit.delete(row);
-  const list=orderedRefsFor(row);
+function drawGutterChips(row,x0,xLimit,y,colorOverride,gap,rowColor){
+  overflowHit.delete(row); chipHit.delete(row);
+  const list=displayChipsFor(row);
   if(!list.length) return x0;
   const cap=showAllTags?list.length:1;
   // First fit with no reservation; if everything intended fits, no pill needed.
@@ -786,7 +829,8 @@ function drawGutterChips(row,x0,xLimit,y,colorOverride,gap){
     overflow=list.length-placed.length;
   }
   let endX=x0;
-  for(const c of placed){ paintChip(c.x,y,c.text,c.w,c.kind,colorOverride); endX=c.x+c.w; }
+  for(const c of placed){ paintChip(c.x,y,c.text,c.w,c.entry,colorOverride,rowColor); endX=c.x+c.w; }
+  chipHit.set(row, placed.map(c=>({x0:c.x, x1:c.x+c.w, entry:c.entry})));
   if(overflow>0){
     const px=placed.length?endX+gap:x0;
     ctx.font=layout.chipFont;
@@ -1810,6 +1854,10 @@ function setGraphLabelPriority(v){ graphTagsFirst=(v!=="branch"); dirty=true; }
 const refRot=new Map();
 let refRotEpoch=0;
 const overflowHit=new Map();
+// Every rendered row's PAINTED chip x-spans (CSS px, scroll-independent),
+// entry included — later tasks' hover/click use this instead of re-deriving
+// layout. Rebuilt per row exactly like overflowHit above.
+const chipHit=new Map();
 function rowSha(row){ return (BACKEND&&BACKEND.rows[row]&&BACKEND.rows[row].sha)||("r"+row); }
 // This row's ref chips in display order: priority-sorted then rotated. Uses the
 // FULL list (allRefs) so rotation can reach every ref even when only the primary
@@ -1818,13 +1866,24 @@ function orderedRefsFor(row){
   const list=(G&&G.allRefs&&G.allRefs[row])||(G&&G.refs&&G.refs[row]?[G.refs[row]]:[]);
   return orderRefs(list, graphTagsFirst, refRot.get(rowSha(row))||0);
 }
+// The row's DISPLAY chips: priority-sorted refs, folded local+remote (see
+// reforder.ts::mergeRefChips), THEN rotated — rotation must walk what's on
+// screen (merged entries), not raw refs, or "+N" cycling would need two clicks
+// to move past a merged pair.
+function displayChipsFor(row){
+  const list=(G&&G.allRefs&&G.allRefs[row])||(G&&G.refs&&G.refs[row]?[G.refs[row]]:[]);
+  const merged=mergeRefChips(orderRefs(list, graphTagsFirst, 0));
+  const n=merged.length; if(n<2) return merged;
+  const k=((refRot.get(rowSha(row))||0)%n+n)%n;
+  return k===0?merged:merged.slice(k).concat(merged.slice(0,k));
+}
 // Spin this row's labels one place left, bringing the next hidden ref to the
 // front — the "+N" chip's click action. No-op with fewer than two refs.
 function cycleRefs(row){
-  const list=(G&&G.allRefs&&G.allRefs[row])||[];
-  if(list.length<2) return;
+  const n=displayChipsFor(row).length;
+  if(n<2) return;
   const k=rowSha(row);
-  refRot.set(k,((refRot.get(k)||0)+1)%list.length);
+  refRot.set(k,((refRot.get(k)||0)+1)%n);
   refRotEpoch++; bufferValid=false; dirty=true;
 }
 // Chip colour/label per ref kind — shared by paintChip, the "+N" pill and the
